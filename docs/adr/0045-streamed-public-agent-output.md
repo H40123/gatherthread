@@ -1,4 +1,4 @@
-# ADR-0044: Stream public agent output into the shared work log
+# ADR-0045: Stream public agent output into the shared work log
 
 - Status: proposed / implementation review
 - Date: 2026-10-12
