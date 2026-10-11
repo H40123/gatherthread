@@ -29,6 +29,8 @@ import {
   isExecutionRuntime,
   isFailedAgentResponse,
   isTimelineEventVisible,
+  latestStreamedText,
+  mergeProgressFragments,
   normalizeConnectorState,
   pendingAgentRequests,
   projectCodexConnectionCommands,
@@ -42,7 +44,7 @@ import {
   sessionMetadataFromEvent,
   sessionDeliveryMode,
   snapshotStatusView,
-} from "./domain.js?v=20260925-1";
+} from "./domain.js?v=20261012-stream-1";
 import { SessionSync } from "./realtime.js";
 import { mountCodeSync } from "./code-sync-view.js?v=20260924-1";
 import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20260924-2";
@@ -2248,7 +2250,7 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
       item.append(renderProgressDisclosure(progressByRequest.get(event.id), true));
     }
     if (pendingRequestIds.has(event.id)) {
-      item.append(renderAgentPendingStatus(event));
+      item.append(renderAgentPendingStatus(event, progressByRequest.get(event.id)));
     }
     if (event.type === "agent_request" && progressByRequest.get(event.id)?.some((progress) => progress.payload?.status === "paused")) {
       const notice = document.createElement("p");
@@ -2308,6 +2310,10 @@ function renderProgressDisclosure(progressEvents, live) {
   const summary = document.createElement("summary");
   const list = document.createElement("ol");
   const worklogId = progressEvents[0]?.replyTo;
+  // A streamed message arrives as many bounded fragments. Merging them shows one
+  // growing entry, which is what the reader is watching for, rather than a new
+  // line for every slice the connector published.
+  const entries = mergeProgressFragments(progressEvents);
   details.className = `agent-worklog${live ? " agent-worklog-live" : ""}`;
   details.open = live || Boolean(worklogId && expandedWorklogs.has(worklogId));
   details.setAttribute("aria-live", live ? "polite" : "off");
@@ -2316,41 +2322,49 @@ function renderProgressDisclosure(progressEvents, live) {
     if (details.open) expandedWorklogs.add(worklogId);
     else expandedWorklogs.delete(worklogId);
   });
-  summary.textContent = `${localizer.t(live ? "Working" : "Work log")} (${progressEvents.length})`;
+  summary.textContent = `${localizer.t(live ? "Working" : "Work log")} (${entries.length})`;
   list.className = "agent-worklog-list";
-  for (const progress of progressEvents) {
+  for (const entry of entries) {
     const item = document.createElement("li");
-    item.id = `message-${progress.id}`; item.tabIndex = -1;
+    item.id = `message-${entry.id}`; item.tabIndex = -1;
+    if (entry.streamId !== undefined) item.classList.add("agent-worklog-streamed");
     const timestamp = document.createElement("time");
-    timestamp.dateTime = progress.createdAt;
-    timestamp.textContent = formatTimestamp(progress.createdAt);
-    const body = renderMarkdown(localizer.t(eventContent(progress)));
+    timestamp.dateTime = entry.createdAt;
+    timestamp.textContent = formatTimestamp(entry.createdAt);
+    const body = renderMarkdown(localizer.t(entry.content));
     body.classList.add("event-content");
-    item.append(timestamp, body, messageActions.actions(progress));
+    item.append(timestamp, body, messageActions.actions(entry.event));
     list.append(item);
   }
   details.append(summary, list);
   return details;
 }
 
-function renderAgentPendingStatus(request) {
+function renderAgentPendingStatus(request, progressEvents = []) {
   const member = state.session?.members.find((candidate) => candidate.userId === request.actor.id);
   const cloud = request.payload?.execution_profile?.harness === "opencode";
   const online = cloud || isExecutionRuntime(member?.runtime);
   const status = document.createElement("div");
   const dots = document.createElement("span");
   const label = document.createElement("span");
+  // What the agent is writing replaces the generic "is responding" wording,
+  // which is the whole point of streaming it. A line that rewrites itself every
+  // couple of seconds must not be a live region, so only the static wording is
+  // announced and the accessible name always states the state.
+  const streamed = online ? latestStreamedText(progressEvents) : "";
   status.className = "agent-pending-status";
   status.dataset.state = online ? "answering" : "queued";
+  if (streamed) status.dataset.streamed = "true";
   status.setAttribute("role", "status");
-  status.setAttribute("aria-live", "polite");
+  status.setAttribute("aria-live", streamed ? "off" : "polite");
   status.setAttribute("aria-label", online ? "Agent is responding" : "Agent request is queued");
   dots.className = "agent-thinking-dots";
   dots.setAttribute("aria-hidden", "true");
   for (let index = 0; index < 3; index += 1) dots.append(document.createElement("i"));
   const runtime = member?.runtime;
   const agentName = runtime?.harness || "Agent";
-  label.textContent = cloud ? localizer.t("Cloud Agent is working…") : online
+  if (streamed) label.className = "agent-streamed-line";
+  label.textContent = streamed ? `${agentName}: ${streamed}` : cloud ? localizer.t("Cloud Agent is working…") : online
     ? `${agentName} is responding…`
     : `${agentName} request is queued until the local runtime reconnects.`;
   status.append(dots, label);

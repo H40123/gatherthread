@@ -333,6 +333,53 @@ export function eventContent(event) {
 }
 
 /**
+ * Collapse a request's progress into the entries a reader actually sees.
+ *
+ * A connector publishes streamed public output in bounded slices so the server
+ * receives a steady trickle rather than one enormous event. Adjacent slices
+ * sharing a `stream_id` are merged here, because a growing message is what the
+ * reader asked to watch — not one line per slice. An identity is never reused
+ * across two native messages, so a later message cannot be folded into an
+ * earlier one. The first slice keeps the entry's identity and timestamp, so the
+ * entry does not jump in the timeline or lose its anchor while it grows.
+ */
+export function mergeProgressFragments(progressEvents) {
+  const entries = [];
+  for (const event of progressEvents ?? []) {
+    const streamId = event?.payload?.stream_id;
+    const streaming = typeof streamId === "string" && streamId.length > 0;
+    const previous = entries.at(-1);
+    if (streaming && previous?.streamId === streamId) {
+      previous.content += eventContent(event);
+      previous.event = { ...previous.event, payload: { ...previous.event.payload, content: previous.content } };
+      continue;
+    }
+    const content = eventContent(event);
+    entries.push({
+      id: event?.id,
+      createdAt: event?.createdAt,
+      streamId: streaming ? streamId : undefined,
+      content,
+      event: { ...event, payload: { ...event?.payload, content } },
+    });
+  }
+  return entries;
+}
+
+/**
+ * The newest public text a request has streamed, for the compact line a reader
+ * sees without opening the work log. This is the tail, not the head: while a
+ * message is being written, its newest words are the informative part. Hidden
+ * reasoning cannot appear here because it is never published.
+ */
+export function latestStreamedText(progressEvents, limit = 140) {
+  const streamed = mergeProgressFragments(progressEvents).findLast((entry) => entry.streamId !== undefined);
+  if (!streamed) return "";
+  const text = streamed.content.replace(/\s+/gu, " ").trim();
+  return text.length > limit ? `…${text.slice(-limit)}` : text;
+}
+
+/**
  * Conversation bubble role for timeline presentation: the signed-in author's
  * messages read as "self", everyone else's human messages keep the default
  * card, and agent-produced output reads as "agent". Non-conversation control

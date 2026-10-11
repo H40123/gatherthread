@@ -1868,6 +1868,46 @@ code {
   }
 }
 
+.agent-pending-status[data-streamed="true"] {
+  max-width: min(100%, 620px);
+}
+
+.agent-streamed-line {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The newest streamed entry is the one still being written, so it carries a
+   caret. Older fragments of the same message have already been merged into it. */
+.agent-worklog-live .agent-worklog-streamed:last-child .markdown-body::after {
+  content: "";
+  display: inline-block;
+  width: 0.42em;
+  height: 0.95em;
+  margin-left: 0.16em;
+  vertical-align: -0.14em;
+  background: currentColor;
+  animation: agent-stream-caret 1.1s steps(2, start) infinite;
+}
+
+@keyframes agent-stream-caret {
+  0%, 100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-worklog-live .agent-worklog-streamed:last-child .markdown-body::after {
+    animation: none;
+    opacity: 0.55;
+  }
+}
+
 /* Refined application shell and user-selectable design system. */
 :root[data-theme="dark"] {
   color-scheme: dark;

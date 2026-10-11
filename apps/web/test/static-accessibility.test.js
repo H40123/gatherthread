@@ -480,7 +480,11 @@ test("pending agent feedback is announced and respects reduced-motion preference
   const [main, styles] = await Promise.all([readFile(mainPath, "utf8"), readFile(stylesPath, "utf8")]);
   assert.match(main, /className = "agent-pending-status"/);
   assert.match(main, /setAttribute\("role", "status"\)/);
-  assert.match(main, /setAttribute\("aria-live", "polite"\)/);
+  // Static feedback is announced. Streamed output rewrites itself every couple
+  // of seconds, so it is shown without being read aloud over and over; the
+  // accessible name still states the state for anyone who lands on it.
+  assert.match(main, /setAttribute\("aria-live", streamed \? "off" : "polite"\)/);
+  assert.match(main, /setAttribute\("aria-label", online \? "Agent is responding" : "Agent request is queued"\)/);
   assert.match(styles, /@keyframes agent-thinking-pulse/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
 });
