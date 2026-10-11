@@ -78,4 +78,4 @@ Restore is an operator-approved destructive procedure. Follow [OPERATIONS.md](OP
 
 ## Beta limitations
 
-This is one Node.js process with one SQLite database. It has no automatic failover, horizontal scaling, attachment storage, general conversation-retention worker, or token-level Agent streaming. Public verified-email registration is available after approved provider and abuse-control preflight. Roll out within verified capacity and alert on ECS disk/memory pressure, certificate expiry, service exit, backup/retention-task failure, and database-integrity failure.
+This is one Node.js process with one SQLite database. It has no automatic failover, horizontal scaling, attachment storage, or general conversation-retention worker. Codex public agent output streams to the room in throttled, size-capped fragments rather than unmetered token-by-token delivery. Public verified-email registration is available after approved provider and abuse-control preflight. Roll out within verified capacity and alert on ECS disk/memory pressure, certificate expiry, service exit, backup/retention-task failure, and database-integrity failure.

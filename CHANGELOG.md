@@ -4,6 +4,10 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 ## [Unreleased]
 
+### Added
+
+- Stream public Codex agent output into the shared conversation as it is written, instead of showing only a generic working label. Public agent-message text is published in throttled, size-capped fragments under one identity per message, and the Web timeline merges them into a single growing work-log entry with a reduced-motion-aware caret; the pending-answer indicator shows the tail of what the agent is writing. The generic busy/thinking marker now appears only while streamed output is quiet, so it still reports silent tool work and still renews the claim lease. Hidden reasoning and tool-output streams are never published, a fully streamed item is not repeated under its own identity, and the completed item is still published whenever the two differ. DSH keeps its existing content-free heartbeats. See [ADR-0044](docs/adr/0044-streamed-public-agent-output.md).
+
 ### Fixed
 
 - Accept cloud trial requests immediately and deliver terminal replies through canonical replay. Restore author-only Pause/Resume on the existing composer button, exact-model retries without a local runtime, and shared selected-history summaries through the chosen cloud model. Allow settings to be saved before connecting a local Agent; empty selections explain missing sources instead of leaving an inert summary button. Keep local-file transfer authorization and Codex/DSH routing unchanged.
