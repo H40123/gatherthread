@@ -48,6 +48,7 @@ function harness(names, overrides = {}) {
     cloudGithubUi: { updateContext: noop, completeAuthorization: async () => {} },
     deviceCredentialDialog: { open: false }, codeSyncUi: { showFirstLoginNotice: noop },
     onboarding: { cancel: noop, offer: noop, refreshLanguage: noop },
+    invitationLink: { hasPending: () => false, reset: noop },
     sessionContextDetails: { open: false }, updateSessionContextDisclosure: noop,
     codexLauncher: { clear: noop }, codexDeviceAuthorization: { clear: noop },
     location: { hash: "" }, URLSearchParams, initials: () => "U", localizer: { t: (value) => value },
@@ -76,6 +77,23 @@ test("switching projects clears unconsumed Launcher and manual authorizations be
   await assert.rejects(app.selectProject("p2"), /fixture-stop-before-API/);
   assert.equal(launcherCleared, 1);
   assert.equal(manualCleared, 1);
+});
+
+test("authenticated invitation entry waits for explicit confirmation before loading projects or offering onboarding", async () => {
+  let previews = 0;
+  let onboardingOffers = 0;
+  let projects = 0;
+  const app = harness(["enterWorkspace"], {
+    document: { documentElement: { dataset: { bootState: "loading" } } },
+    invitationLink: { hasPending: () => true, async open() { previews += 1; } },
+    onboarding: { cancel: noop, offer() { onboardingOffers += 1; } },
+    api: { async listProjects() { projects += 1; return []; } },
+  });
+  await app.enterWorkspace();
+  assert.equal(previews, 1);
+  assert.equal(projects, 0);
+  assert.equal(onboardingOffers, 0);
+  assert.equal(app.document.documentElement.dataset.bootState, undefined);
 });
 
 test("closed Cloud Agent never counts as the last available Agent or becomes the Settings default", () => {

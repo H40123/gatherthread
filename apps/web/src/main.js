@@ -7,12 +7,13 @@ import { mountAccountDevices } from "./account-devices.js";
 import { cloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js";
 import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261006-mobile-2";
 import { mountRegistration } from "./registration.js";
-import { HttpCollaborationApi, MockCollaborationApi } from "./api.js?v=20261004-avatars";
+import { HttpCollaborationApi, MockCollaborationApi } from "./api.js?v=20261012-invite-1";
 import { mountMessageActions, agentWorkStatus } from "./message-actions.js";
 import { positionSessionContextPanel, bindSessionContextPanel } from "./session-context-panel.js";
 import { ExampleCollaborationApi } from "./example-api.js";
 import { mountOnboarding } from "./onboarding.js?v=20260927-1";
-import { projectInvitationShareText } from "./invitation-share.js?v=20260928-1";
+import { projectInvitationShareText } from "./invitation-share.js?v=20261012-invite-1";
+import { mountInvitationLink } from "./invitation-link.js?v=20261012-invite-1";
 import {
   canAppend,
   canRetryFailedAgentRequest,
@@ -49,7 +50,7 @@ import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20260924-
 import { mountHistorySummaries } from "./history-summary-view.js";
 import { DEFAULT_HISTORY_SUMMARY_INSTRUCTIONS } from "./history-summary-policy.js";
 import { createAmbientCanvas } from "./ambient-canvas.js?v=20260829-14";
-import { createLocalizer, memberRemovalAriaLabel, memberRoleAriaLabel } from "./i18n.js?v=20261005-mobile-1";
+import { createLocalizer, memberRemovalAriaLabel, memberRoleAriaLabel } from "./i18n.js?v=20261012-invite-1";
 import { automaticDeviceName } from "./device-name.js?v=20260830-1";
 import {
   CODEX_HARNESS,
@@ -495,11 +496,54 @@ let settingsHistoryPolicy = null;
 let attentionNoticeTimer;
 let connectionNoticeState = INITIAL_CONNECTION_NOTICE_STATE;
 
+const invitationLink = mountInvitationLink({ document, location, history: window.history, api, localizer,
+  getContext: () => state.currentUser ? {
+    scope: `${authenticationGeneration}:${state.currentUser.id}:${state.currentUser.device_id}`,
+    username: state.currentUser.username,
+  } : null,
+  onShow: () => {
+    onboarding.cancel();
+    codeSyncUi.close();
+    codeSyncUi.closeNotice();
+    mobileWorkspace.close();
+    for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
+    projectSelectionGuard.invalidate();
+    selectedSessionGeneration += 1;
+    workspaceLoadGeneration += 1;
+    sync.disconnect();
+    stopMemberRefresh(); stopSnapshotPolling(); stopDshRuntimePolling();
+    clearCreatedInvitationSecret();
+    authView.hidden = true;
+    workspace.hidden = true;
+  },
+  onDismiss: () => { if (state.currentUser) void enterWorkspace(); },
+  onSwitchAccount: async () => {
+    resetWorkspaceToAuth();
+    const authentication = authenticationGeneration;
+    authRequestInProgress = true;
+    let failed = false;
+    try { await api.logout(); } catch { failed = true; }
+    finally {
+      if (authentication === authenticationGeneration) {
+        authRequestInProgress = false;
+        if (failed) localizer.setText(loginError, "The server could not confirm logout. If it is offline, close this browser tab to end the local session.");
+        element("auth-select-email-login").focus();
+      }
+    }
+  },
+});
+
 applyVisualSettings(state.settings);
 element("auth-language-button").addEventListener("click", () => {
   const locale = state.settings.general.locale === "zh-CN" ? "en" : "zh-CN";
   state.settings = settingsStore.set({ ...state.settings, general: { locale } });
   applyVisualSettings(state.settings);
+});
+element("invitation-language-button").addEventListener("click", () => element("auth-language-button").click());
+document.querySelector(".skip-link").addEventListener("click", event => {
+  if (!invitationLink.hasPending()) return;
+  event.preventDefault();
+  element(state.currentUser ? "invitation-link-title" : "login-title").focus();
 });
 window.addEventListener("storage", (event) => {
   if (event.key !== SHARED_LANGUAGE_STORAGE_KEY) return;
@@ -514,6 +558,7 @@ element("claim-device-name").addEventListener("input", () => {
 
 clearSensitiveInputs();
 window.addEventListener("pagehide", () => {
+  invitationLink.reset();
   codeSyncUi.close();
   authenticationGeneration += 1;
   projectSelectionGuard.invalidate();
@@ -533,6 +578,11 @@ window.addEventListener("pageshow", (event) => {
   void restoreBrowserSession();
 });
 window.addEventListener("hashchange", () => {
+  if (invitationLink.syncFromHash()) {
+    if (state.currentUser) void enterWorkspace();
+    return;
+  }
+  if (invitationLink.hasPending()) return;
   const code = dshPairingCodeFromHash(location.hash);
   if (!code) return;
   pendingDshPairingCode = code;
@@ -1271,6 +1321,7 @@ async function restoreBrowserSession() {
 }
 
 function resetWorkspaceToAuth() {
+  invitationLink.reset();
   mobileWorkspace.close();
   codexDeviceAuthorization.clear();
   codexLauncher.clear();
@@ -1353,6 +1404,11 @@ async function enterWorkspace(preferredProjectId) {
   const load = ++workspaceLoadGeneration;
   const selection = selectedSessionGeneration;
   if (!state.currentUser) return;
+  if (invitationLink.hasPending()) {
+    delete document.documentElement.dataset.bootState;
+    await invitationLink.open();
+    return;
+  }
   const isCurrent = () => authentication === authenticationGeneration
     && load === workspaceLoadGeneration && Boolean(state.currentUser);
   void cloudGithubUi.completeAuthorization();
@@ -2039,7 +2095,7 @@ function clearCreatedInvitationSecret() {
 
 function updateCreatedInvitationShareText(locale = state.settings.general.locale) {
   if (!createdInvitationSecret) return;
-  createdInvitationShareText = projectInvitationShareText(createdInvitationSecret, createdInvitationDetails, locale);
+  createdInvitationShareText = projectInvitationShareText(createdInvitationSecret, createdInvitationDetails, locale, location.origin);
   element("created-invite-secret").textContent = createdInvitationShareText;
 }
 
@@ -3369,6 +3425,8 @@ function applyVisualSettings(settings) {
   onboarding.refreshLanguage();
   if (localeChanged) updateCreatedInvitationShareText(normalized.general.locale);
   element("auth-language-button").textContent = normalized.general.locale === "zh-CN" ? "EN" : "中";
+  element("invitation-language-button").textContent = normalized.general.locale === "zh-CN" ? "EN" : "中";
+  invitationLink.refreshLanguage();
   if (localeChanged && state.session) renderTimeline();
   if (localeChanged && state.project) renderMembers();
   updateSidebarControls();

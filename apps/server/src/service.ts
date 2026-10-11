@@ -238,6 +238,10 @@ export class CollaborationService {
     return result;
   }
 
+  previewProjectInvitation(actor: Actor, inviteToken: string) {
+    return this.database.previewProjectInvitation(actor, inviteToken);
+  }
+
   revokeInvitation(actor: Actor, sessionId: string, invitationId: string) {
     this.requireOwner(actor, sessionId);
     return this.database.revokeInvitation(actor, sessionId, invitationId);

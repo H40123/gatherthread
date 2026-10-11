@@ -27,6 +27,7 @@ import type {
   RemoveProjectMembershipInput,
   ProjectInvitationAuditRecord,
   ProjectInvitationRecord,
+  ProjectInvitationPreview,
   ProjectListItem,
   ReplayResponse,
   RuntimeExecutionProfile,
@@ -2527,6 +2528,29 @@ export class CollaborationDatabase {
              subject_user_id, subject_device_id, role, created_at
       FROM invitation_audit WHERE session_id = ? ORDER BY rowid
     `).all(sessionId) as unknown as InvitationAuditRecord[];
+  }
+
+  previewProjectInvitation(actor: Actor, inviteToken: string): ProjectInvitationPreview {
+    this.assertActiveDevice(actor);
+    const unavailable = () => new ApiError(410, "invitation_unavailable", "Invitation is invalid or unavailable");
+    const row = this.sqlite.prepare("SELECT * FROM project_invitations WHERE token_digest = ?")
+      .get(this.tokenDigest(inviteToken)) as unknown as ProjectInvitationRow | undefined;
+    if (!row || row.revoked_at !== null || row.expired_at !== null || row.expires_at <= this.now()) throw unavailable();
+    const member = this.projectMembershipRole(row.project_id, actor.user_id) !== null;
+    // Recover an uncertain acceptance response only for its current member.
+    // A removed member or another account cannot reuse a consumed invitation.
+    if (row.claimed_at !== null && !(member && row.claimed_by_user_id === actor.user_id)) throw unavailable();
+    const project = this.requireProject(row.project_id);
+    if (project.state !== "active") throw unavailable();
+    const inviter = this.sqlite.prepare("SELECT display_name FROM users WHERE id = ?")
+      .get(row.inviter_user_id) as { display_name: string } | undefined;
+    if (!inviter) throw unavailable();
+    return {
+      project: { id: project.id, title: project.title },
+      inviter_display_name: inviter.display_name,
+      role: row.role, created_at: row.created_at, expires_at: row.expires_at,
+      already_member: member,
+    };
   }
 
   createProjectInvitation(actor: Actor, projectId: string, input: {

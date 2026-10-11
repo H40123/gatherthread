@@ -22,6 +22,10 @@ npm run build
 
 The static build is written to `apps/web/dist`.
 
+## Brand assets
+
+The invitation confirmation header uses `brand/lockup-color-transparent-light.svg` and `brand/lockup-color-transparent-dark.svg`, matching the approved `final-f` exports at `logo/svg/` in commit `74161e2` byte for byte. These are also the login/workspace lockups; the invitation header displays them at 184 CSS pixels with the existing light/dark theme selection. See the [approved asset usage guide](https://github.com/TH060419/gatherthread/blob/74161e2/logo/README.md).
+
 ## Beginner guide browser regression
 
 With an existing Playwright installation and Chrome, build the app and keep `node apps/web/scripts/serve.mjs` running from the repository root. In another terminal run:

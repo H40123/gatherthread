@@ -67,7 +67,9 @@ tests/e2e          multi-client and bridge end-to-end tests
 
 The owner host publishes one browser origin. `/` is the public product home; its primary actions open the authenticated application at `/app/`. Both surfaces are assembled by the `apps/web` build, so the product page does not introduce another network service, cookie scope, API origin, or WebSocket origin. The product page and application keep independent CSS and JavaScript entry points to prevent global marketing styles from changing workspace behavior.
 
-Operational links created before the product home remain valid. A request to the root containing `?api=...`, `?mock=1`, or a `#project`, `#session`, `#dsh-pair`, `#settings-*`, or `#main-content` fragment is redirected client-side to `/app/` with its query and fragment unchanged. API and WebSocket paths remain rooted at `/v1`; browser session cookies retain path `/`. [ADR-0022](adr/0022-place-the-product-home-above-the-same-origin-application.md) records this boundary.
+Operational links created before the product home remain valid. A request to the root containing `?api=...`, `?mock=1`, or a `#project`, `#session`, `#dsh-pair`, `#invite`, `#settings-*`, or `#main-content` fragment is redirected client-side to `/app/` with its query and fragment unchanged. API and WebSocket paths remain rooted at `/v1`; browser session cookies retain path `/`. [ADR-0022](adr/0022-place-the-product-home-above-the-same-origin-application.md) records this boundary.
+
+`apps/web/src/invitation-link.js` owns the pending fragment, confirmation UI and request-generation fences. It intercepts workspace entry after Cookie restoration, registration or sign-in, before project selection can overwrite the pending link or onboarding can obscure the decision. The new preview route reads existing invitation digests without schema migration; only an explicit confirmation calls the existing acceptance route. Successful confirmation replaces the capability URL with a server-derived project link and restores the workspace through the ordinary entry path. See [ADR-0045](adr/0045-project-invitation-links.md).
 
 ## Data model
 

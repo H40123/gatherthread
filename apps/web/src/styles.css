@@ -6165,7 +6165,36 @@ html[lang="zh-CN"] .composer .agent-request-profile select {
 
 /* A neutral restore state, never a guessed logged-in or logged-out identity. */
 .boot-screen { display: none; }
-html[data-boot-state] #auth-view, html[data-boot-state] #workspace { display: none !important; }
+.invitation-page {
+  min-height: calc(100vh - var(--test-environment-height, 0px));
+  min-height: calc(100dvh - var(--test-environment-height, 0px));
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.invitation-card {
+  width: min(100%, 560px);
+  padding: clamp(20px, 5vw, 40px);
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: var(--shadow-card);
+  overflow-wrap: anywhere;
+}
+.invitation-page-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 32px; }
+.invitation-page-header .wordmark .brand-lockup-image { width: 184px; }
+.invitation-details-list { display: grid; gap: 12px; margin: 24px 0; }
+.invitation-details-list > div { display: grid; grid-template-columns: minmax(90px, 0.7fr) minmax(0, 1.3fr); gap: 16px; }
+.invitation-details-list dt { color: var(--ink-soft); }
+.invitation-details-list dd { margin: 0; }
+.invitation-page-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 24px 0 16px; }
+.invitation-page-actions > button { width: 100%; min-width: 0; }
+#invitation-retry-button { grid-column: 1 / -1; }
+@media (max-width: 480px) {
+  .invitation-page { padding: 16px; }
+  .invitation-details-list > div { grid-template-columns: 1fr; gap: 4px; }
+}
+html[data-boot-state] #auth-view, html[data-boot-state] #workspace, html[data-boot-state] #invitation-link-view { display: none !important; }
 html[data-boot-state] .boot-screen { display: flex; min-height: 100dvh; align-items: center; justify-content: center; gap: 12px; color: var(--ink); font-size: 1.1rem; }
 
 /* Keep the message and both explicit send intents reachable at every height. */
