@@ -13,6 +13,7 @@ import {
 } from "./codex-executor.js";
 import { withoutGatherThreadCredentials } from "./executor.js";
 import { HarnessExecutionTerminatedError } from "./bridge.js";
+import { createAgentOutputStream } from "./agent-output-stream.js";
 import { updateCodexHookRegistry, type CodexHookEvent, type CodexHookRelayResult } from "./codex-hooks.js";
 import type {
   ProjectHarnessAdapter,
@@ -412,6 +413,13 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const MIN_CONTEXT_WINDOW_TOKENS = 4_096;
 const DEFAULT_CONTEXT_HIGH_WATERMARK = 0.8;
 const DEFAULT_DESKTOP_NATIVE_RESUME_TIMEOUT_MS = 3_000;
+/**
+ * How long after the last streamed fragment the generic busy/thinking
+ * placeholder stays suppressed. Streaming renews the claim lease on its own;
+ * once it goes quiet the placeholder returns and takes over that duty, well
+ * inside the five-minute lease window.
+ */
+const STREAM_QUIET_MS = 60_000;
 const ACTIVE_STATE_WRITERS = new Set<string>();
 const DEFAULT_MAX_TOOL_OUTPUT_BYTES = 32 * 1024;
 const MAX_LOCAL_TURN_UPLOAD_BYTES = 180 * 1024;
@@ -583,6 +591,12 @@ export class CodexAppServerClient {
     onStarted?: (turnId: string) => Promise<void> | void;
     onItemCompleted?: (item: unknown) => Promise<void> | void;
     onWorkActivity?: (status: "thinking" | "running") => Promise<void> | void;
+    /**
+     * One native slice of a public agent message. Only `item/agentMessage/delta`
+     * reaches this hook: reasoning and tool-output streams stay private, so they
+     * have no path into published progress.
+     */
+    onItemDelta?: (itemId: string, delta: string) => Promise<void> | void;
   }): Promise<{ turnId: string; items: unknown[]; modelContextWindow?: number; totalTokens?: number }> {
     await this.start();
     this.#threadTokenUsage.delete(input.threadId);
@@ -608,6 +622,21 @@ export class CodexAppServerClient {
     let completedItems = Promise.resolve();
     const listener = (notification: JsonRpcNotification) => {
       if (!isObject(notification.params) || notification.params.threadId !== input.threadId) return;
+      // Streamed text is handled before the coarse activity signal derived from
+      // the same notification, so a fragment can suppress the placeholder that
+      // would otherwise announce work the reader is already watching.
+      if (notification.method === "item/agentMessage/delta" && input.onItemDelta) {
+        const notificationTurnId = typeof notification.params.turnId === "string" ? notification.params.turnId : undefined;
+        if (expectedTurnId === undefined || notificationTurnId === undefined || notificationTurnId === expectedTurnId) {
+          const itemId = objectString(notification.params, "itemId");
+          const delta = objectString(notification.params, "delta");
+          // Without a native item identity there is nothing to merge fragments
+          // under, so the slice is dropped rather than published unattached.
+          if (itemId && delta) {
+            completedItems = completedItems.then(async () => input.onItemDelta?.(itemId, delta)).catch(() => undefined);
+          }
+        }
+      }
       const activity = codexActivityStatus(notification.method, notification.params);
       const activityTurnId = notification.params.turnId;
       if (activity && input.onWorkActivity
@@ -2169,6 +2198,14 @@ export class CodexAppServerExecutor implements HarnessExecutor {
       let lastActivityAt = 0;
       let activityIndex = 0;
       let lastActivityStatus = "";
+      const outputStream = input.publishProgress === undefined ? undefined : createAgentOutputStream({
+        publish: (chunk) => input.publishProgress?.({
+          id: chunk.id,
+          content: chunk.content,
+          phase: chunk.phase,
+          streamId: chunk.streamId,
+        }),
+      });
       try {
         turn = await this.#client.runTurn({
           threadId: connectorState.threadId,
@@ -2187,22 +2224,36 @@ export class CodexAppServerExecutor implements HarnessExecutor {
             };
             await this.#saveState(connectorState);
           },
-          ...(input.publishProgress === undefined ? {} : {
+          ...(input.publishProgress === undefined || outputStream === undefined ? {} : {
+            onItemDelta: async (itemId: string, delta: string) => {
+              // Public agent-message text only. Reasoning and tool-output
+              // streams never reach this hook, so they cannot be published.
+              await outputStream.onDelta(itemId, delta);
+            },
             onWorkActivity: async (status: "thinking" | "running") => {
               const now = Date.now();
               if (now - lastActivityAt < (status === lastActivityStatus ? 30_000 : 2_000)) return;
+              // Streaming already tells the reader what the agent is writing;
+              // the generic placeholder is worth publishing only in the gaps,
+              // where it still renews the claim lease.
+              const streamedAt = outputStream.lastPublishedAt();
+              if (streamedAt !== undefined && now - streamedAt < STREAM_QUIET_MS) return;
               // No hidden reasoning, tool arguments or notification body is shared.
               lastActivityAt = now; lastActivityStatus = status;
               await input.publishProgress?.({ id: `activity-${++activityIndex}`, phase: "activity", status,
                 content: status === "thinking" ? "Agent is thinking." : "Agent is working." });
             },
             onItemCompleted: async (item: unknown) => {
-              if (!isObject(item) || item.type !== "agentMessage" || item.phase !== "commentary") return;
-              if (typeof item.text !== "string" || !item.text.trim()) return;
-              await input.publishProgress?.({
-                id: typeof item.id === "string" && item.id ? item.id : `commentary-${randomUUID()}`,
-                content: item.text,
-              });
+              if (!isObject(item) || item.type !== "agentMessage") return;
+              const itemId = typeof item.id === "string" && item.id ? item.id : undefined;
+              const text = typeof item.text === "string" ? item.text : "";
+              // Closing the stream flushes whatever it still holds. It returns
+              // the text it published, so an item the stream carried in full is
+              // not published a second time under a different identity.
+              const streamed = itemId === undefined ? undefined : await outputStream.onItemCompleted(itemId);
+              if (item.phase !== "commentary" || !text.trim()) return;
+              if (streamed !== undefined && streamed.trim() === text.trim()) return;
+              await input.publishProgress?.({ id: itemId ?? `commentary-${randomUUID()}`, content: text });
             },
           }),
         });
@@ -2211,6 +2262,9 @@ export class CodexAppServerExecutor implements HarnessExecutor {
           await this.#recordTerminalExecution(connectorState, input.request.id, error.turnId, error.status, error.message);
         }
         throw error;
+      } finally {
+        // A finished turn leaves nothing buffered, including when it failed.
+        await outputStream?.onTurnSettled();
       }
       state = connectorState;
       const executionEvents = boundExecutionEvents(parseCodexAppServerItems(turn.items, {

@@ -198,8 +198,14 @@ export interface HarnessProgressUpdate {
   id: string;
   content: string;
   occurredAt?: string;
-  phase?: "commentary" | "activity";
+  phase?: "commentary" | "activity" | "stream";
   status?: "thinking" | "running";
+  /**
+   * An opaque, connector-generated identity for one run of streamed public
+   * output. Readers merge fragments that share it, so it must never be reused
+   * across two different native messages. It carries no harness metadata.
+   */
+  streamId?: string;
 }
 
 export interface CollaborationApi {

@@ -355,14 +355,19 @@ export class LocalBridge {
         runtime,
         ...(this.#api.appendAgentProgress === undefined ? {} : {
           publishProgress: async (update) => {
-            const content = redactText(update.content).trim();
-            if (!content) return;
+            const redacted = redactText(update.content);
+            if (!redacted.trim()) return;
+            // A streamed fragment is one slice of a longer message. Trimming it
+            // would delete the whitespace that joins it to its neighbours and
+            // silently corrupt the reader's merged view, so it travels verbatim.
+            const content = update.phase === "stream" ? redacted : redacted.trim();
             await this.#appendProgressFailSoft(request, runtime, claimAttempt, {
               idempotencyKey: `${runtime.deviceId}:${hash(request.id)}:${claimAttempt}:progress:${hash(update.id)}`,
               payload: redactValue({
                 content,
                 phase: update.phase ?? "commentary",
                 ...(update.status === undefined ? {} : { status: update.status }),
+                ...(update.streamId === undefined ? {} : { stream_id: update.streamId }),
                 ...(update.occurredAt === undefined ? {} : { occurred_at: update.occurredAt }),
                 capture_fidelity: "harness_transcript",
                 source_harness: runtime.harness,
