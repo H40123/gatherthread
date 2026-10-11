@@ -19,6 +19,8 @@ import {
   isExecutionRuntime,
   isFailedAgentResponse,
   isTimelineEventVisible,
+  latestStreamedText,
+  mergeProgressFragments,
   normalizeConnectorState,
   normalizeInvitation,
   normalizeReplayPage,
@@ -562,4 +564,73 @@ test("a paused request stops counting as waiting for an answer", () => {
   // Ordinary execution lifecycle markers are not terminal.
   assert.deepEqual(pendingAgentRequests([request, lifecycle("started")]).map((event) => event.id), [request.id]);
   assert.deepEqual(pendingAgentRequests([request]).map((event) => event.id), [request.id]);
+});
+
+/**
+ * The connector publishes public agent output in bounded fragments so the
+ * server sees a steady trickle rather than one enormous event. A reader must
+ * still see one growing message, so the fragments are merged here rather than
+ * rendered as one line each.
+ */
+const streamed = (id, streamId, content, createdAt = "2026-10-12T00:00:00.000Z") => ({
+  id, type: "agent_progress", replyTo: "request-1", createdAt,
+  payload: { phase: "stream", stream_id: streamId, content },
+});
+
+test("streamed fragments of one message merge into a single entry", () => {
+  const merged = mergeProgressFragments([
+    streamed("a", "s1", "Checking the ", "2026-10-12T00:00:01.000Z"),
+    streamed("b", "s1", "parser", "2026-10-12T00:00:03.000Z"),
+  ]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].content, "Checking the parser",
+    "the whitespace the connector preserved must survive the merge");
+  assert.equal(merged[0].id, "a", "the anchor stays on the first fragment so the entry does not jump");
+  assert.equal(merged[0].createdAt, "2026-10-12T00:00:01.000Z");
+});
+
+test("a second message is never folded into the first", () => {
+  const merged = mergeProgressFragments([
+    streamed("a", "s1", "first"),
+    streamed("b", "s2", "second"),
+    streamed("c", "s2", " message"),
+    streamed("d", "s1", "first again"),
+  ]);
+  assert.deepEqual(merged.map((entry) => entry.content), ["first", "second message", "first again"]);
+});
+
+test("ordinary progress stays its own entry and is never merged", () => {
+  const merged = mergeProgressFragments([
+    { id: "c1", type: "agent_progress", replyTo: "request-1", createdAt: "t", payload: { content: "Checking turn 1" } },
+    { id: "c2", type: "agent_progress", replyTo: "request-1", createdAt: "t", payload: { content: "Checking turn 2" } },
+  ]);
+  assert.deepEqual(merged.map((entry) => entry.content), ["Checking turn 1", "Checking turn 2"]);
+  assert.deepEqual(merged.map((entry) => entry.streamId), [undefined, undefined]);
+});
+
+test("an empty or missing progress list merges to nothing", () => {
+  assert.deepEqual(mergeProgressFragments([]), []);
+  assert.deepEqual(mergeProgressFragments(undefined), []);
+});
+
+test("the live line shows the tail of the newest stream", () => {
+  const events = [
+    streamed("a", "s1", "an older message"),
+    streamed("b", "s2", "Reading the parser "),
+    streamed("c", "s2", "and\nthe lexer"),
+  ];
+  assert.equal(latestStreamedText(events), "Reading the parser and the lexer");
+});
+
+test("the live line is bounded and marked as a tail", () => {
+  const text = latestStreamedText([streamed("a", "s1", "y".repeat(400))], 20);
+  assert.equal(text, `…${"y".repeat(20)}`);
+});
+
+test("a request that streamed nothing has no live line", () => {
+  assert.equal(latestStreamedText([]), "");
+  assert.equal(latestStreamedText(undefined), "");
+  assert.equal(latestStreamedText([
+    { id: "c1", type: "agent_progress", replyTo: "request-1", createdAt: "t", payload: { phase: "activity", content: "Agent is working." } },
+  ]), "");
 });

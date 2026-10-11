@@ -8,15 +8,22 @@ const cloudRequest = { id: "cloud-request", type: "agent_request", actor: { id: 
   payload: { profile_id: "free", execution_profile: { harness: "opencode", model: "free-model" } } };
 test("cloud pending messages never wait for a local connector", () => {
   const source = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-  const body = source.match(/function renderAgentPendingStatus\(request\) \{[\s\S]*?\n\}/)[0];
+  const body = source.match(/function renderAgentPendingStatus\(request, progressEvents = \[\]\) \{[\s\S]*?\n\}/)[0];
   const createElement = () => ({ children: [], dataset: {}, setAttribute() {}, append(...nodes) { this.children.push(...nodes); } });
   const sandbox = { document: { createElement }, state: { session: { members: [] } },
-    isExecutionRuntime: () => false, localizer: { t: text => text } };
+    isExecutionRuntime: () => false, localizer: { t: text => text },
+    latestStreamedText: (events) => events?.length ? "Reading the parser" : "" };
   vm.createContext(sandbox); vm.runInContext(body, sandbox);
   const pending = sandbox.renderAgentPendingStatus(cloudRequest);
   assert.equal(pending.dataset.state, "answering");
   assert.match(pending.children[1].textContent, /Cloud Agent/);
   assert.doesNotMatch(pending.children[1].textContent, /local runtime/);
+
+  const streamed = sandbox.renderAgentPendingStatus(cloudRequest, [{ payload: { content: "x" } }]);
+  assert.equal(streamed.dataset.streamed, "true");
+  assert.equal(streamed.children[1].textContent, "Agent: Reading the parser");
+  assert.doesNotMatch(streamed.children[1].textContent, /Cloud Agent/,
+    "what the agent is writing stands in for the generic wording");
 });
 
 test("cloud progress uses cloud controls without exposing the local claim route", () => {
