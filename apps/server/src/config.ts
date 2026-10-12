@@ -173,12 +173,16 @@ export function loadServerConfig(
     throw new ConfigurationError("SiliconFlow free-model selection requires the siliconflow-free preset");
   }
   const hostedEnabled = parseBoolean("GATHERTHREAD_HOSTED_AGENT_ENABLED", env.GATHERTHREAD_HOSTED_AGENT_ENABLED, false);
-  const personalApiEncryptionKey = env.GATHERTHREAD_CLOUD_API_ENCRYPTION_KEY;
-  if (personalApiEncryptionKey !== undefined && (!hostedEnabled || Buffer.from(personalApiEncryptionKey, "base64").length !== 32
-    || Buffer.from(personalApiEncryptionKey, "base64").toString("base64") !== personalApiEncryptionKey
-    || personalApiEncryptionKey === rawAuthTokenPepper || personalApiEncryptionKey === env.GATHERTHREAD_HOSTED_GITHUB_ENCRYPTION_KEY)) {
-    throw new ConfigurationError("Personal API storage requires Cloud Agent and its own 32-byte base64 encryption key");
-  }
+  const rawPersonalApiEncryptionKey = env.GATHERTHREAD_CLOUD_API_ENCRYPTION_KEY;
+  // This optional capability fails closed independently. Never rotate the
+  // operator's value, reuse another secret, or prevent existing services from
+  // starting because personal storage is unconfigured or unsafe.
+  const personalApiEncryptionKey = hostedEnabled && rawPersonalApiEncryptionKey?.length === 44
+    && Buffer.from(rawPersonalApiEncryptionKey, "base64").length === 32
+    && Buffer.from(rawPersonalApiEncryptionKey, "base64").toString("base64") === rawPersonalApiEncryptionKey
+    && rawPersonalApiEncryptionKey !== rawAuthTokenPepper
+    && rawPersonalApiEncryptionKey !== env.GATHERTHREAD_HOSTED_GITHUB_ENCRYPTION_KEY
+    ? rawPersonalApiEncryptionKey : undefined;
   let hostedAgent: HostedAgentOptions | undefined;
   if (hostedEnabled) {
     if (process.platform === "win32") throw new ConfigurationError("Cloud Agent requires a Linux Docker host with Unix sockets");
