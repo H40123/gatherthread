@@ -74,6 +74,12 @@ DSH retains its independent ten-second heartbeat. A transient heartbeat failure 
 
 ### Route families
 
+Project invitation links use `/app/#invite=<project invitation capability>` on the current server; root `#invite` entries forward unchanged to `/app/`. The capability is held through authentication and removed on explicit completion/decline. This is an invitation-specific fragment contract, not a general credential URL or arbitrary redirect contract.
+
+Additive browser-only `POST /v1/invitations/preview` accepts strict `{invite_token}` under `PreviewProjectInvitationInputSchema` with a 1 KiB body limit and current Origin/admission/session checks. `{data}` validates against strict `ProjectInvitationPreviewSchema`: `{project:{id,title},inviter_display_name,role,created_at,expires_at,already_member}`. Preview is read-only. Invalid/expired/revoked/foreign-consumed/archived/deleted invitations return `410 invitation_unavailable`; missing or revoked authentication keeps the existing `401`, and native credentials return `403 browser_session_required`. The response contains no capability, digest, member roster or conversation content.
+
+`POST /v1/invitations/accept` keeps its existing input and transactional one-use semantics. New Web confirmations preview again before accepting. An uncertain accept response can be recovered by a same-user, current-member preview while the invite remains valid; this does not reinterpret a repeated accept as success or grant removed membership. Existing manual-key clients need no changes. Deploy the Web and server together for the confirmation page: an older server refuses the new preview route, and the page directs the user to the existing manual-key entry. No database migration is required. See [ADR-0046](adr/0046-project-invitation-links.md).
+
 | Family | Purpose | Contract notes |
 |---|---|---|
 | `/health/live`, `/health/ready` | Process liveness and dependency readiness | Keep liveness independent from readiness; never disclose secrets or database contents. |

@@ -19,6 +19,8 @@ import {
   AppendEventInputSchema,
   AgentProgressInputSchema,
   AcceptInvitationInputSchema,
+  PreviewProjectInvitationInputSchema,
+  ProjectInvitationPreviewSchema,
   ApproveDshPairingInputSchema,
   BeginDshPairingInputSchema,
   ClaimAgentRequestInputSchema,
@@ -974,6 +976,13 @@ export async function startCollaborationServer(
         }
         const input = ApproveDshPairingInputSchema.parse(await readAuthenticatedJson());
         sendJson(response, 200, { data: { pairing: dshPairings.approve(actor, input.user_code) } });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/v1/invitations/preview") {
+        if (authentication.kind !== "browser_session") throw new ApiError(403, "browser_session_required", "Review project invitations in the signed-in browser");
+        const input = PreviewProjectInvitationInputSchema.parse(await readAuthenticatedJson(1024));
+        sendJson(response, 200, { data: ProjectInvitationPreviewSchema.parse(service.previewProjectInvitation(actor, input.invite_token)) });
         return;
       }
 
