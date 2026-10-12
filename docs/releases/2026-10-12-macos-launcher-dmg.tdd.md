@@ -71,3 +71,55 @@ Only packaging/guidance and its short-lived CI artifact globs changed. No GitHub
 Release, published tag, npm version, existing download, account data, formal/test
 server or branch-protection setting was changed by this slice. The root delivery
 must publish matching reviewed installers and server download links separately.
+
+## PR90 security-review follow-up: no-clobber archive publication
+
+The independent review identified that the DMG checksum/provenance writes could
+follow existing symlinks and overwrite unrelated files. The maintainer also
+approved fixing the identical inherited Mac ZIP/checksum pattern. The builder
+must preserve existing artifacts and unrelated files, including collisions
+arriving after an early check, and avoid leaving a partially published archive
+when metadata creation/promotion fails. Windows packaging remains unchanged.
+
+- RED `ecda819`: the Python target executed **23 tests**, with **13 intended
+  failing subcases** for DMG pre-existing regular/symlink/dangling metadata,
+  late collisions, failed sidecar writes/promotions and replaced-checksum rollback.
+- GREEN `db8daa5`: the same target passed **23/23** after privately staging all
+  three files, promoting metadata before the archive through exclusive hard
+  links, and rolling back only links whose inode identity is still owned.
+- RED `e32dd9e`: **27 tests** executed; **18 missing-implementation subcases**
+  required the guarded ZIP creation path rather than the inherited direct
+  overwrite path. Existing DMG tests continued to pass.
+- GREEN `d7671e7`: **27/27** pass. Both formats share `publish_archive`; `main()`
+  uses guarded ZIP creation and produces ZIP provenance too. Existing archives,
+  checksums and provenance, including symlinks, are refused without overwriting.
+  Failed writes/promotions remove only owned links; concurrent replacements
+  survive. The final archive is promoted last as the completion marker.
+
+Latest integrated main is `29321a01ebebe5cc50ef8e75b63ea6acd7813cf6` (PR89), with
+the GitHub wizard, cache versions and both ADR0047/0048 retained. The implementation
+head tested and built is **`d7671e79cfaa5792ab77db022a69a453449cd589`**.
+
+| Guarantee | Check actually run | Result |
+| --- | --- | --- |
+| DMG/ZIP no-clobber and failure/late-collision/owned-rollback behavior | `python3 -m unittest discover -s prototypes/codex-launcher/macos -p 'test_*.py' -v` | 27/27 pass |
+| Launcher handoff and bilingual guide preserved | Focused two-file Web target | 13/13 pass |
+| Main integration and built Web remain correct | `npm run test:web` | 455/455 + 3/3 pass |
+| Mac/Windows × formal/test ordinary clicks, terminal fallback and phone/tablet existing Agent | Chrome and WebKit Launcher browser matrices | Both pass |
+| Real archive generation and DMG mounted-byte/signature validation, detach, final no-clobber promotion | Updated production `build_dist.py` | Pass |
+| Native form, bold guidance and Stop fencing | Updated binary `--form-self-test` | Pass |
+
+Coverage was rerun from fresh data after the shared ZIP/DMG helper changed:
+**67% unit-only**, **90% combined unit + actual production native packaging**
+for `build_dist.py` (296 statements, 29 uncovered). No previous line-number
+coverage data was reused for that result. No further full Web or whole-repository
+release gate was repeated after the packaging-only ZIP addition.
+
+| Final local candidate | SHA-256 |
+| --- | --- |
+| `GatherThreadLauncher-macOS-arm64.dmg` | `6cf8aaba3c10cec1bd4e0f8a35646481b084d672ee2d60b9d71a6b643af85cdb` |
+| `GatherThreadLauncher-macOS-arm64.zip` | `939efdb2678bb9ef74f5821d77e70ca44399b79a7ecfe086103f9354ee88f6cb` |
+
+Both provenance sidecars identify `d7671e79cfaa5792ab77db022a69a453449cd589`.
+Earlier local generated candidates were moved aside, not deleted or overwritten.
+The signing/platform/live-account/publication limitations above remain unchanged.

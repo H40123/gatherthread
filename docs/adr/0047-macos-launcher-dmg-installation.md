@@ -35,8 +35,12 @@ commit, architecture, Node/release versions, system minimum, signing limitation
 and all app-file hashes. Stage privately, refuse unexpected/symlinked content,
 verify the actual image, mount read-only without Finder/application launch,
 compare installed bytes to the original manifest, verify signature, and detach
-before promotion. Existing DMGs are not replaced. Include checksum/provenance
-alongside the image in the existing short-lived CI artifacts.
+before promotion. Both DMG and compatible ZIP stage checksum/provenance privately
+and promote each with exclusive no-clobber links, followed by the archive as the
+completion marker. Existing archives or sidecars, including symlinks and late
+collisions, are not replaced. On failure, remove only still-owned inode links and
+preserve concurrently replaced files. Include checksum/provenance alongside both
+formats in the existing short-lived CI artifacts.
 
 ## Compatibility and consequences
 

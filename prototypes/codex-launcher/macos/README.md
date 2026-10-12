@@ -67,15 +67,19 @@ builds the fixed connector, copies the matching plugin and Node executable,
 retrieves the exact Node release license, includes and validates the high-resolution
 `GatherThread.icns` icon declared by `Info.plist`, signs the app
 ad hoc, and creates an architecture-specific **DMG**, compatible ZIP, SHA-256
-sidecars and public `*.dmg.provenance.json`. Build from a clean committed checkout;
+sidecars and public `*.dmg.provenance.json` / `*.zip.provenance.json`. Build from a clean committed checkout;
 the manifest identifies that exact commit, version, architecture, Node version,
 signing limitation and every app-file hash, without local paths or credentials.
 Only Git-reviewed plugin files are copied. A fresh stage contains the app,
 `/Applications` symlink, bilingual `READ ME FIRST.html` and build provenance.
 The builder verifies the actual DMG, mounts it **read-only without opening Finder
 or launching the app**, checks its exact inventory, instructions, hashes, versions,
-icons and signature, and detaches before publishing the local file. An existing
-DMG is not overwritten; use a fresh build/output directory for a new candidate.
+icons and signature, and detaches before publishing the local file. Both formats
+privately prepare their checksum and source record, then promote metadata before
+the archive with no-clobber links. An existing DMG, ZIP or either sidecar is never
+overwritten, including symlinks and collisions arriving during the build. Failure
+rolls back only still-owned links and preserves replaced files. Use a fresh output
+directory or move previous reviewed candidates aside before a new build.
 It does not publish a Release. Verify a downloaded image's hash and perform
 a real macOS/Safari/Codex smoke test before distributing.
 The build does not prove a live authenticated connection or that a particular
