@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import { translateUiText } from "../src/i18n.js";
 import { fillRepositoryFields, bindRepositoryFields } from "../src/github-setup.js";
+import { rememberGithubReturn, consumeGithubReturn } from "../src/github-return-context.js";
 
 // Exercise Windows checkout line endings on every platform.
 const source = (await readFile(new URL("../src/cloud-github-view.js", import.meta.url), "utf8"))
@@ -33,7 +34,7 @@ function element() {
     showModal() { this.open = true; }, close() { this.open = false; }, focus() { this.focused = true; } };
 }
 
-function fixture(overrides = {}, { agentEnabled = true, locale = "en" } = {}) {
+function fixture(overrides = {}, { agentEnabled = true, locale = "en", hash = "" } = {}) {
   const nodes = new Map();
   const el = (id) => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
   let context = { userId: "u1", projectId: "p1", sessionId: "s1" };
@@ -41,15 +42,46 @@ function fixture(overrides = {}, { agentEnabled = true, locale = "en" } = {}) {
       installation_url: "https://github.com/apps/fixture/installations/new",
       binding: { repository: "owner/private", base_branch: "main" } }),
     listHostedGithubTasks: async () => ({ tasks: [task()] }), getHostedGithubTask: async () => task(), ...overrides };
+  const saved = new Map();
+  const storage = { getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
+  const location = { hash, pathname: "/app/", search: "", href: `https://fixture.invalid/app/${hash}`,
+    assign(value) { this.assigned = value; } };
+  const history = { replaceState(_state, _title, value) { location.href = new URL(value, location.href).href; location.hash = new URL(location.href).hash; } };
   const sandbox = vm.createContext({ Event, URL, URLSearchParams, TextDecoder, Uint8Array, atob, fillRepositoryFields, bindRepositoryFields,
+    rememberGithubReturn, consumeGithubReturn, history,
     document: { getElementById: el, createElement: element, createTextNode: (textContent) => ({ textContent }) },
-    window: { addEventListener() {} }, setInterval: () => 1, clearInterval() {} });
+    window: { location, sessionStorage: storage, addEventListener() {} }, setInterval: () => 1, clearInterval() {} });
   vm.runInContext(source.replace("export function mountCloudGithub", "function mountCloudGithub"), sandbox);
   const view = sandbox.mountCloudGithub({ api: () => api, context: () => context, t: (value) => translateUiText(value, locale),
     agentEnabled, openSurface: () => el("project-code-dialog").showModal() });
   view.updateContext();
-  return { view, el, setContext: (next) => { context = next; view.updateContext(); } };
+  return { view, el, storage, location, setContext: (next) => { context = next; view.updateContext(); } };
 }
+
+test("OAuth return removes callback credentials and restores the original project setup", async () => {
+  let completions = 0;
+  const ui = fixture({ completeHostedGithub: async () => { completions++; } }, { hash: "#github_code=fixture-code&github_state=fixture-state" });
+  rememberGithubReturn(ui.storage, { userId: "u1", projectId: "original-project", sessionId: "original-session" });
+  const result = await ui.view.completeAuthorization();
+  assert.equal(result.handled, true);
+  assert.equal(completions, 1);
+  assert.equal(ui.location.hash, "#project=original-project&session=original-session");
+  assert.doesNotMatch(ui.location.href, /github_code|github_state/);
+  await ui.view.openSetup(result.error);
+  assert.equal(ui.el("project-code-dialog").open, true);
+});
+
+test("OAuth failure still opens useful setup without redirecting to an old account's project", async () => {
+  const ui = fixture({ completeHostedGithub: async () => { throw Error("Private upstream details"); } }, { hash: "#github_code=fixture-code&github_state=fixture-state" });
+  rememberGithubReturn(ui.storage, { userId: "other-user", projectId: "foreign-project", sessionId: "foreign-session" });
+  const result = await ui.view.completeAuthorization();
+  assert.equal(result.handled, true);
+  assert.doesNotMatch(ui.location.href, /github_code|github_state|foreign-project/);
+  assert.doesNotMatch(result.error, /Private upstream details/);
+  await ui.view.openSetup(result.error);
+  assert.equal(ui.el("project-code-dialog").open, true);
+  assert.equal(ui.el("cloud-github-error").textContent, result.error);
+});
 
 test("raw answers, source and paths are excluded from automatic UI translation", async () => {
   const detail = { ...task(), answer: "failed", changes: [{ path: "Ready", before_base64: btoa("Settings"),
