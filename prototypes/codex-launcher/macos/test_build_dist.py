@@ -229,7 +229,7 @@ class DmgPackagingTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "release.dmg.provenance.json").read_text()), provenance)
 
     def create_fixture(self, command, **_kwargs):
-        if command[:2] == ["hdiutil", "create"]:
+        if command[:2] == ["hdiutil", "create"] or command[0] == "ditto":
             Path(command[-1]).write_bytes(b"candidate fixture")
 
     def test_existing_checksum_and_provenance_are_never_overwritten(self):
@@ -343,6 +343,108 @@ class DmgPackagingTests(unittest.TestCase):
             self.assertEqual(checksum.read_text(), "keep concurrent replacement")
             self.assertFalse(output.exists())
             self.assertFalse((root / (output.name + ".provenance.json")).exists())
+
+    def test_zip_and_its_sidecars_never_overwrite_existing_files_or_links(self):
+        for suffix in ("", ".sha256", ".provenance.json"):
+            for kind in ("file", "symlink", "dangling-symlink"):
+                with self.subTest(suffix=suffix, kind=kind), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    app = self.bundle(root / "source")
+                    output = root / "release.zip"
+                    existing = root / (output.name + suffix)
+                    unrelated = root / "unrelated.txt"
+                    unrelated.write_text("keep unrelated content")
+                    if kind == "file":
+                        existing.write_text("keep existing file")
+                    else:
+                        existing.symlink_to(unrelated if kind == "symlink" else root / "missing.txt")
+                    with patch.object(BUILD.subprocess, "run", side_effect=self.create_fixture):
+                        with self.assertRaises((OSError, SystemExit)):
+                            BUILD.create_zip(app, output, self.provenance(app))
+                    self.assertEqual(unrelated.read_text(), "keep unrelated content")
+                    if kind == "file":
+                        self.assertEqual(existing.read_text(), "keep existing file")
+                    else:
+                        self.assertTrue(existing.is_symlink())
+                    for other in ("", ".sha256", ".provenance.json"):
+                        if other != suffix:
+                            self.assertFalse((root / (output.name + other)).exists())
+                    self.assertFalse((root / "missing.txt").exists())
+
+    def test_zip_preserves_collisions_arriving_during_archive_creation(self):
+        for suffix in ("", ".sha256", ".provenance.json"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                app = self.bundle(root / "source")
+                output = root / "release.zip"
+                unrelated = root / "unrelated.txt"
+                unrelated.write_text("keep concurrent content")
+                existing = root / (output.name + suffix)
+                def concurrent_fixture(command, **kwargs):
+                    self.create_fixture(command, **kwargs)
+                    existing.symlink_to(unrelated)
+                with patch.object(BUILD.subprocess, "run", side_effect=concurrent_fixture):
+                    with self.assertRaises((OSError, SystemExit)):
+                        BUILD.create_zip(app, output, self.provenance(app))
+                self.assertTrue(existing.is_symlink())
+                self.assertEqual(unrelated.read_text(), "keep concurrent content")
+                for other in ("", ".sha256", ".provenance.json"):
+                    if other != suffix:
+                        self.assertFalse((root / (output.name + other)).exists())
+
+    def test_zip_sidecar_write_and_promotion_failures_leave_no_partial_release(self):
+        original_write = Path.write_text
+        original_link = os.link
+        cases = [("write", suffix) for suffix in (".sha256", ".provenance.json")]
+        cases += [("promote", suffix) for suffix in (".sha256", ".provenance.json", "")]
+        for action, suffix in cases:
+            with self.subTest(action=action, suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                app = self.bundle(root / "source")
+                output = root / "release.zip"
+                def fail_write(path, *args, **kwargs):
+                    if action == "write" and path.name.endswith(suffix):
+                        raise OSError("synthetic ZIP sidecar write failure")
+                    return original_write(path, *args, **kwargs)
+                def fail_link(source, destination, **kwargs):
+                    if action == "promote" and Path(destination).name == output.name + suffix:
+                        raise OSError("synthetic ZIP promotion failure")
+                    return original_link(source, destination, **kwargs)
+                with patch.object(BUILD.subprocess, "run", side_effect=self.create_fixture), \
+                        patch.object(Path, "write_text", fail_write), \
+                        patch.object(BUILD.os, "link", side_effect=fail_link):
+                    with self.assertRaises((OSError, SystemExit)):
+                        BUILD.create_zip(app, output, self.provenance(app))
+                for other in ("", ".sha256", ".provenance.json"):
+                    self.assertFalse((root / (output.name + other)).exists())
+
+    def test_zip_rollback_preserves_a_replaced_checksum_and_success_matches_hashes(self):
+        original_link = os.link
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = self.bundle(root / "source")
+            output = root / "release.zip"
+            checksum = root / (output.name + ".sha256")
+            def replace_before_failure(source, destination, **kwargs):
+                if Path(destination).name == output.name + ".provenance.json":
+                    checksum.unlink()
+                    checksum.write_text("keep concurrent replacement")
+                    raise OSError("synthetic ZIP failure after replacement")
+                return original_link(source, destination, **kwargs)
+            with patch.object(BUILD.subprocess, "run", side_effect=self.create_fixture), \
+                    patch.object(BUILD.os, "link", side_effect=replace_before_failure):
+                with self.assertRaises((OSError, SystemExit)):
+                    BUILD.create_zip(app, output, self.provenance(app))
+            self.assertEqual(checksum.read_text(), "keep concurrent replacement")
+            self.assertFalse(output.exists())
+            self.assertFalse((root / (output.name + ".provenance.json")).exists())
+            fresh = root / "fresh.zip"
+            provenance = self.provenance(app)
+            with patch.object(BUILD.subprocess, "run", side_effect=self.create_fixture):
+                BUILD.create_zip(app, fresh, provenance)
+            self.assertEqual((root / "fresh.zip.sha256").read_text().strip(),
+                             hashlib.sha256(fresh.read_bytes()).hexdigest())
+            self.assertEqual(json.loads((root / "fresh.zip.provenance.json").read_text()), provenance)
 
     def test_native_guide_keeps_critical_security_and_hooks_copy_bold(self):
         source = (HERE / "Launcher.swift").read_text(encoding="utf-8")
