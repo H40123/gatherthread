@@ -52,3 +52,4 @@ Current account guidance (2026-10-08): `main` uses verified-email registration a
 | [0044](0044-email-password-codex-launchers.md) | Email/password Launchers with exact environment binding and native icons | accepted for implementation | 2026-10-12 |
 | [0045](0045-streamed-public-agent-output.md) | Live answers, visible thinking, tools and plans across Agents | proposed / implementation review | 2026-10-12 |
 | [0046](0046-project-invitation-links.md) | Project invitation links with explicit authenticated confirmation | proposed / implementation review | 2026-10-12 |
+| [0048](0048-storage-first-github-setup.md) | Storage-first GitHub setup and same-project authorization return | proposed / implementation review | 2026-10-12 |
