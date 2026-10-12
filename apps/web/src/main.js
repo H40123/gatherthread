@@ -1,6 +1,6 @@
 import { renderAvatar, isAgentReply, eventAuthorLabel } from "./avatars.js";
 import { mountAvatarSettings } from "./avatar-settings.js";
-import { mountCloudGithub } from "./cloud-github-view.js?v=20261012-github-2";
+import { mountCloudGithub } from "./cloud-github-view.js?v=20261012-github-3";
 import { mountDeviceAuthorization } from "./device-authorization.js";
 import { createAccountEmailHint, mountCodexLauncher } from "./codex-launcher.js";
 import { mountAccountDevices } from "./account-devices.js";
@@ -48,7 +48,7 @@ import {
   snapshotStatusView,
 } from "./domain.js?v=20261012-stream-2";
 import { SessionSync } from "./realtime.js";
-import { mountCodeSync } from "./code-sync-view.js?v=20261012-github-2";
+import { mountCodeSync } from "./code-sync-view.js?v=20261012-github-3";
 import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20260924-2";
 import { mountHistorySummaries } from "./history-summary-view.js";
 import { DEFAULT_HISTORY_SUMMARY_INSTRUCTIONS } from "./history-summary-policy.js";

@@ -1,6 +1,6 @@
 import { codeRuntimeChoices } from "./code-sync.js";
 import { createGithubCodeSyncController, githubLinks } from "./github-code-sync.js";
-import { fillRepositoryFields, bindRepositoryFields } from "./github-setup.js?v=20261012-github-2";
+import { fillRepositoryFields, bindRepositoryFields } from "./github-setup.js?v=20261012-github-3";
 
 export function mountGithubCodeSync({ document: doc, api, localizer, confirm, mockEnabled = false }) {
   const el = (id) => doc.getElementById(id);
