@@ -15,7 +15,7 @@
       content="GatherThread, a lightweight multi-harness collaboration client."
     />
     <title>GatherThread</title>
-    <link rel="stylesheet" href="./src/styles.css?v=20261012-invite-1" />
+    <link rel="stylesheet" href="./src/styles.css?v=20261012-github-3" />
   </head>
   <body>
     <div id="boot-screen" class="boot-screen" role="status" aria-live="polite"><img src="./favicon-32x32.png" alt="" width="32" height="32"><span>GatherThread</span></div>
@@ -651,16 +651,12 @@
           <div class="code-actions"><button id="code-confirm-accept" class="button button-primary compact-button" type="button">Continue</button><button id="code-confirm-cancel" class="button button-secondary compact-button" type="button">Cancel</button></div>
         </section>
         <nav class="code-actions" aria-label="Choose file storage">
-          <button id="code-provider-gt-cloud" type="button" class="button button-secondary" aria-pressed="true" aria-controls="code-gt-cloud-panel">GT Cloud</button>
-          <button id="code-provider-github" type="button" class="button button-secondary" aria-pressed="false" aria-controls="code-github-panel">GitHub</button>
+          <button id="code-provider-github" type="button" class="button button-secondary" aria-pressed="true" aria-controls="code-github-panel">GitHub · recommended</button>
+          <button id="code-provider-gt-cloud" type="button" class="button button-secondary" aria-pressed="false" aria-controls="code-gt-cloud-panel">GT Cloud · try it</button>
         </nav>
         <div id="code-github-panel" hidden>
-        <nav class="github-mode-picker" aria-label="GitHub usage">
-          <button id="github-mode-cloud" type="button" class="button button-secondary" aria-pressed="true" aria-controls="cloud-github-panel">Cloud Agent</button>
-          <button id="github-mode-local" type="button" class="button button-secondary" aria-pressed="false" aria-controls="github-code-section">Sync computer files</button>
-        </nav>
         <section id="github-code-section" class="code-section" aria-labelledby="github-code-title" hidden>
-          <h3 id="github-code-title">Sync computer files with GitHub</h3>
+          <h3 id="github-code-title" tabindex="-1">Sync computer files with GitHub</h3>
           <p id="github-local-step" class="github-step" role="status"></p>
           <p id="github-code-status" role="status" aria-live="polite"></p>
           <p id="github-code-error" class="form-error" role="alert"></p>
@@ -722,11 +718,12 @@
           </details>
           </div>
           <button id="github-code-back" type="button" class="text-button">Back</button>
+          <button id="github-mode-cloud" type="button" class="text-button" aria-controls="cloud-github-panel">Back to file settings</button>
         </section>
         <section id="cloud-github-panel" class="code-section" aria-labelledby="cloud-github-title">
-          <h3 id="cloud-github-title">Use GitHub with Cloud Agent</h3>
+          <h3 id="cloud-github-title" tabindex="-1">Your project files on GitHub</h3>
           <p id="github-cloud-step" class="github-step" role="status"></p>
-          <p id="cloud-github-description" class="code-help">Files stay in GitHub. Review the Agent's changes before merging.</p>
+          <p id="cloud-github-description" class="code-help">Keep files in your own GitHub repository. Choose who can access them on GitHub.</p>
           <p id="cloud-github-status" role="status" aria-live="polite"></p><p id="cloud-github-error" class="form-error" role="alert"></p>
           <div id="cloud-github-controls" hidden>
             <div id="github-cloud-account">
@@ -751,7 +748,7 @@
             <button id="cloud-github-account-settings" type="button" class="text-button">Account settings</button></div>
             <details class="github-advanced"><summary>Supported projects and limits</summary><p>Requires an npm project with package.json and package-lock.json. Public npm dependencies are installed without lifecycle scripts. Each run allows up to 15 minutes; saved source expires after seven days.</p></details>
             <button id="cloud-github-refresh" type="button" class="text-button">Refresh cloud tasks</button>
-            <button id="cloud-github-new" type="button" class="text-button" disabled aria-describedby="cloud-github-agent-availability">New repository task</button>
+            <button id="cloud-github-new" type="button" class="button button-primary" disabled aria-describedby="cloud-github-agent-availability">Ask Cloud Agent to work on these files</button>
             <p id="cloud-github-agent-availability" class="field-help">Select an available cloud model.</p>
             <details class="github-advanced"><summary>Saved tasks</summary>
             <nav id="cloud-github-task-list" aria-label="Your cloud tasks"></nav>
@@ -771,9 +768,13 @@
             </div>
             <button id="cloud-github-back" type="button" class="text-button" hidden>Back</button>
           </div>
+          <div class="github-computer-option">
+            <button id="github-mode-local" type="button" class="button button-secondary" aria-controls="github-code-section">Sync files from my computer</button>
+            <p class="field-help">Optional: connect a computer to upload changes automatically and download your files.</p>
+          </div>
         </section>
         </div>
-        <div id="code-gt-cloud-panel">
+        <div id="code-gt-cloud-panel" hidden>
         <h3 class="code-provider-heading">GT Cloud · small trials</h3>
         <div class="code-toolbar"><span id="code-repository-status" role="status"></span><button id="code-refresh-button" class="text-button" type="button">Refresh</button></div>
         <p id="code-error" class="form-error" role="alert"></p>
@@ -1457,6 +1458,6 @@ codex plugin add gatherthread@gatherthread</code>
       <button id="dismiss-attention-notice" class="attention-notice-dismiss" type="button" aria-label="Dismiss notification">×</button>
     </div>
     <div id="announcement" class="sr-only" aria-live="polite" aria-atomic="true"></div>
-    <script type="module" src="./src/bootstrap.js?v=20261010-1"></script>
+    <script type="module" src="./src/bootstrap.js?v=20261012-github-3"></script>
   </body>
 </html>
