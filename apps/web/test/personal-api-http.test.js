@@ -25,3 +25,13 @@ test("requester-private selection is read from the exact session/request route",
   assert.deepEqual(await api.getHostedAgentSelection("session-fixture", "request-fixture"), { profile_id: `api-${id}`, api_config_revision: revision });
   assert.equal(target, "/v1/sessions/session-fixture/hosted-agent-requests/request-fixture/selection");
 });
+
+test("personal revision is transmitted with trial and summary writes, never inferred from the latest profile", async () => {
+  const api = new HttpCollaborationApi(); const bodies = [];
+  api.request = async (_path, options) => { bodies.push(JSON.parse(options.body)); return {}; };
+  const input = { profileId: `api-${id}`, apiConfigRevision: revision, content: "fixture", idempotencyKey: "fixture-key" };
+  await assert.rejects(api.appendHostedAgentRequest("s", input));
+  await assert.rejects(api.createHistorySummary("s", { executionProfile: { harness: "opencode", cloudProfileId: input.profileId, apiConfigRevision: revision }, sourceEventIds: ["source"], idempotencyKey: "fixture-summary" }));
+  assert.equal(bodies[0].api_config_revision, revision); assert.equal(bodies[1].api_config_revision, revision);
+  assert.equal(Object.hasOwn(bodies[0], "api_key"), false);
+});
