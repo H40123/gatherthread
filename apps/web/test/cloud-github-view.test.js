@@ -23,7 +23,7 @@ const task = (id = "private-task") => ({ id, session_id: "s1", profile_id: "codi
 function element() {
   const listeners = new Map();
   const attributes = new Map();
-  return { value: "", textContent: "", hidden: false, disabled: false, open: false, children: [], options: [],
+  return { value: "", textContent: "", hidden: false, disabled: false, open: false, children: [], options: [], dataset: {},
     addEventListener(type, callback) { listeners.set(type, callback); },
     dispatchEvent(event) { return listeners.get(event.type)?.(event); },
     append(...children) { this.children.push(...children); },

@@ -1,6 +1,6 @@
 import { renderAvatar, isAgentReply, eventAuthorLabel } from "./avatars.js";
 import { mountAvatarSettings } from "./avatar-settings.js";
-import { mountCloudGithub } from "./cloud-github-view.js?v=20261005-3";
+import { mountCloudGithub } from "./cloud-github-view.js?v=20261012-github-2";
 import { mountDeviceAuthorization } from "./device-authorization.js";
 import { createAccountEmailHint, mountCodexLauncher } from "./codex-launcher.js";
 import { mountAccountDevices } from "./account-devices.js";
@@ -47,7 +47,7 @@ import {
   snapshotStatusView,
 } from "./domain.js?v=20261012-stream-2";
 import { SessionSync } from "./realtime.js";
-import { mountCodeSync } from "./code-sync-view.js?v=20260924-1";
+import { mountCodeSync } from "./code-sync-view.js?v=20261012-github-2";
 import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20260924-2";
 import { mountHistorySummaries } from "./history-summary-view.js";
 import { DEFAULT_HISTORY_SUMMARY_INSTRUCTIONS } from "./history-summary-policy.js";
@@ -1371,7 +1371,10 @@ async function enterWorkspace(preferredProjectId) {
   if (!state.currentUser) return;
   const isCurrent = () => authentication === authenticationGeneration
     && load === workspaceLoadGeneration && Boolean(state.currentUser);
-  void cloudGithubUi.completeAuthorization();
+  // Complete OAuth before project selection rewrites the URL. Restore only
+  // this account's short-lived navigation hint, then reopen setup below.
+  const githubSetup = await cloudGithubUi.completeAuthorization();
+  if (!isCurrent()) return;
   void api.getHostedAgentStatus().then((status) => {
     if (!isCurrent()) return;
     hostedAgentStatus = status;
@@ -1419,6 +1422,11 @@ async function enterWorkspace(preferredProjectId) {
   }
   if (!isCurrent()) return;
   maybeOpenPendingDshPairing();
+  if (githubSetup.handled) {
+    codeSyncUi.closeNotice();
+    await cloudGithubUi.openSetup(githubSetup.error);
+    return;
+  }
   onboarding.offer();
 }
 
