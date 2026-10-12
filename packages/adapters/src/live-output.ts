@@ -36,6 +36,7 @@ export function createLiveOutputPublisher(options: LiveOutputPublisherOptions) {
   let lastPublished: number | undefined, publications = 0, closed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let queue = Promise.resolve();
+  let lastVisited: Item | undefined;
   const serial = (operation: () => Promise<void>) => {
     queue = queue.then(operation, operation);
     return queue;
@@ -54,7 +55,6 @@ export function createLiveOutputPublisher(options: LiveOutputPublisherOptions) {
     let content = item.raw;
     // Even an abandoned/incomplete PEM block is private, not a truncated preview.
     content = content.replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|$)/gu, "[REDACTED]");
-    content = content.replace(/(["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)["']\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,\n}]+|$)/giu, '$1"[REDACTED]"');
     if (item.state === "running") {
       // Keep a trailing word, quoted JSON value, or assignment until its boundary
       // is known. Structured tool arguments are also redacted before stringifying.
@@ -99,8 +99,14 @@ export function createLiveOutputPublisher(options: LiveOutputPublisherOptions) {
   };
   const flush = () => serial(async () => {
     if (closed || (lastPublished !== undefined && now() - lastPublished < intervalMs)) { schedule(); return; }
-    for (const item of items.values()) {
+    const ordered = [...items.values()];
+    const start = lastVisited === undefined ? 0 : (ordered.indexOf(lastVisited) + 1) % ordered.length;
+    // Rotate across dirty items so a continuously growing answer cannot keep
+    // the real plan and tool results waiting until the turn finishes.
+    for (let offset = 0; offset < ordered.length; offset++) {
+      const item = ordered[(start + offset) % ordered.length]!;
       if (!item.dirty) continue;
+      lastVisited = item;
       await publishOne(item);
       if (lastPublished !== undefined && now() - lastPublished < intervalMs) break;
     }

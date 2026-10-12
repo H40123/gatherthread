@@ -185,6 +185,32 @@ try {
       assert.equal(await paused.locator('[data-stream-id="paused-answer"]').getAttribute("data-stream-state"), "paused",
         "pausing keeps partial output readable without marking unfinished work done");
       assert.equal(await paused.locator(".agent-worklog-state").textContent(), locale === "zh-CN" ? "已暂停" : "Paused");
+      for (const [outcome, payload] of [
+        ["failed", { status: "failed", error: { code: "model_unavailable" } }],
+        ["cancelled", { status: "failed", error: { code: "codex_turn_cancelled" } }],
+      ]) {
+        const request = await emit(page, "agent_request", { content: `${outcome} synthetic request` });
+        const answerId = `${outcome}-partial-answer`, toolId = `${outcome}-completed-tool`;
+        await emit(page, "agent_progress", stream(answerId, "answer", 1, "The partial public answer remains readable."), request);
+        await emit(page, "agent_progress", stream(toolId, "tool", 1, "Earlier tool finished.", { stream_state: "completed" }), request);
+        const worklog = page.locator(`.agent-worklog[data-request-id="${request}"]`);
+        await worklog.locator(`[data-stream-id="${answerId}"] summary`).click();
+        assert.equal(await worklog.locator(`[data-stream-id="${answerId}"]`).evaluate(node => node.open), false);
+        await emit(page, "agent_response", { ...payload, content: `${outcome} terminal fixture.` }, request);
+        const finished = page.locator(`.agent-worklog[data-request-id="${request}"]`);
+        await page.getByText(`${outcome} terminal fixture.`, { exact: true }).waitFor();
+        await finished.locator(":scope > summary").click();
+        const answer = finished.locator(`[data-stream-id="${answerId}"]`);
+        assert.equal(await answer.getAttribute("data-stream-state"), "failed",
+          "a failed or cancelled turn must not label its unfinished partial answer Done");
+        assert.equal(await answer.locator(".agent-worklog-state").textContent(), locale === "zh-CN" ? "失败" : "Failed");
+        assert.equal(await answer.evaluate(node => node.open), false, "section collapse survives terminal failure");
+        await answer.locator("summary").click();
+        await answer.getByText("The partial public answer remains readable.", { exact: true }).waitFor();
+        const tool = finished.locator(`[data-stream-id="${toolId}"]`);
+        assert.equal(await tool.getAttribute("data-stream-state"), "completed", "earlier completed tools stay Done");
+        assert.equal(await tool.locator(".agent-worklog-state").textContent(), locale === "zh-CN" ? "完成" : "Done");
+      }
       await page.locator(".timeline-region").evaluate(node => { node.scrollTop = 0; });
       const anchorTop = await page.locator('[data-history-anchor="fixture-history-0"]').evaluate(node => node.getBoundingClientRect().top);
       await emit(page, "agent_progress", { phase: "stream", stream_id: "legacy-fixture", content: " continues" }, legacyRequest);

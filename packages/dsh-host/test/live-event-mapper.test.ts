@@ -169,3 +169,23 @@ test("native Chinese answer and exposed thinking stream before settlement withou
   assert.equal(f.updates.findLast((item) => item.streamKind === "answer")?.content, "原生中文回答第一段，随后补充下一段。");
   await f.mapper.finish();
 });
+
+test("failed tool settlement never republishes incomplete raw arguments", async () => {
+  for (const outcome of ["abandoned", "attempt", "error", "aborted"] as const) {
+    const f = fixture(); f.start();
+    f.chunk({ type: "block-start", index: 0, blockType: "tool-call" });
+    f.chunk({ type: "tool-call-delta", index: 0, id: "unfinished-call", name: "request",
+      argumentsDelta: '{"ordinary_field":"UNPARSED_LOCAL_ARGUMENT' });
+    if (outcome === "abandoned") {
+      f.frame({ type: "end", attemptId: "native-attempt", revision: 99, index: 2, outcome: { kind: "abandoned" } });
+    } else if (outcome === "attempt") {
+      f.durable("assistant/attempt", { turn: 7, step: 1 }); f.end(true);
+    } else {
+      f.chunk({ type: "finish", reason: { kind: outcome } }); f.end();
+    }
+    await f.mapper.finish(false);
+    assert.doesNotMatch(JSON.stringify(f.updates), /UNPARSED_LOCAL_ARGUMENT|ordinary_field/, outcome);
+    assert.equal(f.updates.at(-1)?.streamState, "failed", outcome);
+    assert.match(f.updates.at(-1)!.content, /Unparseable tool arguments/, outcome);
+  }
+});

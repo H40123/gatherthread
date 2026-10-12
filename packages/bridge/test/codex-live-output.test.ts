@@ -58,3 +58,15 @@ test("completed native commands with a nonzero exit remain failed in the work lo
   assert.equal(updates.at(-1)?.streamState, "failed");
   assert.match(updates.at(-1)?.content ?? "", /Exit: 1/);
 });
+
+test("completed public reasoning summaries reconcile their original indexed identities", async () => {
+  const updates: LiveOutputUpdate[] = [];
+  const publisher = createLiveOutputPublisher({ schedule: false, publish: update => { updates.push(update); } });
+  const mapper = createCodexLiveOutputMapper(publisher, { shareTools: true });
+  await mapper.accept("item/reasoning/summaryTextDelta", { itemId: "public-summary", summaryIndex: 0, delta: "First summary ", });
+  await mapper.accept("item/reasoning/summaryTextDelta", { itemId: "public-summary", summaryIndex: 1, delta: "Second summary ", });
+  await mapper.accept("item/completed", { item: { type: "reasoning", id: "public-summary", summary: ["First summary", "Second summary"] } });
+  await publisher.finish();
+  const latest = new Map(updates.filter(x => x.streamKind === "reasoning").map(x => [x.streamId, x.content]));
+  assert.deepEqual([...latest.values()], ["First summary", "Second summary"]);
+});

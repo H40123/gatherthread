@@ -225,7 +225,7 @@ test("the shell exposes landmarks, labelled forms, status regions, and separate 
   assert.match(styles, /\.composer-layout-resizer[\s\S]*?cursor:\s*row-resize/);
   assert.match(main, /installComposerLayoutResizer\(composerLayoutResizer\)/);
   assert.match(main, /renderMarkdown\(failedResponse \? localizer\.t\(content\) : content\)/);
-  assert.match(main, /renderProgressDisclosure\(progressByRequest\.get\(event\.replyTo\), false\)/);
+  assert.match(main, /renderProgressDisclosure\(progressByRequest\.get\(event\.replyTo\), false, event\)/);
   assert.match(main, /details\.open = !collapsedWorklogs\.has\(worklogId\)/);
   assert.match(main, /expandedWorklogs\.has\(worklogId\)/);
   assert.match(main, /details\.addEventListener\("toggle"/);

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeProgressFragments, latestStreamedText } from "../src/domain.js";
+import { mergeProgressFragments, latestStreamedText, progressStreamState } from "../src/domain.js";
 
 const snapshot = (id, streamId, revision, content, options = {}) => ({
   id, type: "agent_progress", replyTo: options.request ?? "request-1",
@@ -80,4 +80,45 @@ test("the optional compact preview does not expose tool or thinking text as the 
     snapshot("t1", "tool", 1, "Public tool output", { kind: "tool" }),
   ];
   assert.equal(latestStreamedText(entries), "Answer so far");
+});
+
+const terminal = (payload, request = "request-1") => ({
+  type: "agent_response", replyTo: request, payload,
+});
+
+test("unfinished snapshots inherit a linked failed or cancelled response, not Done", () => {
+  const [entry] = mergeProgressFragments([snapshot("partial", "answer", 1, "Partial public answer")]);
+  for (const response of [
+    terminal({ status: "failed" }),
+    terminal({ status: "failed", error: { code: "codex_turn_cancelled" } }),
+    terminal({ status: "cancelled" }),
+    terminal({ status: "canceled" }),
+  ]) {
+    assert.equal(progressStreamState(entry, { live: false, terminalResponse: response }), "failed");
+  }
+});
+
+test("an already completed tool stays Done and an explicit failure stays Failed after turn failure", () => {
+  const failed = terminal({ status: "failed" });
+  for (const state of ["completed", "failed"]) {
+    const [entry] = mergeProgressFragments([snapshot("tool", "tool", 1, "Public tool result", { kind: "tool", state })]);
+    assert.equal(progressStreamState(entry, { live: false, paused: true, terminalResponse: failed }), state);
+  }
+});
+
+test("paused unfinished output stays Paused, while successful completion stays Done", () => {
+  const [entry] = mergeProgressFragments([snapshot("partial", "answer", 1, "Partial public answer")]);
+  assert.equal(progressStreamState(entry, { live: false, paused: true }), "paused");
+  assert.equal(progressStreamState(entry, { live: true }), "running");
+  assert.equal(progressStreamState(entry, { live: false, terminalResponse: terminal({ content: "Answer" }) }), "completed");
+  assert.equal(progressStreamState(entry, { live: false, terminalResponse: terminal({ status: "completed" }) }), "completed");
+});
+
+test("a different request or a non-response cannot set an unfinished stream's terminal fallback", () => {
+  const [entry] = mergeProgressFragments([snapshot("partial", "answer", 1, "Partial public answer")]);
+  for (const response of [terminal({ status: "failed" }, "other-request"),
+    { ...terminal({ status: "failed" }), type: "human_chat" },
+    { type: "agent_response", payload: { status: "failed" } }]) {
+    assert.equal(progressStreamState(entry, { live: true, terminalResponse: response }), "running");
+  }
 });

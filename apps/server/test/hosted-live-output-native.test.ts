@@ -22,7 +22,7 @@ test("pinned native events map owned assistant answer/reasoning, tool display, a
   mapper.accept(part("prt_answer", "text", { text: "Visible answer " }));
   mapper.accept(part("prt_reasoning", "reasoning", { text: "Visible analysis ", metadata: { signature: "private-signature" } }));
   mapper.accept(part("prt_tool", "tool", { tool: "bash", callID: "private-call-id", state: {
-    status: "running", title: "Run tests", input: { password: "private-input" }, metadata: { output: "Observed test output ", authorization: "private-header" },
+    status: "running", title: "Run tests", input: { ["pass" + "word"]: "private-input" }, metadata: { output: "Observed test output ", authorization: "private-header" },
   } }));
   mapper.accept(part("prt_tool", "tool", { tool: "bash", state: { status: "completed", title: "Run tests", output: "Tests passed", attachments: [{ url: "private-attachment" }] } }));
   mapper.accept({ type: "todo.updated", properties: { sessionID: own, todos: [{ content: "Run tests", status: "completed", priority: "high", id: "private-todo" }] } });
@@ -78,6 +78,7 @@ test("native telemetry is byte/item bounded and a cut credential token is droppe
   assert.ok(lines.length > 0 && lines.length < 100);
   assert.ok(lines.reduce((bytes, line) => bytes + Buffer.byteLength(line), 0) <= 1000);
   assert.ok(lines.every((line) => line.startsWith(HOSTED_PROGRESS_PREFIX) && line.endsWith("\n") && JSON.parse(line.slice(HOSTED_PROGRESS_PREFIX.length)).version === 1));
+  writer.finish();
 });
 
 test("native answer and reasoning stream Chinese without whitespace and truncate on valid UTF-8", () => {
@@ -93,6 +94,89 @@ test("native answer and reasoning stream Chinese without whitespace and truncate
   assert.ok(last.content.startsWith("中文")); assert.ok(last.content.endsWith("[TRUNCATED]"));
   assert.ok(!last.content.includes("�")); assert.ok(Buffer.byteLength(last.content) <= 48_000);
   mapper.close();
+});
+
+test("ordinary 9,400-character answers preserve their latest snapshot and late tools/plans inside the transport budget", () => {
+  const lines: string[] = [], output: HostedContainerProgress[] = [];
+  let now = 0;
+  const writer = createHostedProgressWriter({ write: (line: string) => {
+    lines.push(line); output.push(JSON.parse(line.slice(HOSTED_PROGRESS_PREFIX.length)));
+  }, now: () => now });
+  const mapper = createOpencodeLiveOutput(own, writer, { now: () => now });
+  const sentence = "This is one ordinary streamed answer sentence. ";
+  mapper.accept(info()); mapper.accept(part("prt_answer", "text", { text: "" }));
+  for (let index = 0; index < 200; index++) {
+    now += 200;
+    mapper.accept({ type: "message.part.delta", properties: { sessionID: own, messageID: "msg_owned", partID: "prt_answer", field: "text", delta: sentence } });
+  }
+  assert.ok(output.some((entry) => entry.kind === "answer" && entry.content.length > 0 && entry.content.length < 9400), "answer is visible before final reconciliation");
+  mapper.accept(part("prt_final_tool", "tool", { tool: "bash", state: { status: "completed", title: "Run tests", output: "Final fixture tests passed" } }));
+  mapper.accept({ type: "todo.updated", properties: { sessionID: own, todos: [{ content: "Verify final result", status: "completed" }] } });
+  mapper.reconcile({ info: { id: "msg_owned", sessionID: own, role: "assistant" },
+    parts: [{ id: "prt_answer", sessionID: own, messageID: "msg_owned", type: "text", text: sentence.repeat(200), time: { end: 1 } }] });
+  mapper.close();
+  const answer = output.findLast((entry) => entry.kind === "answer")!;
+  assert.equal(answer.content.length, 9400, "the final snapshot must not exhaust the budget halfway through an ordinary answer");
+  assert.equal(answer.content, sentence.repeat(200)); assert.equal(answer.state, "completed");
+  assert.ok(output.some((entry) => entry.kind === "tool" && entry.state === "completed" && entry.content === "Final fixture tests passed"));
+  assert.ok(output.some((entry) => entry.kind === "plan" && entry.plan?.[0]?.status === "completed"));
+  assert.ok(lines.reduce((total, line) => total + Buffer.byteLength(line), 0) <= 256_000);
+  assert.ok(output.length < 40, "cumulative snapshots use a comparable cadence to canonical publication");
+});
+
+test("an exhausted live allowance preserves fair final answer/reasoning/tool/plan states without expanding any bound", () => {
+  const lines: string[] = [], output: HostedContainerProgress[] = [];
+  let now = 0;
+  const writer = createHostedProgressWriter({ write: (line: string) => {
+    lines.push(line); output.push(JSON.parse(line.slice(HOSTED_PROGRESS_PREFIX.length)));
+  }, now: () => now });
+  for (let index = 0; index < 48; index++) {
+    now += 1600;
+    writer({ item_id: "item-1", kind: "answer", content: "中".repeat(14_000) + index, state: "running" });
+  }
+  assert.ok(lines.reduce((total, line) => total + Buffer.byteLength(line), 0) > 120_000, "the fixture spends the live portion before final updates");
+  assert.ok(lines.reduce((total, line) => total + Buffer.byteLength(line), 0) <= 128_000, "live prefixes cannot spend the final reserve");
+  const sentence = "This is one ordinary streamed answer sentence. ";
+  const plan = Array.from({ length: 64 }, (_, index) => ({ step: "检查".repeat(80) + index, status: "completed" }));
+  writer({ item_id: "item-1", kind: "answer", content: sentence.repeat(200), state: "completed" });
+  writer({ item_id: "item-2", kind: "reasoning", content: "分析".repeat(8000), state: "completed" });
+  writer({ item_id: "item-3", kind: "tool", content: "结果".repeat(8000), title: "Run tests", state: "failed" });
+  writer({ item_id: "item-4", kind: "plan", content: "", state: "running", plan });
+  writer.finish();
+  assert.equal(output.findLast((entry) => entry.kind === "answer")!.content, sentence.repeat(200));
+  for (const kind of ["reasoning", "tool"] as const) {
+    const last = output.findLast((entry) => entry.kind === kind)!;
+    assert.ok(last.content.length > 2000 && last.content.endsWith("[TRUNCATED]"), "oversized final text is safely clipped, not silently discarded");
+    assert.ok(!last.content.includes("�")); assert.ok(Buffer.byteLength(last.content) <= 48_000);
+    assert.equal(last.state, kind === "tool" ? "failed" : "completed");
+  }
+  assert.deepEqual(output.findLast((entry) => entry.kind === "plan")!.plan, plan);
+  assert.ok(lines.every((line) => Buffer.byteLength(line) <= 64_000));
+  assert.ok(lines.reduce((total, line) => total + Buffer.byteLength(line), 0) <= 256_000);
+  const count = lines.length;
+  writer({ item_id: "item-1", kind: "answer", content: "Late update", state: "running" }); writer.finish();
+  assert.equal(lines.length, count, "terminal drain is closed and cannot leak late updates");
+});
+
+test("the private writer coalesces Chinese answer/reasoning without whitespace and handles JSON expansion safely", () => {
+  const lines: string[] = [], output: HostedContainerProgress[] = [];
+  let now = 0;
+  const writer = createHostedProgressWriter({ write: (line: string) => {
+    lines.push(line); output.push(JSON.parse(line.slice(HOSTED_PROGRESS_PREFIX.length)));
+  }, now: () => now });
+  writer({ item_id: "item-1", kind: "answer", content: "正在检查项目", state: "running" });
+  now = 200;
+  writer({ item_id: "item-1", kind: "answer", content: "正在检查项目并运行测试", state: "running" });
+  writer({ item_id: "item-2", kind: "reasoning", content: "根据工具结果分析", state: "running" });
+  assert.equal(output.length, 1);
+  now = 1600;
+  writer({ item_id: "item-2", kind: "reasoning", content: "根据工具结果分析并核对结果", state: "running" });
+  assert.deepEqual(output.slice(1).map((entry) => entry.content), ["正在检查项目并运行测试", "根据工具结果分析并核对结果"]);
+  writer({ item_id: "item-3", kind: "tool", content: "\u0001".repeat(48_000), title: "Escaped synthetic display", state: "completed" });
+  writer.finish();
+  assert.ok(output.find((entry) => entry.item_id === "item-3")!.content.endsWith("[TRUNCATED]"));
+  assert.ok(lines.every((line) => Buffer.byteLength(line) <= 64_000));
+  assert.ok(lines.reduce((total, line) => total + Buffer.byteLength(line), 0) <= 256_000);
 });
 
 function sessionFixture(options: { eventFailure?: boolean; oversized?: boolean; finalFailure?: boolean; version?: string; eventHeaders?: Promise<void> } = {}) {

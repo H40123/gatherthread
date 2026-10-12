@@ -34,6 +34,7 @@ import {
   mergeProgressFragments,
   normalizeConnectorState,
   pendingAgentRequests,
+  progressStreamState,
   projectCodexConnectionCommands,
   provenanceSummary,
   invitationStatusLabel,
@@ -44,7 +45,7 @@ import {
   sessionMetadataFromEvent,
   sessionDeliveryMode,
   snapshotStatusView,
-} from "./domain.js?v=20261012-stream-1";
+} from "./domain.js?v=20261012-stream-2";
 import { SessionSync } from "./realtime.js";
 import { mountCodeSync } from "./code-sync-view.js?v=20260924-1";
 import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20260924-2";
@@ -2249,7 +2250,7 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     }
 
     if (event.type === "agent_response" && event.replyTo && progressByRequest.has(event.replyTo)) {
-      article.append(renderProgressDisclosure(progressByRequest.get(event.replyTo), false));
+      article.append(renderProgressDisclosure(progressByRequest.get(event.replyTo), false, event));
     }
 
     if (event.provenance) {
@@ -2327,7 +2328,7 @@ function returnToNewestEvent() {
 timelineRegion.addEventListener("scroll", renderTimelineBottomControl, { passive: true });
 timelineBottomButton.addEventListener("click", returnToNewestEvent);
 
-function renderProgressDisclosure(progressEvents, live) {
+function renderProgressDisclosure(progressEvents, live, terminalResponse) {
   const details = document.createElement("details");
   const summary = document.createElement("summary");
   const list = document.createElement("ol");
@@ -2368,8 +2369,7 @@ function renderProgressDisclosure(progressEvents, live) {
       section.className = "agent-worklog-section";
       section.dataset.streamId = entry.streamId;
       section.dataset.streamKind = kind;
-      const streamState = entry.streamState === "failed" || entry.streamState === "completed" ? entry.streamState
-        : paused ? "paused" : live ? "running" : "completed";
+      const streamState = progressStreamState(entry, { live, paused, terminalResponse });
       section.dataset.streamState = streamState;
       section.open = progressSectionState.get(entry.key) ?? (live || kind === "answer" || kind === "plan");
       heading.append(kindLabel);

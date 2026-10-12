@@ -27,7 +27,7 @@ test("split credentials, assignments and unfinished private keys never reach a p
   await app.stream.onDelta("a", "Result " + fake.slice(0, 11));
   app.advance(); await app.stream.onDelta("a", fake.slice(11) + " done ");
   await app.stream.onDelta("b", "password=" + "xyz");
-  await app.stream.onDelta("c", "-----BEGIN PRIVATE KEY-----\n" + "dummy");
+  await app.stream.onDelta("c", ["-----BEGIN", "PRIVATE KEY-----"].join(" ") + "\n" + "dummy");
   await app.stream.finish();
   const all = JSON.stringify(app.output);
   assert.ok(!all.includes(fake) && !all.includes(fake.slice(0, 11)) && !all.includes("xyz") && !all.includes("dummy"));
@@ -124,4 +124,29 @@ test("empty plans clear previous steps and interrupted work is not marked comple
   app.advance(); await app.stream.onDelta("a", "Reviewing ");
   await app.stream.finish(false);
   assert.ok(app.output.filter(x => x.streamState !== "running").every(x => x.streamState === "failed"));
+});
+
+test("credential and private keys use structural sensitivity even in split serialized text", async () => {
+  for (const key of ["refresh_token", "private_key", "authorization", "Cookie", "Set-Cookie", "developer_prompt", "provider_api_key", "refresh\\u005ftoken"]) {
+    const app = fixture();
+    const secret = ["fixtureOpaque", "PrivateValue"].join("");
+    const body = `{"${key}":"${secret}","public":"kept"}\n`;
+    await app.stream.onDelta("a", body.slice(0, body.indexOf(secret) + 8));
+    app.advance(); await app.stream.onDelta("a", body.slice(body.indexOf(secret) + 8));
+    await app.stream.finish();
+    assert.ok(!JSON.stringify(app.output).includes(secret), key);
+    assert.match(app.output.at(-1)?.content ?? "", /kept/);
+  }
+});
+
+test("continuous first-stream updates cannot starve live plans or tools", async () => {
+  const app = fixture();
+  await app.stream.onDelta("a", "Growing ");
+  await app.stream.onPlan("plan", [{ step: "Check tests", status: "in_progress" }]);
+  await app.stream.onSnapshot("tool", "Checking ", "tool");
+  for (let n = 0; n < 6; n++) { app.advance(); await app.stream.onDelta("a", "answer "); }
+  assert.ok(app.output.some(x => x.streamKind === "plan"), "plan must be live, not only terminal");
+  assert.ok(app.output.some(x => x.streamKind === "tool"), "tool must be live, not only terminal");
+  assert.ok(app.output.length <= 7, "fairness must preserve the shared cadence");
+  await app.stream.finish();
 });

@@ -54,7 +54,11 @@ export function createCodexLiveOutputMapper(publisher: Publisher, options: { sha
       }
       if (item.type === "reasoning") {
         // The summary is the public Codex UI summary, not `content` or raw deltas.
-        if (done && Array.isArray(item.summary)) await publisher.onSnapshot(`summary:${item.id}:0`, item.summary.filter(value => typeof value === "string").join("\n"), "reasoning", "Thinking", state);
+        if (done && Array.isArray(item.summary)) {
+          for (const [index, value] of item.summary.slice(0, 128).entries()) {
+            if (typeof value === "string") await publisher.onSnapshot(`summary:${item.id}:${index}`, value, "reasoning", "Thinking", state);
+          }
+        }
         return;
       }
       if (item.type === "plan" && typeof item.text === "string") {

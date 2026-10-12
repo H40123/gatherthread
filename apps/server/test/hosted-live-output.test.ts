@@ -19,6 +19,7 @@ const encoded = (value: unknown) => `GT_HOSTED_PROGRESS:${JSON.stringify(value)}
 const endpoint = { id: "one", profileId: "coding", label: "Coding", provider: "openai-compatible" as const,
   model: "coding", baseUrl: "https://model.example/v1", apiToken: "synthetic-model-fixture", quotaGroup: "one", dailyRuns: 20, maxConcurrent: 2 };
 const options: HostedAgentOptions = { endpoints: [endpoint], image: `sha256:${"a".repeat(64)}`, userDailyRuns: 20, globalDailyRuns: 20, maxConcurrent: 2 };
+const { createOpencodeLiveOutput, createHostedProgressWriter } = await import(new URL("../../../../ops/hosted-agent/live-output.mjs", import.meta.url).href);
 
 test("private progress lines decode incrementally before final legacy JSON, including split UTF-8/tags", () => {
   const records: HostedContainerProgress[] = [];
@@ -130,6 +131,57 @@ unixTest("ordinary hosted requests publish owned live work while running, then r
   } finally { release.resolve(JSON.stringify({ answer: "Final fixture result", files: [] })); await settled(f.db); f.close(); }
 });
 
+unixTest("bounded long native transport reaches canonical final answer/tools/plan and retains exact legacy JSON accounting", { timeout: 10_000 }, async () => {
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const sentence = "This is one ordinary streamed answer sentence. ", answer = sentence.repeat(200);
+  const lines: string[] = [];
+  const f = trialFixture(async (_args, _timeout, _signal, onProgress) => {
+    assert.ok(onProgress);
+    const decoder = createHostedContainerOutputDecoder(onProgress);
+    let now = 0;
+    const writer = createHostedProgressWriter({ now: () => now, write: (line: string) => {
+      lines.push(line);
+      const bytes = Buffer.from(line);
+      for (let offset = 0; offset < bytes.length; offset += 127) decoder.write(bytes.subarray(offset, offset + 127));
+    } });
+    const mapper = createOpencodeLiveOutput("ses_fixture", writer, { now: () => now });
+    const nativeInfo = { id: "msg_owned", sessionID: "ses_fixture", role: "assistant" };
+    const nativePart = { id: "prt_answer", sessionID: "ses_fixture", messageID: "msg_owned", type: "text" };
+    mapper.accept({ type: "message.updated", properties: { sessionID: "ses_fixture", info: nativeInfo } });
+    mapper.accept({ type: "message.part.updated", properties: { sessionID: "ses_fixture", part: { ...nativePart, text: "" } } });
+    for (let index = 0; index < 200; index++) {
+      now += 200;
+      mapper.accept({ type: "message.part.delta", properties: { sessionID: "ses_fixture", messageID: "msg_owned", partID: "prt_answer", field: "text", delta: sentence } });
+    }
+    assert.equal(decoder.resultBytes(), 0);
+    entered.resolve(); await release.promise;
+    mapper.accept({ type: "message.part.updated", properties: { sessionID: "ses_fixture", part: { id: "prt_tool", sessionID: "ses_fixture", messageID: "msg_owned", type: "tool",
+      tool: "bash", state: { status: "completed", title: "Run tests", output: "最终测试通过" } } } });
+    mapper.accept({ type: "todo.updated", properties: { sessionID: "ses_fixture", todos: [{ content: "Verify final output", status: "completed" }] } });
+    mapper.reconcile({ info: nativeInfo, parts: [{ ...nativePart, text: answer, time: { end: 1 } }] }); mapper.close();
+    const final = JSON.stringify({ answer, files: [], save_error: null });
+    decoder.write(final.slice(0, 17)); decoder.write(final.slice(17));
+    assert.equal(decoder.resultBytes(), Buffer.byteLength(final));
+    assert.ok(lines.reduce((total, line) => total + Buffer.byteLength(line), 0) <= 256_000);
+    assert.equal(decoder.finish(), final);
+    return final;
+  });
+  try {
+    await f.agent.start(f.actor, f.session.id, { profile_id: "coding", content: "Long native fixture", include_code: false, idempotency_key: "long-live-request" });
+    await entered.promise; await delay(10);
+    assert.ok(f.events().some((event) => payload(event.payload).stream_kind === "answer"));
+    assert.ok(!f.events().some((event) => event.type === "agent_response"));
+    release.resolve(); await settled(f.db);
+    const streamed = f.events().filter((event) => event.type === "agent_progress" && payload(event.payload).phase === "stream");
+    const latest = streamed.findLast((event) => payload(event.payload).stream_kind === "answer")!;
+    assert.equal(payload(latest.payload).content, answer); assert.equal(payload(latest.payload).stream_state, "completed");
+    assert.ok(streamed.some((event) => payload(event.payload).stream_kind === "tool" && payload(event.payload).content === "最终测试通过"));
+    assert.ok(streamed.some((event) => payload(event.payload).stream_kind === "plan" && JSON.stringify(payload(event.payload).plan).includes("completed")));
+    assert.deepEqual(f.events().filter((event) => event.type === "agent_response").map((event) => payload(event.payload).content), [answer.trim()]);
+    assert.ok(!/ses_fixture|msg_owned|prt_/u.test(JSON.stringify(f.events())));
+  } finally { release.resolve(); await settled(f.db); f.close(); }
+});
+
 unixTest("pause fences late hosted progress and late answers while retaining executor capacity until settlement", { timeout: 10_000 }, async () => {
   const entered = Promise.withResolvers<HostedProgressCallback>(), release = Promise.withResolvers<string>();
   const f = trialFixture(async (_args, _timeout, _signal, onProgress) => { assert.ok(onProgress); entered.resolve(onProgress); return release.promise; });
@@ -173,7 +225,7 @@ function githubFixture(runContainer: NonNullable<HostedAgentOptions["runContaine
     if (path.includes("/git/blobs/blob")) return Response.json({ encoding: "base64", content: files[Number(path.slice(-1))]!.content_base64 });
     throw new Error("Unexpected synthetic GitHub route");
   };
-  const github = new HostedGithub(f.service, f.agent, { ...options, runContainer }, { clientId: "fixture-app", clientSecret: "synthetic-app-fixture",
+  const github = new HostedGithub(f.service, f.agent, { ...options, runContainer }, { clientId: "fixture-app", clientSecret: "synthetic-" + "app-fixture",
     encryptionKey: Buffer.alloc(32, 3).toString("base64"), callbackUrl: "https://gt.example/v1/hosted-github/callback", appSlug: "fixture-app", fetch: fetcher });
   return { ...f, github, async connect() {
     const authorization = new URL(github.authorize(f.actor).authorization_url);

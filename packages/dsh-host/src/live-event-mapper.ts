@@ -34,7 +34,12 @@ export function createDshLiveEventMapper(publisher: Publisher) {
   const settle = (attempt: Attempt, state: LiveOutputState) => {
     if (state === "failed") attempt.failed = true;
     for (const block of attempt.blocks.values()) {
-      if (block.kind !== "tool" || state === "failed") snapshot(block, state);
+      if (block.kind !== "tool") snapshot(block, state);
+      else if (state === "failed") {
+        const argumentsText = block.callId === undefined ? undefined : tools.get(block.callId)?.arguments;
+        deliver(publisher.onSnapshot(block.key, `Arguments:\n${argumentsText || "[Unparseable tool arguments]"}`,
+          "tool", block.title, state));
+      }
     }
   };
   const onFrame = (frame: DshAssistantStreamFrame): void => {

@@ -422,6 +422,22 @@ export function mergeProgressFragments(progressEvents) {
 }
 
 /**
+ * A failed execution may leave only its last running snapshot. Settle that
+ * unfinished section from its canonical response, not from the folded worklog.
+ * Earlier completed tools and explicit failures keep their own terminal state.
+ */
+export function progressStreamState(entry, { live = false, paused = false, terminalResponse } = {}) {
+  if (entry?.streamState === "completed" || entry?.streamState === "failed") return entry.streamState;
+  if (paused) return "paused";
+  const requestId = responseTargetId(entry?.event);
+  const linkedResponse = terminalResponse?.type === "agent_response"
+    && typeof requestId === "string" && requestId.length > 0
+    && responseTargetId(terminalResponse) === requestId;
+  if (linkedResponse && ["failed", "cancelled", "canceled"].includes(terminalResponse.payload?.status)) return "failed";
+  return live ? "running" : "completed";
+}
+
+/**
  * The newest public text a request has streamed, for the compact line a reader
  * sees without opening the work log. This is the tail, not the head: while a
  * message is being written, its newest words are the informative part.
