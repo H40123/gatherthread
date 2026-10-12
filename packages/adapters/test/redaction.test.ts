@@ -27,6 +27,9 @@ test("headers, escaped keys, interrupted strings and private PEM blocks are mask
   assert.doesNotMatch(redactText(`{"private_key":"${privateValue}`), /SYNTHETIC_PRIVATE_VALUE/);
   const pem = ["-----BEGIN", "PRIVATE KEY-----"].join(" ") + `\n${privateValue}`;
   assert.equal(redactText(pem), "[REDACTED]");
+  const encryptedPem = ["-----BEGIN", "ENCRYPTED", "PRIVATE KEY-----"].join(" ") + `\n${privateValue}`;
+  assert.equal(redactText(encryptedPem), "[REDACTED]");
+  assert.equal(redactText(encryptedPem + "\n" + ["-----END", "ENCRYPTED", "PRIVATE KEY-----"].join(" ")), "[REDACTED]");
 });
 
 test("ordinary text, public serialized fields and custom replacements remain usable", () => {
@@ -35,4 +38,7 @@ test("ordinary text, public serialized fields and custom replacements remain usa
   const textWithPrivate = JSON.stringify({ refresh_token: privateValue, public: "kept" });
   assert.deepEqual(JSON.parse(redactText(textWithPrivate, { replacement: 'masked "value"' })),
     { refresh_token: 'masked "value"', public: "kept" });
+  assert.equal(redactText(`password=${privateValue} visible failure`), "password=[REDACTED] visible failure");
+  assert.equal(redactText(`password=${privateValue} refresh_token=${privateValue} public=kept`),
+    "password=[REDACTED] refresh_token=[REDACTED] public=kept");
 });

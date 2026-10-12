@@ -53,8 +53,7 @@ export function createLiveOutputPublisher(options: LiveOutputPublisherOptions) {
   };
   const safe = (item: Item) => {
     let content = item.raw;
-    // Even an abandoned/incomplete PEM block is private, not a truncated preview.
-    content = content.replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|$)/gu, "[REDACTED]");
+    // Shared redaction also masks complete or abandoned private PEM blocks.
     if (item.state === "running") {
       // Keep a trailing word, quoted JSON value, or assignment until its boundary
       // is known. Structured tool arguments are also redacted before stringifying.
