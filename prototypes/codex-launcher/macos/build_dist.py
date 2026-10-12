@@ -265,15 +265,33 @@ def create_dmg(app: Path, output: Path, provenance: dict) -> None:
                         "-format", "UDZO", "-srcfolder", str(stage), str(candidate)],
                        check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         verify_dmg(candidate, provenance)
-        # Hard-link promotion is atomic and refuses an existing release, including symlinks.
+        # Prepare every byte privately before creating any final artifact. Sidecars
+        # precede the DMG, so a complete image is the publication commit marker.
+        checksum = temporary / "candidate.dmg.sha256"
+        checksum.write_text(hashlib.sha256(candidate.read_bytes()).hexdigest() + "\n", encoding="ascii")
+        manifest = temporary / "candidate.dmg.provenance.json"
+        manifest.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        files = ((checksum, output.parent / (output.name + ".sha256")),
+                 (manifest, output.parent / (output.name + ".provenance.json")),
+                 (candidate, output))
+        published = []
         try:
-            os.link(candidate, output)
-        except FileExistsError:
-            raise SystemExit("Refusing to replace an existing reviewed DMG; choose a fresh output directory") from None
-    (output.parent / (output.name + ".sha256")).write_text(
-        hashlib.sha256(output.read_bytes()).hexdigest() + "\n", encoding="ascii")
-    (output.parent / (output.name + ".provenance.json")).write_text(
-        json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            for source, destination in files:
+                # The syscall, not an earlier exists() check, refuses pre-existing
+                # files, symlinks and collisions arriving during verification.
+                os.link(source, destination, follow_symlinks=False)
+                published.append((destination, source.stat()))
+        except BaseException as error:
+            for destination, owned in reversed(published):
+                try:
+                    current = destination.lstat()
+                    if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
+                        destination.unlink()
+                except FileNotFoundError:
+                    pass
+            if isinstance(error, FileExistsError):
+                raise SystemExit("Refusing to replace an existing DMG or sidecar; choose a fresh output directory") from None
+            raise
 
 
 def source_commit() -> str:
