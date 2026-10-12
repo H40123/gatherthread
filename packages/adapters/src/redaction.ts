@@ -107,7 +107,7 @@ function sensitiveValueEnd(text: string, start: number, header: boolean): number
     return text.length;
   }
   let index = start;
-  while (index < text.length && !/[\n,;}\]]/u.test(text[index]!)) index++;
+  while (index < text.length && !/[\s,;}\]]/u.test(text[index]!)) index++;
   return index;
 }
 

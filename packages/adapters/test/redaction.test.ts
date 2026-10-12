@@ -35,4 +35,7 @@ test("ordinary text, public serialized fields and custom replacements remain usa
   const textWithPrivate = JSON.stringify({ refresh_token: privateValue, public: "kept" });
   assert.deepEqual(JSON.parse(redactText(textWithPrivate, { replacement: 'masked "value"' })),
     { refresh_token: 'masked "value"', public: "kept" });
+  assert.equal(redactText(`password=${privateValue} visible failure`), "password=[REDACTED] visible failure");
+  assert.equal(redactText(`password=${privateValue} refresh_token=${privateValue} public=kept`),
+    "password=[REDACTED] refresh_token=[REDACTED] public=kept");
 });
