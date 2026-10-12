@@ -10,6 +10,7 @@ import type {
   CommitLocalTurnInput,
   CommitLocalTurnResult,
   CreateHistorySummaryInput,
+  DeleteMessageResult,
   HostedAgentRequestInput,
   HostedHistorySummaryInput,
   DeviceAuthorizationRecord,
@@ -77,6 +78,7 @@ export interface SessionRecord {
   title: string;
   state: "active" | "archived";
   next_sequence: number;
+  content_revision?: number;
   created_at: string;
   updated_at: string;
 }
@@ -98,6 +100,7 @@ export interface ProjectMemberRecord {
 }
 
 export interface RuntimeRecord {
+  context_deletion_version?: number;
   id: string;
   session_id: string;
   user_id: string;
@@ -235,6 +238,9 @@ interface EventRow {
   reply_to_event_id: string | null;
   payload_json: string;
   runtime_provenance_json: string | null;
+  deleted_at?: string | null;
+  deleted_reason?: "author" | "request" | "summary_invalidated" | null;
+  content_revision?: number;
 }
 
 interface SessionRow extends SessionRecord {}
@@ -264,6 +270,7 @@ export interface AgentClaimRecord {
   runtime_id: string;
   status: "claimed" | "completed" | "paused";
   attempt_count: number;
+  content_revision?: number;
 }
 export type AgentClaimOutcome =
   | { claim: AgentClaimRecord }
@@ -309,6 +316,7 @@ interface SnapshotRequestRow {
   requested_by_user_id: string;
   request_kind: SnapshotRequestKind;
   through_sequence: number;
+  content_revision?: number;
   status: SnapshotRequestStatus;
   target_runtime_id: string | null;
   claimed_by_runtime_id: string | null;
@@ -449,6 +457,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   title TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'archived')),
   next_sequence INTEGER NOT NULL DEFAULT 0,
+  content_revision INTEGER NOT NULL DEFAULT 0 CHECK (content_revision >= 0),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 ) STRICT;
@@ -470,6 +479,7 @@ CREATE TABLE IF NOT EXISTS runtimes (
   provider TEXT NOT NULL,
   model TEXT NOT NULL,
   execution_profiles_json TEXT CHECK (execution_profiles_json IS NULL OR json_valid(execution_profiles_json)),
+  context_deletion_version INTEGER NOT NULL DEFAULT 0 CHECK(context_deletion_version IN (0,1)),
   local_session_id TEXT NOT NULL,
   capture_fidelity TEXT NOT NULL CHECK (capture_fidelity IN ('canonical_history', 'harness_transcript', 'provider_request')),
   status TEXT NOT NULL DEFAULT 'online' CHECK (status IN ('online', 'offline', 'revoked')),
@@ -482,7 +492,7 @@ CREATE TABLE IF NOT EXISTS events (
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   sequence INTEGER NOT NULL,
   idempotency_key TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('human_chat','agent_request','agent_progress','agent_response','tool_call','tool_result','attachment','context_snapshot','membership_change','session_state_change')),
+  type TEXT NOT NULL CHECK (type IN ('human_chat','agent_request','agent_progress','agent_response','tool_call','tool_result','attachment','context_snapshot','membership_change','session_state_change','message_deleted')),
   actor_user_id TEXT NOT NULL REFERENCES users(id),
   actor_display_name TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -490,6 +500,9 @@ CREATE TABLE IF NOT EXISTS events (
   reply_to_event_id TEXT REFERENCES events(id),
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
   runtime_provenance_json TEXT CHECK (runtime_provenance_json IS NULL OR json_valid(runtime_provenance_json)),
+  deleted_at TEXT,
+  deleted_reason TEXT CHECK (deleted_reason IN ('author','request','summary_invalidated')),
+  content_revision INTEGER NOT NULL DEFAULT 0 CHECK(content_revision>=0),
   UNIQUE (session_id, sequence),
   UNIQUE (session_id, idempotency_key)
 ) STRICT;
@@ -895,6 +908,8 @@ function mapEvent(row: EventRow): CanonicalEvent {
     runtime_provenance: storedProvenance === null
       ? null
       : { ...storedProvenance, local_session_id: "private" },
+    ...(row.deleted_at && row.deleted_reason ? { deleted: { deleted_at: row.deleted_at, reason: row.deleted_reason } } : {}),
+    content_revision: row.content_revision ?? 0,
   };
 }
 
@@ -975,7 +990,7 @@ export class CollaborationDatabase {
       throw new RangeError("Session count limits are inconsistent");
     }
     this.sqlite = new DatabaseSync(path);
-    this.sqlite.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_size_limit = 67108864;");
+    this.sqlite.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_size_limit = 67108864; PRAGMA secure_delete = ON;");
     const journalMode = (this.sqlite.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode;
     if (journalMode !== "wal") this.sqlite.exec("PRAGMA journal_mode = WAL;");
     this.sqlite.exec(SCHEMA);
@@ -1024,9 +1039,13 @@ export class CollaborationDatabase {
     this.migrateRuntimeExecutionProfilesColumn();
     this.migrateEventActorDisplayNameColumn();
     this.migrateAgentProgressEventType();
+    this.migrateMessageDeletion();
     this.migrateCanonicalProvenancePrivacy();
     this.migrateSnapshotStorageLedger();
     this.migrateSnapshotControlRequests();
+    if (!this.sqlite.prepare("PRAGMA table_info(snapshot_requests)").all().some((row) => row.name === "content_revision")) {
+      this.sqlite.exec("ALTER TABLE snapshot_requests ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0 CHECK(content_revision>=0)");
+    }
     this.migrateAgentClaimLease();
     this.migrateAgentClaimPause();
     this.initializeEventStorageUsage();
@@ -1958,6 +1977,8 @@ export class CollaborationDatabase {
         .run(deletedUserId, actor.user_id);
       this.sqlite.prepare("UPDATE project_mutations SET actor_user_id = ? WHERE actor_user_id = ?")
         .run(deletedUserId, actor.user_id);
+      this.sqlite.prepare("UPDATE message_deletions SET actor_user_id = ? WHERE actor_user_id = ?")
+        .run(deletedUserId, actor.user_id);
       this.sqlite.prepare("UPDATE project_ownership_transfers SET from_user_id = ? WHERE from_user_id = ?")
         .run(deletedUserId, actor.user_id);
       this.sqlite.prepare("UPDATE project_ownership_transfers SET to_user_id = ? WHERE to_user_id = ?")
@@ -2219,7 +2240,7 @@ export class CollaborationDatabase {
     return this.sqlite.prepare(`
       SELECT sessions.id, sessions.project_id, sessions.owner_user_id,
              sessions.title, sessions.mode, sessions.state,
-             ? AS role, sessions.next_sequence AS current_sequence, sessions.updated_at,
+             ? AS role, sessions.next_sequence AS current_sequence, sessions.content_revision, sessions.updated_at,
              (SELECT COUNT(*) FROM project_memberships
               WHERE project_memberships.project_id = sessions.project_id) AS member_count
       FROM sessions
@@ -2907,7 +2928,7 @@ export class CollaborationDatabase {
     return this.sqlite.prepare(`
       SELECT sessions.id, sessions.project_id, sessions.owner_user_id,
              sessions.title, sessions.mode, sessions.state,
-             project_memberships.role, sessions.next_sequence AS current_sequence,
+             project_memberships.role, sessions.next_sequence AS current_sequence, sessions.content_revision,
              sessions.updated_at,
              (SELECT COUNT(*) FROM project_memberships AS project_members
               WHERE project_members.project_id = sessions.project_id) AS member_count
@@ -2971,7 +2992,7 @@ export class CollaborationDatabase {
   listSessionRuntimesForUser(sessionId: string, userId: string): RuntimeRecord[] {
     const rows = this.sqlite.prepare(`
       SELECT id, session_id, user_id, device_id, purpose, harness, provider,
-             model, execution_profiles_json, local_session_id, capture_fidelity, status, last_seen_at
+             model, execution_profiles_json, context_deletion_version, local_session_id, capture_fidelity, status, last_seen_at
       FROM runtimes
       WHERE session_id = ? AND user_id = ? AND status != 'revoked'
       ORDER BY CASE WHEN status = 'online' THEN 0 ELSE 1 END,
@@ -3106,6 +3127,175 @@ export class CollaborationDatabase {
     return mapEvent(row);
   }
 
+  /** Revocation of conversation content retains immutable IDs/order, not a
+   * second readable copy of the payload. All existing row readers therefore
+   * receive the same safe tombstone, including frozen-head and retry reads. */
+  deleteMessage(actor: Actor, sessionId: string, eventId: string, idempotencyKey: string): DeleteMessageResult {
+    return this.transaction(() => {
+      this.assertActiveDevice(actor);
+      const session = this.requireWritableSessionInsideTransaction(actor, sessionId);
+      if (session.state !== "active") throw conflict("Archived sessions do not accept message deletion");
+      const target = this.getEvent(sessionId, eventId);
+      if (target.actor_user_id !== actor.user_id) throw forbidden("Only the message author can delete it");
+      if (!["human_chat", "agent_request", "agent_response"].includes(target.type)) throw forbidden("Only conversation messages can be deleted");
+      const existing = this.sqlite.prepare("SELECT * FROM message_deletions WHERE session_id=? AND idempotency_key=?")
+        .get(sessionId, idempotencyKey) as { target_event_id: string; actor_user_id: string; deletion_event_id: string; content_revision: number } | undefined;
+      if (existing) {
+        if (existing.target_event_id !== eventId || existing.actor_user_id !== actor.user_id) throw idempotencyConflict();
+        return this.messageDeletionResult(sessionId, eventId, existing.deletion_event_id, existing.content_revision);
+      }
+      if (target.deleted) throw new ApiError(409, "message_deleted", "This message was already deleted");
+      if (this.findByIdempotencyKey(sessionId, idempotencyKey)) throw idempotencyConflict();
+      const linkedRequestId = target.type === "agent_response" ? target.reply_to_event_id ?? null : null;
+      const firstOutput = linkedRequestId === null ? undefined : this.sqlite.prepare(`
+        SELECT MIN(work.sequence) AS sequence FROM events work JOIN events request ON request.id=work.reply_to_event_id
+        WHERE work.session_id=? AND request.session_id=work.session_id AND request.type='agent_request' AND request.id=?
+          AND work.deleted_at IS NULL AND work.type IN ('agent_progress','agent_response','tool_call','tool_result')`)
+        .get(sessionId, linkedRequestId) as { sequence: number | null } | undefined;
+      const erasureSequence = Math.min(target.sequence, firstOutput?.sequence ?? target.sequence);
+      // Only Agent work follows its request. Ordinary human quotes are references
+      // and keep their independently authored body. Summary dependencies recurse.
+      // A final answer can already exist in earlier same-request streams/tools.
+      // Their first surviving output is also the boundary for derived copies.
+      const affected = this.sqlite.prepare(`WITH RECURSIVE
+        deps(child,parent) AS (
+          SELECT e.id,e.reply_to_event_id FROM events e JOIN events p ON p.id=e.reply_to_event_id
+          WHERE e.session_id=? AND p.type='agent_request' AND e.type IN ('agent_progress','agent_response','tool_call','tool_result')
+          UNION SELECT e.id,j.value FROM events e,json_each(e.payload_json,'$.history_summary.source_event_ids') j
+          WHERE e.session_id=? AND e.type='agent_request' AND json_type(e.payload_json,'$.history_summary.source_event_ids')='array'
+        ), gone(id) AS (SELECT ?
+          UNION SELECT work.id FROM events work JOIN events request ON request.id=work.reply_to_event_id
+            WHERE work.session_id=? AND request.session_id=work.session_id AND request.type='agent_request' AND request.id=?
+              AND work.type IN ('agent_progress','agent_response','tool_call','tool_result')
+          UNION SELECT work.id FROM events work JOIN events request ON request.id=work.reply_to_event_id
+            WHERE work.session_id=? AND request.type='agent_request' AND request.sequence>?
+              AND work.type IN ('agent_progress','agent_response','tool_call','tool_result')
+          UNION SELECT snapshot.id FROM events snapshot WHERE snapshot.session_id=? AND snapshot.type='context_snapshot' AND snapshot.sequence>=?
+          UNION SELECT d.child FROM deps d JOIN gone g ON g.id=d.parent)
+        SELECT e.* FROM events e JOIN gone g ON g.id=e.id WHERE e.session_id=? ORDER BY e.sequence`)
+        .all(sessionId, sessionId, eventId, sessionId, linkedRequestId, sessionId, erasureSequence, sessionId, erasureSequence, sessionId) as unknown as EventRow[];
+      const now = this.now();
+      const revision = (session.content_revision ?? 0) + 1;
+      const originals = new Map(affected.map((row) => [row.id, mapEvent(row)]));
+      for (const row of affected) {
+        if (row.deleted_at) continue;
+        const event = mapEvent(row);
+        const parent = row.reply_to_event_id ? originals.get(row.reply_to_event_id) ?? this.getEvent(sessionId, row.reply_to_event_id) : undefined;
+        const reason = row.id === eventId ? "author" : isHistorySummaryRequest(event) || parent && isHistorySummaryRequest(parent)
+          ? "summary_invalidated" : "request";
+        const digest = this.eventReceiptDigest(event);
+        this.sqlite.prepare("INSERT INTO deleted_event_receipts(event_id,input_digest) VALUES(?,?)").run(row.id, digest);
+        this.sqlite.prepare("UPDATE events SET payload_json=?,runtime_provenance_json=NULL,deleted_at=?,deleted_reason=?,content_revision=? WHERE id=?")
+          .run('{"content":"[Message deleted]"}', now, reason, revision, row.id);
+      }
+      this.sqlite.prepare("UPDATE sessions SET content_revision=? WHERE id=?").run(revision, sessionId);
+      this.sqlite.prepare(`INSERT INTO message_deletion_storage(id,generation,cleaned_generation,pending_since) VALUES(1,1,0,?)
+        ON CONFLICT(id) DO UPDATE SET generation=generation+1,pending_since=COALESCE(pending_since,excluded.pending_since)`)
+        .run(this.clock().getTime());
+      this.invalidateContextExecutions(sessionId, revision, now);
+      this.sqlite.prepare(`UPDATE snapshot_requests SET status='failed',failed_at=?,result_json=NULL,
+        failure_json=? WHERE session_id=? AND content_revision<?
+        AND request_kind IN ('immutable','visible_history_replace','local_turn_upload')`)
+        .run(now, JSON.stringify({ code: "context_changed", message: "Shared history changed; request a fresh import" }), sessionId, revision);
+      if (this.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_github_tasks'").get()) {
+        // Private cached inputs, generated answers and repository task snapshots
+        // must not remain a second readable copy or be continued after a deletion.
+        // Keep live task/resource state until its executor has actually stopped.
+        this.sqlite.prepare(`UPDATE hosted_github_tasks SET input_json=json_set(input_json,'$.content','[Message deleted]'),
+          answer=NULL,initial_files=NULL,starting_files=NULL,result_files=NULL,revision=NULL,error_code='context_changed',
+          state=CASE WHEN state='running' THEN state ELSE 'failed' END
+          WHERE session_id=? AND request_event_id IN (SELECT id FROM events WHERE session_id=? AND (deleted_at IS NOT NULL OR content_revision<?))`)
+          .run(sessionId, sessionId, revision);
+      }
+      const control = this.appendInsideTransaction(actor.user_id, sessionId, { idempotency_key: idempotencyKey,
+        type: "message_deleted", visibility: "session", payload: { target_event_id: eventId, content_revision: revision } }, null, "message-delete");
+      this.sqlite.prepare("INSERT INTO message_deletions(session_id,idempotency_key,actor_user_id,target_event_id,deletion_event_id,content_revision) VALUES(?,?,?,?,?,?)")
+        .run(sessionId, idempotencyKey, actor.user_id, eventId, control.id, revision);
+      return { event: control, target_event_id: eventId, content_revision: revision,
+        affected_event_ids: affected.slice(0, 256).map((row) => row.id), affected_truncated: affected.length > 256 };
+    });
+  }
+
+  private messageDeletionResult(sessionId: string, targetEventId: string, deletionEventId: string, revision: number): DeleteMessageResult {
+    // Replay is always required on a deletion notification. Retry receipts contain
+    // no original payload or unbounded ancestry list.
+    return { event: this.getEvent(sessionId, deletionEventId), target_event_id: targetEventId, content_revision: revision,
+      affected_event_ids: [targetEventId], affected_truncated: true };
+  }
+
+  /** Physical live-file maintenance is separate from immediate API erasure.
+   * Never wait on another connection's reader or claim a blocked checkpoint
+   * succeeded. This does not erase backups, filesystem snapshots or SSD copies. */
+  purgeDeletedMessageStorage(): { pending: boolean; overdue: boolean } {
+    const row = this.sqlite.prepare("SELECT generation,cleaned_generation,pending_since FROM message_deletion_storage WHERE id=1")
+      .get() as { generation: number; cleaned_generation: number; pending_since: number | null } | undefined;
+    if (!row || row.generation === row.cleaned_generation) return { pending: false, overdue: false };
+    const deferred = { pending: true, overdue: row.pending_since !== null && this.clock().getTime() - row.pending_since >= 14 * 86400000 };
+    if (this.sqlite.isTransaction) return deferred;
+    const timeout = Number(this.sqlite.prepare("PRAGMA busy_timeout").get()?.timeout ?? 5000);
+    try {
+      this.sqlite.exec("PRAGMA busy_timeout=0");
+      const checkpoint = this.sqlite.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+      if (checkpoint?.busy !== 0) return deferred;
+      // A newer deletion between checkpoint and acknowledgement remains pending.
+      // Keep the acknowledgement non-waiting as well as the checkpoint.
+      this.sqlite.prepare("UPDATE message_deletion_storage SET cleaned_generation=?,pending_since=NULL WHERE id=1 AND generation=?")
+        .run(row.generation, row.generation);
+      const current = this.sqlite.prepare("SELECT generation,cleaned_generation,pending_since FROM message_deletion_storage WHERE id=1").get()!;
+      const pending = current.generation !== current.cleaned_generation;
+      return { pending, overdue: pending && current.pending_since !== null && this.clock().getTime() - Number(current.pending_since) >= 14 * 86400000 };
+    } finally { this.sqlite.exec(`PRAGMA busy_timeout=${timeout}`); }
+  }
+
+  private eventReceiptDigest(event: Pick<CanonicalEvent, "actor_user_id" | "type" | "payload" | "reply_to_event_id" | "visibility" | "runtime_provenance">): string {
+    return this.tokenDigest(`deleted-event-v1\u0000${stableJson({ actor_user_id: event.actor_user_id, type: event.type,
+      payload: event.payload, reply_to_event_id: event.reply_to_event_id, visibility: event.visibility,
+      runtime_id: event.runtime_provenance?.runtime_id ?? null })}`);
+  }
+
+  private invalidateContextExecutions(sessionId: string, revision: number, now: string): void {
+    const pending = this.sqlite.prepare(`SELECT e.* FROM events e
+      WHERE e.session_id=? AND e.type='agent_request' AND e.content_revision < ? AND e.deleted_at IS NULL
+      AND NOT EXISTS(SELECT 1 FROM events r WHERE r.reply_to_event_id=e.id AND r.type='agent_response' AND r.deleted_at IS NULL)`)
+      .all(sessionId, revision) as unknown as EventRow[];
+    for (const row of pending) {
+      this.sqlite.prepare("UPDATE agent_request_claims SET status='paused',completed_at=? WHERE request_event_id=? AND status='claimed'").run(now, row.id);
+      if (this.sqlite.prepare("SELECT 1 FROM hosted_agent_runs WHERE request_event_id=? AND status='running'").get(row.id)) {
+        this.sqlite.prepare("INSERT OR IGNORE INTO hosted_agent_pauses(request_event_id,created_at) VALUES(?,?)").run(row.id, now);
+      }
+      this.appendInsideTransaction(row.actor_user_id, sessionId, { idempotency_key: `server:context-changed:${randomUUID()}`,
+        type: "agent_response", visibility: "session", reply_to_event_id: row.id,
+        payload: { content: "Shared history changed. Start a new Agent request with the current history.", status: "failed", error: { code: "context_changed" } } }, null, "context-delete");
+    }
+    // A deleted request also revokes execution, but its body/result stay tombstones.
+    this.sqlite.prepare(`UPDATE agent_request_claims SET status='paused',completed_at=? WHERE request_event_id IN
+      (SELECT id FROM events WHERE session_id=? AND type='agent_request' AND deleted_at IS NOT NULL) AND status='claimed'`).run(now, sessionId);
+    this.sqlite.prepare(`INSERT OR IGNORE INTO hosted_agent_pauses(request_event_id,created_at)
+      SELECT r.request_event_id,? FROM hosted_agent_runs r JOIN events e ON e.id=r.request_event_id
+      WHERE r.session_id=? AND r.status='running' AND e.content_revision < ? OR r.session_id=? AND r.status='running' AND e.deleted_at IS NOT NULL`)
+      .run(now, sessionId, revision, sessionId);
+  }
+
+  isRequestContextCurrent(sessionId: string, requestId: string): boolean {
+    const row = this.sqlite.prepare(`SELECT e.deleted_at,e.content_revision,s.content_revision AS current_revision
+      FROM events e JOIN sessions s ON s.id=e.session_id WHERE e.id=? AND e.session_id=?`).get(requestId, sessionId) as
+      { deleted_at: string | null; content_revision: number; current_revision: number } | undefined;
+    return Boolean(row && !row.deleted_at && row.content_revision === row.current_revision);
+  }
+
+  assertRequestContextCurrent(sessionId: string, requestId: string, contentRevision?: number): void {
+    if (!this.isRequestContextCurrent(sessionId, requestId)) throw new ApiError(409, "context_changed", "Shared history changed; start a new request with current history");
+    if (contentRevision !== undefined && this.getEvent(sessionId, requestId).content_revision !== contentRevision) {
+      throw new ApiError(409, "context_changed", "Shared history changed; start a new request with current history");
+    }
+  }
+
+  private assertContextCapability(sessionId: string, runtime: RuntimeRecord): void {
+    if ((this.requireSession(sessionId).content_revision ?? 0) > 0 && runtime.context_deletion_version !== 1) {
+      throw new ApiError(409, "connector_update_required", "Update the connector to safely rebuild deleted conversation context");
+    }
+  }
+
   private historySummaryPayload(sessionId: string, input: Pick<CreateHistorySummaryInput, "source_event_ids" | "instructions">) {
     // Fetch the bounded selection and its canonical relationships, not a replay
     // page. A missing or foreign-session ID must never produce a partial summary.
@@ -3182,6 +3372,7 @@ export class CollaborationDatabase {
       if (!runtime || runtime.purpose !== "execution" || runtime.status !== "online" || !runtimeSupportsAgentTarget(runtime, target)) {
         throw conflict("Select your own exact online execution runtime and supported execution profile");
       }
+      this.assertContextCapability(sessionId, runtime);
       if (!this.sqlite.prepare(`
         SELECT 1 FROM devices WHERE id = ? AND user_id = ? AND revoked_at IS NULL
           AND (expires_at IS NULL OR expires_at > ?)
@@ -3222,6 +3413,7 @@ export class CollaborationDatabase {
       // The frozen canonical head includes invisible/control events; it is not
       // the sequence of the last conversational item returned by the projection.
       context.through_sequence = through;
+      context.content_revision = session.content_revision ?? 0;
       if (Buffer.byteLength(JSON.stringify(context)) > HISTORY_SUMMARY_MAX_CONTEXT_BYTES) {
         throw new HistorySummaryError("too_large", "Context view exceeds 256 KiB; use paginated canonical history");
       }
@@ -3231,6 +3423,7 @@ export class CollaborationDatabase {
 
   appendEvent(actor: Actor, sessionId: string, input: AppendEventInput, provenance: RuntimeProvenance | null): CanonicalEvent {
     this.assertActiveDevice(actor);
+    if (input.type === "message_deleted") throw forbidden("Message deletion requires its dedicated browser endpoint");
     rejectHistorySummaryMetadata(input.payload);
     return this.transaction(() => {
       const replyTarget = input.reply_to_event_id === undefined || input.reply_to_event_id === null
@@ -3249,6 +3442,22 @@ export class CollaborationDatabase {
         input.visibility ?? "session",
         provenance?.runtime_id ?? null,
       );
+      if (replyTarget?.deleted) throw new ApiError(409, "message_deleted", "The quoted message was deleted; select another message");
+      if (input.type === "agent_request") {
+        const contentRevision = this.requireWritableSessionInsideTransaction(actor, sessionId).content_revision ?? 0;
+        if (contentRevision > 0) {
+          const target = agentRequestTarget({ payload: input.payload });
+          const candidates = this.listSessionRuntimesForUser(sessionId, actor.user_id).filter((runtime) => runtime.purpose === "execution"
+            && runtimeSupportsAgentTarget(runtime, target) && (target.runtimeId === undefined || target.runtimeId === runtime.id));
+          if (candidates.length && !candidates.some((runtime) => runtime.context_deletion_version === 1)) this.assertContextCapability(sessionId, candidates[0]!);
+        }
+        if (input.content_revision === undefined && contentRevision > 0) {
+          throw new ApiError(409, "context_changed", "Shared history changed; refresh this page before starting a new request");
+        }
+        if (input.content_revision !== undefined && input.content_revision !== contentRevision) {
+          throw new ApiError(409, "context_changed", "Shared history changed; start a new request with current history");
+        }
+      }
       if (replyTarget && ["human_chat", "agent_request"].includes(input.type)
         && replyTarget.visibility === "owner_only"
         && (this.membershipRole(sessionId, actor.user_id) !== "owner" || input.visibility !== "owner_only")) {
@@ -3273,7 +3482,9 @@ export class CollaborationDatabase {
       if ((input.type === "tool_call" || input.type === "tool_result")
         && replyTarget !== undefined) {
         if (replyTarget.type === "agent_request") {
+          this.assertRequestContextCurrent(sessionId, replyTarget.id, input.content_revision);
           const runtimeId = provenance?.runtime_id;
+          if (runtimeId) this.assertContextCapability(sessionId, this.getRuntime(runtimeId));
           const claim = this.sqlite.prepare(
             "SELECT runtime_id, status, attempt_count, lease_expires_at FROM agent_request_claims WHERE request_event_id = ?",
           ).get(replyTarget.id) as unknown as ClaimRow | undefined;
@@ -3282,6 +3493,13 @@ export class CollaborationDatabase {
             throw conflict("A matching active claim is required to append request-linked tool events");
           }
         }
+      }
+      if (provenance && replyTarget?.type !== "agent_request" && (this.requireSession(sessionId).content_revision ?? 0) > 0) {
+        if (!provenance.runtime_id) throw new ApiError(409, "connector_update_required", "A deletion-aware native runtime is required");
+        const runtime = this.getRuntime(provenance.runtime_id);
+        this.assertContextCapability(sessionId, runtime);
+        if (input.content_revision !== this.requireSession(sessionId).content_revision) throw new ApiError(409,
+          "context_changed", "Native history must be rebuilt before uploading conversation content");
       }
       return this.appendInsideTransaction(actor.user_id, sessionId, input, provenance);
     });
@@ -3346,6 +3564,13 @@ export class CollaborationDatabase {
     }
     return historySummaryOperation(() => this.transaction(() => {
       const session = this.requireWritableSessionInsideTransaction(actor, sessionId);
+      const contentRevision = session.content_revision ?? 0;
+      if (input.content_revision === undefined && contentRevision > 0) {
+        throw new ApiError(409, "context_changed", "Shared history changed; refresh this page before starting a new request");
+      }
+      if (input.content_revision !== undefined && input.content_revision !== contentRevision) {
+        throw new ApiError(409, "context_changed", "Shared history changed; start a new request with current history");
+      }
       for (const endpoint of endpoints) {
         if (endpoint.personal && (endpoint.personal.userId !== actor.user_id || input.api_config_revision !== endpoint.personal.configRevision
           || !this.sqlite.prepare("SELECT 1 FROM cloud_api_configs WHERE id=? AND user_id=? AND revision=? AND enabled=1")
@@ -3371,6 +3596,7 @@ export class CollaborationDatabase {
       if (replyId !== null) {
         const target = this.getEvent(sessionId, replyId);
         if (target.visibility !== "session") throw forbidden("Cloud Agent cannot quote private history");
+        if (target.deleted) throw new ApiError(409, "message_deleted", "Deleted messages cannot be quoted");
       }
       const existing = this.findByIdempotencyKey(sessionId, input.idempotency_key);
       if (existing) {
@@ -3378,6 +3604,7 @@ export class CollaborationDatabase {
         if (!this.sqlite.prepare("SELECT 1 FROM hosted_agent_runs WHERE request_event_id=?").get(event.id)) {
           throw idempotencyConflict("The key belongs to another Agent request");
         }
+        this.assertRequestContextCurrent(sessionId, event.id);
         const pin = this.sqlite.prepare("SELECT user_id,config_id,config_revision FROM cloud_api_run_bindings WHERE request_event_id=?")
           .get(event.id) as { user_id: string; config_id: string; config_revision: string } | undefined;
         const personal = endpoints[0]!.personal;
@@ -3469,7 +3696,8 @@ export class CollaborationDatabase {
     return this.transaction(() => {
       const job = this.sqlite.prepare("SELECT * FROM hosted_agent_runs WHERE request_event_id=? AND status='running'")
         .get(requestId) as { session_id: string; user_id: string; device_id: string; provider: string; model: string } | undefined;
-      if (!job || this.isHostedAgentPaused(requestId) || !cloudApiRunIsCurrent(this, requestId)) return;
+      if (!job || this.isHostedAgentPaused(requestId) || !this.isRequestContextCurrent(job.session_id, requestId)
+        || !cloudApiRunIsCurrent(this, requestId)) return;
       const actor: Actor = { user_id: job.user_id, device_id: job.device_id, display_name: this.actorDisplayName(job.user_id) };
       this.assertActiveDevice(actor);
       const session = this.requireWritableSessionInsideTransaction(actor, job.session_id);
@@ -3509,7 +3737,7 @@ export class CollaborationDatabase {
         .get(requestId) as { request_event_id: string; session_id: string; user_id: string; device_id: string;
           provider: string; model: string; status: string } | undefined;
       if (!job || job.status !== "running") return undefined;
-      if (this.isHostedAgentPaused(requestId)) {
+      if (this.isHostedAgentPaused(requestId) || !this.isRequestContextCurrent(job.session_id, requestId)) {
         this.sqlite.prepare("UPDATE hosted_agent_runs SET status='failed',finished_at=? WHERE request_event_id=?")
           .run(this.now(), requestId);
         return undefined;
@@ -3638,7 +3866,7 @@ export class CollaborationDatabase {
     const cursor = hasMore
       ? lastVisibleSequence
       : session.next_sequence;
-    return { events, cursor, has_more: hasMore };
+    return { events, cursor, has_more: hasMore, content_revision: session.content_revision ?? 0 };
   }
 
   registerRuntime(actor: Actor, input: {
@@ -3650,6 +3878,7 @@ export class CollaborationDatabase {
     provider: string;
     model: string;
     execution_profiles?: RuntimeExecutionProfile[] | undefined;
+    context_deletion_version?: number | undefined;
     local_session_id: string;
     capture_fidelity: CaptureFidelity;
   }): RuntimeRecord {
@@ -3661,23 +3890,24 @@ export class CollaborationDatabase {
       ? null
       : JSON.stringify(RuntimeExecutionProfilesSchema.parse(input.execution_profiles));
     this.sqlite.prepare(`
-      INSERT INTO runtimes(id, session_id, user_id, device_id, purpose, harness, provider, model, execution_profiles_json, local_session_id, capture_fidelity, status, last_seen_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'online', ?, ?)
+      INSERT INTO runtimes(id, session_id, user_id, device_id, purpose, harness, provider, model, execution_profiles_json, context_deletion_version, local_session_id, capture_fidelity, status, last_seen_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'online', ?, ?)
       ON CONFLICT(device_id, harness, local_session_id) DO UPDATE SET
         session_id = excluded.session_id,
         purpose = excluded.purpose,
         provider = excluded.provider,
         model = excluded.model,
         execution_profiles_json = excluded.execution_profiles_json,
+        context_deletion_version = excluded.context_deletion_version,
         capture_fidelity = excluded.capture_fidelity,
         status = 'online',
         last_seen_at = excluded.last_seen_at
-    `).run(runtimeId, input.session_id, actor.user_id, input.device_id, input.purpose ?? "execution", input.harness, input.provider, input.model, executionProfiles, input.local_session_id, input.capture_fidelity, timestamp, timestamp);
+    `).run(runtimeId, input.session_id, actor.user_id, input.device_id, input.purpose ?? "execution", input.harness, input.provider, input.model, executionProfiles, input.context_deletion_version ?? 0, input.local_session_id, input.capture_fidelity, timestamp, timestamp);
     return this.getRuntimeByIdentity(input.device_id, input.harness, input.local_session_id);
   }
 
   getRuntime(runtimeId: string): RuntimeRecord {
-    const row = this.sqlite.prepare("SELECT id, session_id, user_id, device_id, purpose, harness, provider, model, execution_profiles_json, local_session_id, capture_fidelity, status, last_seen_at FROM runtimes WHERE id = ?")
+    const row = this.sqlite.prepare("SELECT id, session_id, user_id, device_id, purpose, harness, provider, model, execution_profiles_json, context_deletion_version, local_session_id, capture_fidelity, status, last_seen_at FROM runtimes WHERE id = ?")
       .get(runtimeId) as unknown as RuntimeRow | undefined;
     if (!row) throw notFound("Runtime");
     return mapRuntimeRow(row);
@@ -3699,10 +3929,12 @@ export class CollaborationDatabase {
     return this.transaction((): AgentClaimOutcome => {
       const event = this.getEvent(sessionId, requestEventId);
       if (event.type !== "agent_request") throw conflict("Only agent_request events can be claimed");
+      this.assertRequestContextCurrent(sessionId, requestEventId);
       if (this.sqlite.prepare("SELECT 1 FROM local_turn_commits WHERE request_event_id = ?").get(requestEventId)) {
         throw agentRequestAlreadyCompleted();
       }
       const runtime = this.getRuntime(runtimeId);
+      this.assertContextCapability(sessionId, runtime);
       if (runtime.session_id !== sessionId || runtime.user_id !== actor.user_id || runtime.device_id !== actor.device_id
         || event.actor_user_id !== actor.user_id || runtime.status === "revoked" || runtime.purpose !== "execution") {
         throw conflict("The request is eligible only for the initiating user's active runtime");
@@ -3734,6 +3966,7 @@ export class CollaborationDatabase {
             runtime_id: existing.runtime_id,
             status: "paused",
             attempt_count: existing.attempt_count ?? 1,
+            content_revision: event.content_revision ?? 0,
           } };
         }
         if (existing.status === "completed" || !claimLeaseLapsed(existing.lease_expires_at, now)) {
@@ -3743,6 +3976,7 @@ export class CollaborationDatabase {
             runtime_id: runtimeId,
             status: existing.status,
             attempt_count: existing.attempt_count ?? 1,
+            content_revision: event.content_revision ?? 0,
           } };
         }
         // The lease lapsed, so no accepted work is arriving. Exact-runtime
@@ -3763,6 +3997,7 @@ export class CollaborationDatabase {
           runtime_id: runtimeId,
           status: "claimed",
           attempt_count: (existing.attempt_count ?? 1) + 1,
+          content_revision: event.content_revision ?? 0,
         } };
       }
       this.assertRuntimeClaimSlotAvailable(runtimeId, requestEventId, now);
@@ -3774,7 +4009,7 @@ export class CollaborationDatabase {
         request_event_id: requestEventId,
         runtime_id: runtimeId,
         status: "claimed",
-        attempt_count: 1,
+        attempt_count: 1, content_revision: event.content_revision ?? 0,
       } };
     });
   }
@@ -3792,6 +4027,7 @@ export class CollaborationDatabase {
     return this.transaction(() => {
       const event = this.getEvent(sessionId, requestEventId);
       if (event.type !== "agent_request") throw conflict("Only agent_request events can be paused");
+      this.assertRequestContextCurrent(sessionId, requestEventId);
       if (event.actor_user_id !== actor.user_id) {
         throw forbidden("Only the author of an Agent request may pause it");
       }
@@ -3850,6 +4086,7 @@ export class CollaborationDatabase {
       runtime_id: claim.runtime_id,
       status: claim.status,
       attempt_count: claim.attempt_count ?? 1,
+      content_revision: Number(this.sqlite.prepare("SELECT content_revision FROM events WHERE id=?").get(requestEventId)?.content_revision ?? 0),
     };
   }
 
@@ -3908,11 +4145,14 @@ export class CollaborationDatabase {
     observedModel?: string,
     observedReasoningEffort?: string,
     claimAttempt?: number,
+    contentRevision?: number,
   ): CanonicalEvent {
     this.assertActiveDevice(actor);
     rejectHistorySummaryMetadata(payload);
     return this.transaction(() => {
       const runtime = this.getRuntime(runtimeId);
+      this.assertRequestContextCurrent(sessionId, requestEventId, contentRevision);
+      this.assertContextCapability(sessionId, runtime);
       if (runtime.user_id !== actor.user_id || runtime.device_id !== actor.device_id
         || runtime.session_id !== sessionId || runtime.status === "revoked" || runtime.purpose !== "execution") {
         throw conflict("A matching active runtime on the authenticated device is required");
@@ -3961,11 +4201,14 @@ export class CollaborationDatabase {
     observedModel?: string,
     observedReasoningEffort?: string,
     claimAttempt?: number,
+    contentRevision?: number,
   ): CanonicalEvent {
     this.assertActiveDevice(actor);
     rejectHistorySummaryMetadata(payload);
     return this.transaction(() => {
       const runtime = this.getRuntime(runtimeId);
+      this.assertRequestContextCurrent(sessionId, requestEventId, contentRevision);
+      this.assertContextCapability(sessionId, runtime);
       if (runtime.user_id !== actor.user_id || runtime.device_id !== actor.device_id
         || runtime.session_id !== sessionId || runtime.status === "revoked" || runtime.purpose !== "execution") {
         throw conflict("A matching active runtime on the authenticated device is required");
@@ -4036,6 +4279,7 @@ export class CollaborationDatabase {
         local_turn_id: input.local_turn_id,
         runtime_id: input.runtime_id,
         based_on_sequence: input.based_on_sequence,
+        ...(input.content_revision === undefined ? {} : { content_revision: input.content_revision }),
         occurred_at: input.occurred_at,
         ...(input.observed_model === undefined ? {} : { observed_model: input.observed_model }),
         ...(input.observed_reasoning_effort === undefined ? {} : { observed_reasoning_effort: input.observed_reasoning_effort }),
@@ -4055,6 +4299,10 @@ export class CollaborationDatabase {
       if (existing) {
         if (existing.input_digest !== inputDigest) throw idempotencyConflict("Local turn retry body does not match the committed turn");
         return this.localTurnResult(input.local_turn_id, input.runtime_id, input.based_on_sequence, existing);
+      }
+      this.assertContextCapability(sessionId, runtime);
+      if ((session.content_revision ?? 0) > 0 && input.content_revision !== session.content_revision) {
+        throw new ApiError(409, "context_changed", "The native turn was based on removed history; rebuild before publishing");
       }
       const headBeforeCommit = session.next_sequence;
       const keyBase = `local-turn-${createHash("sha256")
@@ -4132,9 +4380,9 @@ export class CollaborationDatabase {
       this.sqlite.prepare(`
         INSERT INTO snapshot_requests(
           id, session_id, requested_by_user_id, request_kind, through_sequence, status, target_runtime_id, created_at,
-          storage_bytes, metadata_charged
-        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 1)
-      `).run(id, sessionId, actor.user_id, kind, session.next_sequence, targetRuntime?.id ?? null, this.now(), SNAPSHOT_REQUEST_METADATA_BYTES);
+          storage_bytes, metadata_charged, content_revision
+        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 1, ?)
+      `).run(id, sessionId, actor.user_id, kind, session.next_sequence, targetRuntime?.id ?? null, this.now(), SNAPSHOT_REQUEST_METADATA_BYTES, session.content_revision ?? 0);
       this.sqlite.prepare(`
         INSERT INTO snapshot_storage_usage(session_id, user_id, bytes) VALUES (?, ?, ?)
         ON CONFLICT(session_id, user_id) DO UPDATE SET bytes = bytes + excluded.bytes
@@ -4192,6 +4440,7 @@ export class CollaborationDatabase {
       this.assertActiveDevice(actor);
       const request = this.requireSnapshotRequest(requestId);
       if (request.requested_by_user_id !== actor.user_id) throw notFound("Snapshot request");
+      this.assertSnapshotContextCurrent(request);
       const localControl = isLocalSyncRequestKind(request.kind);
       if (request.kind === "visible_history_replace" || localControl) {
         const session = this.requireWritableSessionInsideTransaction(actor, request.session_id);
@@ -4205,6 +4454,7 @@ export class CollaborationDatabase {
         runtimeId,
         localControl ? "execution" : "snapshot_connector",
       );
+      if (["immutable", "visible_history_replace", "local_turn_upload"].includes(request.kind)) this.assertContextCapability(request.session_id, runtime);
       if (localControl && (request.target_runtime_id !== runtime.id || !this.supportsControlHarness(request.kind, runtime.harness))) {
         throw forbidden("This local sync control targets a different execution runtime");
       }
@@ -4242,7 +4492,7 @@ export class CollaborationDatabase {
 
   private getRuntimeByIdentity(deviceId: string, harness: string, localSessionId: string): RuntimeRecord {
     const row = this.sqlite.prepare(`
-      SELECT id, session_id, user_id, device_id, purpose, harness, provider, model, execution_profiles_json, local_session_id, capture_fidelity, status, last_seen_at
+      SELECT id, session_id, user_id, device_id, purpose, harness, provider, model, execution_profiles_json, context_deletion_version, local_session_id, capture_fidelity, status, last_seen_at
       FROM runtimes WHERE device_id = ? AND harness = ? AND local_session_id = ?
     `).get(deviceId, harness, localSessionId) as unknown as RuntimeRow;
     return mapRuntimeRow(row);
@@ -4310,6 +4560,7 @@ export class CollaborationDatabase {
       id: row.id, session_id: row.session_id, requested_by_user_id: row.requested_by_user_id,
       kind: row.request_kind,
       through_sequence: row.through_sequence, status: row.status,
+      content_revision: row.content_revision ?? 0,
       target_runtime_id: row.target_runtime_id,
       claimed_by_runtime_id: row.claimed_by_runtime_id, created_at: row.created_at,
       claimed_at: row.claimed_at, completed_at: row.completed_at, failed_at: row.failed_at,
@@ -4335,6 +4586,7 @@ export class CollaborationDatabase {
       this.assertActiveDevice(actor);
       const request = this.requireSnapshotRequest(requestId);
       if (request.requested_by_user_id !== actor.user_id) throw notFound("Snapshot request");
+      this.assertSnapshotContextCurrent(request);
       const localControl = isLocalSyncRequestKind(request.kind);
       if (isCodeSyncRequestKind(request.kind) || isGitHubCodeSyncRequestKind(request.kind)) {
         const session = this.requireWritableSessionInsideTransaction(actor, request.session_id);
@@ -4382,6 +4634,13 @@ export class CollaborationDatabase {
       `).run(request.session_id, actor.user_id, storageBytes);
       return this.requireSnapshotRequest(requestId);
     });
+  }
+
+  private assertSnapshotContextCurrent(request: SnapshotRequestRecord): void {
+    if (["immutable", "visible_history_replace", "local_turn_upload"].includes(request.kind)
+      && (request.content_revision ?? 0) !== (this.requireSession(request.session_id).content_revision ?? 0)) {
+      throw new ApiError(409, "context_changed", "Shared history changed; request a fresh import");
+    }
   }
 
   private now(): string {
@@ -4869,7 +5128,7 @@ export class CollaborationDatabase {
   private migrateAgentProgressEventType(): void {
     const table = this.sqlite.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'events'")
       .get() as { sql?: string } | undefined;
-    if (table?.sql?.includes("'agent_progress'")) return;
+    if (table?.sql?.includes("'agent_progress'") && table.sql.includes("'message_deleted'")) return;
     this.sqlite.exec("PRAGMA foreign_keys = OFF");
     try {
       this.sqlite.exec(`
@@ -4879,7 +5138,7 @@ export class CollaborationDatabase {
           session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
           sequence INTEGER NOT NULL,
           idempotency_key TEXT NOT NULL,
-          type TEXT NOT NULL CHECK (type IN ('human_chat','agent_request','agent_progress','agent_response','tool_call','tool_result','attachment','context_snapshot','membership_change','session_state_change')),
+          type TEXT NOT NULL CHECK (type IN ('human_chat','agent_request','agent_progress','agent_response','tool_call','tool_result','attachment','context_snapshot','membership_change','session_state_change','message_deleted')),
           actor_user_id TEXT NOT NULL REFERENCES users(id),
           actor_display_name TEXT NOT NULL,
           created_at TEXT NOT NULL,
@@ -4923,6 +5182,26 @@ export class CollaborationDatabase {
     }
     const violations = this.sqlite.prepare("PRAGMA foreign_key_check").all();
     if (violations.length > 0) throw new Error("Agent progress migration failed foreign-key validation");
+  }
+
+  private migrateMessageDeletion(): void {
+    const sessionColumns = this.sqlite.prepare("PRAGMA table_info(sessions)").all();
+    if (!sessionColumns.some((row) => row.name === "content_revision")) this.sqlite.exec("ALTER TABLE sessions ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0 CHECK(content_revision>=0)");
+    const eventColumns = this.sqlite.prepare("PRAGMA table_info(events)").all();
+    if (!eventColumns.some((row) => row.name === "deleted_at")) this.sqlite.exec("ALTER TABLE events ADD COLUMN deleted_at TEXT");
+    if (!eventColumns.some((row) => row.name === "deleted_reason")) this.sqlite.exec("ALTER TABLE events ADD COLUMN deleted_reason TEXT CHECK(deleted_reason IN ('author','request','summary_invalidated'))");
+    if (!eventColumns.some((row) => row.name === "content_revision")) this.sqlite.exec("ALTER TABLE events ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0 CHECK(content_revision>=0)");
+    if (!this.sqlite.prepare("PRAGMA table_info(runtimes)").all().some((row) => row.name === "context_deletion_version")) this.sqlite.exec("ALTER TABLE runtimes ADD COLUMN context_deletion_version INTEGER NOT NULL DEFAULT 0 CHECK(context_deletion_version IN (0,1))");
+    this.sqlite.exec(`CREATE TABLE IF NOT EXISTS message_deletions (
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      idempotency_key TEXT NOT NULL, actor_user_id TEXT NOT NULL REFERENCES users(id),
+      target_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      deletion_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      content_revision INTEGER NOT NULL CHECK(content_revision>0), PRIMARY KEY(session_id,idempotency_key), UNIQUE(session_id,target_event_id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS deleted_event_receipts (event_id TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,input_digest TEXT NOT NULL) STRICT;
+    CREATE TABLE IF NOT EXISTS message_deletion_storage (id INTEGER PRIMARY KEY CHECK(id=1),generation INTEGER NOT NULL,
+      cleaned_generation INTEGER NOT NULL,pending_since INTEGER) STRICT;`);
   }
 
   /**
@@ -5218,6 +5497,13 @@ export class CollaborationDatabase {
     visibility: EventVisibility = event.visibility,
     runtimeId: string | null = event.runtime_provenance?.runtime_id ?? null,
   ): CanonicalEvent {
+    if (event.deleted) {
+      const receipt = this.sqlite.prepare("SELECT input_digest FROM deleted_event_receipts WHERE event_id=?").get(event.id) as { input_digest: string } | undefined;
+      const digest = this.eventReceiptDigest({ actor_user_id: actorUserId, type, payload: payload ?? event.payload,
+        reply_to_event_id: replyTo, visibility, runtime_provenance: runtimeId === null ? null : { runtime_id: runtimeId } as RuntimeProvenance });
+      if (!receipt || receipt.input_digest !== digest) throw idempotencyConflict();
+      return event;
+    }
     const matches = event.actor_user_id === actorUserId
       && event.type === type
       && event.reply_to_event_id === replyTo
@@ -5233,7 +5519,7 @@ export class CollaborationDatabase {
     sessionId: string,
     input: Omit<AppendEventInput, "visibility"> & { visibility?: EventVisibility },
     provenance: RuntimeProvenance | null,
-    lifecycleAllowance?: "pause" | "hosted-terminal",
+    lifecycleAllowance?: "pause" | "hosted-terminal" | "message-delete" | "context-delete",
   ): CanonicalEvent {
     const session = this.requireSession(sessionId);
     const sequence = session.next_sequence + 1;
@@ -5251,11 +5537,16 @@ export class CollaborationDatabase {
       reply_to_event_id: input.reply_to_event_id ?? null,
       payload: input.payload,
       runtime_provenance: provenance,
+      content_revision: session.content_revision ?? 0,
     };
     const payloadJson = JSON.stringify(event.payload);
     const provenanceJson = event.runtime_provenance === null ? null : JSON.stringify(event.runtime_provenance);
     const eventBytes = Buffer.byteLength(payloadJson) + (provenanceJson === null ? 0 : Buffer.byteLength(provenanceJson)) + 512;
-    if (eventBytes > this.maxEventBytes && lifecycleAllowance !== "hosted-terminal") throw storageQuotaExceeded("event", this.maxEventBytes);
+    if (eventBytes > this.maxEventBytes && !["hosted-terminal", "message-delete", "context-delete"].includes(lifecycleAllowance ?? "")) throw storageQuotaExceeded("event", this.maxEventBytes);
+    if (lifecycleAllowance === "context-delete" && (eventBytes > 1024 || provenance !== null || input.type !== "agent_response"
+      || !input.reply_to_event_id || input.visibility !== "session" || stableJson(input.payload) !== stableJson({ content: "Shared history changed. Start a new Agent request with the current history.", status: "failed", error: { code: "context_changed" } }))) throw conflict("Invalid context deletion terminal");
+    if (lifecycleAllowance === "message-delete" && (eventBytes > 1024 || provenance !== null || input.type !== "message_deleted"
+      || input.reply_to_event_id !== undefined || input.visibility !== "session")) throw conflict("Invalid message deletion control");
     if (lifecycleAllowance === "pause") {
       const request = input.reply_to_event_id ? this.getEvent(sessionId, input.reply_to_event_id) : undefined;
       const claim = request === undefined ? undefined : this.requireClaimRow(request.id);
@@ -5285,10 +5576,10 @@ export class CollaborationDatabase {
     // Exactly one fixed, <=1 KiB failed terminal per accepted job. It is charged
     // normally; subsequent ordinary writes cannot use this control allowance.
     this.enforceEventStorageQuota(sessionId, actorUserId, eventBytes, lifecycleAllowance === "pause",
-      lifecycleAllowance === "hosted-terminal");
+      lifecycleAllowance === "hosted-terminal" || lifecycleAllowance === "message-delete" || lifecycleAllowance === "context-delete");
     this.sqlite.prepare(`
-      INSERT INTO events(id, session_id, sequence, idempotency_key, type, actor_user_id, actor_display_name, created_at, visibility, reply_to_event_id, payload_json, runtime_provenance_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO events(id, session_id, sequence, idempotency_key, type, actor_user_id, actor_display_name, created_at, visibility, reply_to_event_id, payload_json, runtime_provenance_json, content_revision)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       event.id,
       event.session_id,
@@ -5302,6 +5593,7 @@ export class CollaborationDatabase {
       event.reply_to_event_id,
       payloadJson,
       provenanceJson,
+      event.content_revision ?? 0,
     );
     this.sqlite.prepare(`
       INSERT INTO event_storage_usage(session_id, actor_user_id, bytes) VALUES (?, ?, ?)

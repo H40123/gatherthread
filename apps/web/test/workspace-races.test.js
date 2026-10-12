@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
-import { retryAgentRequestPermission } from "../src/agent-request-control.js";
+import { cloudRequestInput, retryAgentRequestPermission } from "../src/agent-request-control.js";
+import { agentContextUpdateReason } from "../src/domain.js";
 
 // Git checkouts may use CRLF on Windows; source extraction below uses LF sentinels.
 const source = (await readFile(new URL("../src/main.js", import.meta.url), "utf8")).replace(/\r\n?/gu, "\n");
@@ -39,9 +40,10 @@ function harness(names, overrides = {}) {
   const nodes = new Map();
   const context = vm.createContext({
     exampleMode: false,
+    agentContextUpdateReason,
     authenticationGeneration: 1, selectedSessionGeneration: 1, workspaceLoadGeneration: 0,
     state: { currentUser: { id: "u1", username: "User", device_id: "d1" }, avatarProfiles: new Map(), avatarProfileRevision: 0, project: { id: "p1" },
-      projects: [], session: { id: "s1" }, settings: { composer: {} }, invitations: [], snapshotRequests: [] },
+      projects: [], session: { id: "s1" }, sync: { contentRevision: 0 }, settings: { composer: {} }, invitations: [], snapshotRequests: [] },
     element: (id) => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); },
     authView: element(), workspace: element(), emptyState: element(), sessionView: element(),
     hostedAgentStatus: { enabled: false },
@@ -371,9 +373,11 @@ test("pending account avatar cannot delay loading projects", async () => {
 test("pending avatar metadata cannot delay opening a session or connecting realtime", async () => {
   const pending = deferred();
   let connections = 0;
+  let deletionResets = 0;
   const app = harness(["selectSession"], {
     mobileWorkspace: { close: noop }, codeSyncUi: { close: noop }, historySummaryUi: { reset: noop },
-    messageActions: { reset: noop, refresh: noop }, expandedWorklogs: new Set(),
+    messageActions: { reset: noop, refresh: noop }, messageDeletion: { reset: () => { deletionResets++; } },
+    contentRefreshScroll: { anchorId: "old-session-anchor" }, expandedWorklogs: new Set(),
     collapsedWorklogs: new Set(), progressSectionState: new Map(), revealedProgressEvents: new Set(),
     stopDshRuntimePolling: noop, renderProjectPermissions: noop, sendError: element(),
     clearCreatedInvitationSecret: noop, closeMembersPanelWithoutFocus: noop, renderSnapshotRequests: noop,
@@ -388,6 +392,8 @@ test("pending avatar metadata cannot delay opening a session or connecting realt
     assert.equal(app.state.session?.id, "s2");
     assert.equal(connections, 1);
     assert.equal(app.sessionView.hidden, false);
+    assert.equal(deletionResets, 1);
+    assert.equal(app.contentRefreshScroll, null);
   } finally { pending.resolve([]); await work; }
 });
 
@@ -598,6 +604,25 @@ function messageHarness(pending) {
   return { app, input, writes: () => writes };
 }
 
+for (const source of ["trial", "github"]) {
+  test(`a normal cloud ${source} request sends the captured history revision and keeps its draft on rejection`, async () => {
+    const pending = deferred(), f = messageHarness(pending), writes = [];
+    f.app.CLOUD_AGENT_ENTRY_ENABLED = true;
+    f.app.currentCloudProfile = () => ({ id: "fixture", provider: "fixture", model: "fixture" });
+    f.app.api.appendHostedAgentRequest = (...args) => { writes.push(args); return pending.promise; };
+    f.app.cloudGithubUi.start = (...args) => { writes.push(args); return pending.promise; };
+    f.app.element("cloud-agent-source").value = source;
+    f.app.state.sync.contentRevision = 4;
+    const work = f.app.sendMessage("hosted_agent");
+    assert.equal(writes[0][1].contentRevision, 4);
+    f.app.state.sync.contentRevision = 5;
+    pending.reject(new Error("Shared history changed. Refresh the page and try again."));
+    await work;
+    assert.equal(f.input.value, "First draft");
+    assert.match(f.app.sendError.textContent, /Refresh/);
+  });
+}
+
 test("repeat submit while a message is pending writes once and keeps a newer draft", async () => {
   const pending = deferred();
   const { app, input, writes } = messageHarness(pending);
@@ -669,6 +694,74 @@ test("retrying a cloud GitHub request opens its saved task and cannot execute th
   app.state.sync = { phase: "live", events: [{ id: "request", type: "agent_request", actor: { id: "u1" }, payload: { github_task_id: "gh-task-fixture", execution_profile: { harness: "opencode" } } }] };
   await app.retryAgentRequest("request", { disabled: false, isConnected: true, after: noop, parentElement: { querySelector: () => null } });
   assert.deepEqual(opened, ["gh-task-fixture"]); assert.deepEqual(calls, []);
+});
+
+function delayedCloudRetry() {
+  const selection = deferred(), writes = [];
+  const profile = { id: "api-fixture", provider: "fixture", model: "fixture-model", api_config_revision: "fixture-revision" };
+  const request = { id: "request", type: "agent_request", actor: { id: "u1" }, payload: {
+    content: "ERASED_RETRY_INSTRUCTIONS", profile_id: profile.id,
+    execution_profile: { harness: "opencode", provider: profile.provider, model: profile.model },
+  } };
+  const app = harness(["retryAgentRequest"], {
+    CLOUD_AGENT_ENTRY_ENABLED: true, retryingAgentRequestIds: new Set(), retryAgentRequestKeys: new Map(),
+    retryAgentRequestPermission, cloudRequestInput, createIdempotencyKey: () => "retry-fixture", sendError: element(),
+    document: { createElement: () => ({ setAttribute: noop }) }, window: { confirm: () => true },
+    hostedAgentStatus: { enabled: true, profiles: [profile] }, refreshHostedAgentStatus: noop,
+    api: { getHostedAgentSelection: () => selection.promise,
+      appendHostedAgentRequest: async (...args) => { writes.push(args); } },
+  });
+  app.state.session = { id: "s1", mode: "multi", members: [{ userId: "u1", role: "owner" }] };
+  app.state.sync = { phase: "live", contentRevision: 0, events: [request] };
+  const button = { disabled: false, isConnected: true, after: noop, parentElement: { querySelector: () => null } };
+  const resolveSelection = () => selection.resolve({ profile_id: profile.id, api_config_revision: profile.api_config_revision });
+  const erase = () => {
+    app.state.sync.contentRevision++;
+    app.state.sync.events = [{ ...request, deleted: { deleted_at: "2026-10-12T00:00:00.000Z", reason: "author" },
+      payload: { content: "[Message deleted]" } }];
+  };
+  return { app, request, button, writes, erase, resolveSelection };
+}
+
+test("a deletion during the actual cloud retry selection cannot resubmit the old request object", async () => {
+  const f = delayedCloudRetry();
+  const pending = f.app.retryAgentRequest(f.request.id, f.button);
+  f.erase(); f.resolveSelection(); await pending;
+  assert.equal(f.writes.length, 0, "erased instructions must never be POSTed after selection resolves");
+  assert.equal(f.app.retryAgentRequestKeys.size, 0);
+  assert.equal(f.app.sendError.textContent, "");
+});
+
+for (const source of ["missing", "deleted", "unavailable"]) {
+  test(`cloud retry requires an authoritative ${source === "missing" ? "present" : "readable"} source after selection (${source})`, async () => {
+    const f = delayedCloudRetry();
+    const pending = f.app.retryAgentRequest(f.request.id, f.button);
+    f.app.state.sync.events = source === "missing" ? [] : [{ ...f.request,
+      ...(source === "deleted" ? { deleted: { deleted_at: "2026-10-12T00:00:00.000Z", reason: "author" } }
+        : { contentUnavailable: true }), payload: {} }];
+    f.resolveSelection(); await pending;
+    assert.equal(f.writes.length, 0, "an old closure is not authoritative history even if the revision has not arrived yet");
+  });
+}
+
+test("cloud retry rechecks deletion after code confirmation, immediately before POST", async () => {
+  const f = delayedCloudRetry(); f.request.payload.include_code = true;
+  f.app.window.confirm = () => { f.erase(); return true; };
+  const pending = f.app.retryAgentRequest(f.request.id, f.button);
+  f.resolveSelection(); await pending;
+  assert.equal(f.writes.length, 0);
+});
+
+test("ordinary cloud retry survives new chat without a deletion and sends its exact history revision", async () => {
+  const f = delayedCloudRetry();
+  const pending = f.app.retryAgentRequest(f.request.id, f.button);
+  f.app.state.sync.events.push({ id: "new-chat", type: "human_chat", actor: { id: "u1" }, payload: { content: "New discussion" } });
+  f.resolveSelection(); await pending;
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.writes[0][0], "s1");
+  assert.equal(f.writes[0][1].content, f.request.payload.content);
+  assert.equal(f.writes[0][1].contentRevision, 0);
+  assert.equal(f.writes[0][1].apiConfigRevision, "fixture-revision");
 });
 
 for (const outcome of ["success", "failure"]) {

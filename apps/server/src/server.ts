@@ -11,6 +11,7 @@ import type { AddressInfo } from "node:net";
 import { extname, resolve, sep, join } from "node:path";
 import {
   SetAccountAvatarInputSchema,
+  DeleteMessageInputSchema, DeleteMessageResultSchema,
   EmailLoginInputSchema, EmailAccountSessionSchema, RegistrationStatusSchema, RegistrationSentSchema, SendRegistrationInputSchema, VerifyRegistrationInputSchema,
   SendPasswordResetInputSchema, VerifyPasswordResetInputSchema, PasswordResetSentSchema,
   CreateCodexLauncherAuthorizationInputSchema, ClaimCodexLauncherAuthorizationInputSchema, CodexLauncherAuthorizationSchema,
@@ -1365,6 +1366,13 @@ export async function startCollaborationServer(
         return;
       }
 
+      if (sessionId && parts[3] === "events" && parts[4] && parts[5] === "delete" && parts.length === 6 && request.method === "POST") {
+        if (authentication.kind !== "browser_session") throw new ApiError(403, "browser_session_required", "Delete messages in the signed-in browser");
+        const input = DeleteMessageInputSchema.parse(await readAuthenticatedJson(1024));
+        sendJson(response, 200, { data: DeleteMessageResultSchema.parse(service.deleteMessage(actor, sessionId, parts[4], input.idempotency_key)) });
+        return;
+      }
+
       if (sessionId && parts[3] === "events" && parts.length === 4 && request.method === "POST") {
         const input = AppendEventInputSchema.parse(await readAuthenticatedJson());
         sendJson(response, 201, { data: { event: service.appendEvent(actor, sessionId, input) } });
@@ -1480,6 +1488,7 @@ export async function startCollaborationServer(
           input.observed_model,
           input.observed_reasoning_effort,
           input.claim_attempt,
+          input.content_revision,
         ) } });
         return;
       }
@@ -1496,6 +1505,7 @@ export async function startCollaborationServer(
           input.observed_model,
           input.observed_reasoning_effort,
           input.claim_attempt,
+          input.content_revision,
         ) } });
         return;
       }
@@ -1637,8 +1647,14 @@ export async function startCollaborationServer(
   heartbeat.unref();
   const registrationCleanup = setInterval(() => {
     try { database.registration.cleanup(); } catch { console.warn("Registration retention cleanup failed"); }
+    try {
+      if (database.purgeDeletedMessageStorage().overdue) console.warn("Message deletion storage cleanup is overdue; operator action required");
+    } catch { console.warn("Message deletion storage cleanup deferred"); }
   }, 60_000);
   registrationCleanup.unref();
+  try {
+    if (database.purgeDeletedMessageStorage().overdue) console.warn("Message deletion storage cleanup is overdue; operator action required");
+  } catch { console.warn("Message deletion storage cleanup deferred"); }
 
   await new Promise<void>((resolve, reject) => {
     httpServer.once("error", reject);
@@ -1662,6 +1678,7 @@ export async function startCollaborationServer(
       wsServer.close();
       await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
       await hostedGithub?.close();
+      hostedAgent?.close();
       testGate?.close();
       database.close();
       if (ephemeralCodeDirectory) rmSync(ephemeralCodeDirectory, { recursive: true, force: true });

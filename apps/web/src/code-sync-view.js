@@ -1,7 +1,7 @@
-import { codeErrorText, codeRuntimeChoices, createCodeSyncController } from "./code-sync.js";
+import { codeErrorText, codeRuntimeChoices, createCodeSyncController } from "./code-sync.js?v=20261012-content-1";
 import { codeNoticeStorage, hasSeenCodeNotice, markCodeNoticeSeen } from "./code-notice.js";
-import { mountGithubCodeSync } from "./github-code-sync-view.js?v=20261012-github-3";
-import { mountGithubMode } from "./github-setup.js?v=20261012-github-3";
+import { mountGithubCodeSync } from "./github-code-sync-view.js?v=20261012-content-1";
+import { mountGithubMode } from "./github-setup.js?v=20261012-content-1";
 
 const ACTIVE_JOBS = new Set(["queued", "claimed", "importing", "compacting"]);
 const shortCommit = (value) => typeof value === "string" ? value.slice(0, 9) : "—";

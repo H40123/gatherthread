@@ -23,6 +23,7 @@ export const eventTypes = [
   "context_snapshot",
   "membership_change",
   "session_state_change",
+  "message_deleted",
 ] as const;
 export const eventVisibilities = ["session", "owner_only"] as const;
 export const captureFidelities = [
@@ -156,9 +157,18 @@ export const CanonicalEventSchema = z.object({
   reply_to_event_id: IdSchema.nullable(),
   payload: JsonValueSchema,
   runtime_provenance: RuntimeProvenanceSchema.nullable(),
+  content_revision: z.number().int().nonnegative().optional(),
+  deleted: z.object({ deleted_at: z.string().datetime(), reason: z.enum(["author", "request", "summary_invalidated"]) }).strict().optional(),
 });
 
 export type CanonicalEvent = z.infer<typeof CanonicalEventSchema>;
+
+export const DeleteMessageInputSchema = z.object({ idempotency_key: IdempotencyKeySchema }).strict();
+export type DeleteMessageInput = z.infer<typeof DeleteMessageInputSchema>;
+export const DeleteMessageResultSchema = z.object({ event: CanonicalEventSchema, target_event_id: IdSchema,
+  content_revision: z.number().int().nonnegative(), affected_event_ids: z.array(IdSchema).max(256), affected_truncated: z.boolean(),
+}).strict();
+export type DeleteMessageResult = z.infer<typeof DeleteMessageResultSchema>;
 
 // UTF-16 offsets match browser text selection; labels remain in the message.
 export const MessageMentionsSchema = z.array(z.object({
@@ -191,6 +201,7 @@ export const AppendEventInputSchema = z.object({
   payload: JsonValueSchema,
   runtime_id: IdSchema.optional(),
   claim_attempt: z.number().int().positive().optional(),
+  content_revision: z.number().int().nonnegative().optional(),
   observed_model: z.string().trim().min(1).max(160).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/u).optional(),
   observed_reasoning_effort: z.string().trim().min(1).max(80).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/u).optional(),
 });
@@ -206,6 +217,7 @@ export const HostedAgentRequestInputSchema = z.object({
   reply_to_event_id: IdSchema.nullable().optional(),
   github_task_id: z.string().regex(/^gh-task-[a-f0-9]{32}$/u).optional(),
   api_config_revision: PersonalCloudRevisionSchema,
+  content_revision: z.number().int().nonnegative().optional(),
 }).strict().refine(hasValidPersonalCloudRevision, { message: "Personal cloud profiles require their exact configuration revision" });
 export type HostedAgentRequestInput = z.infer<typeof HostedAgentRequestInputSchema>;
 
@@ -576,6 +588,7 @@ export const RegisterRuntimeInputSchema = z.object({
   provider: z.string().trim().min(1).max(80),
   model: z.string().trim().min(1).max(160),
   execution_profiles: RuntimeExecutionProfilesSchema.optional(),
+  context_deletion_version: z.literal(1).optional(),
   local_session_id: z.string().trim().min(1).max(512),
   capture_fidelity: CaptureFidelitySchema,
 });
@@ -598,6 +611,7 @@ export const AgentRequestClaimSchema = z.object({
   // It is reported so a connector can skip the request without advancing past it.
   status: z.enum(["claimed", "completed", "paused"]),
   attempt_count: z.number().int().positive().optional(),
+  content_revision: z.number().int().nonnegative().optional(),
 }).strict();
 
 export type AgentRequestClaim = z.infer<typeof AgentRequestClaimSchema>;
@@ -605,6 +619,7 @@ export type AgentRequestClaim = z.infer<typeof AgentRequestClaimSchema>;
 export const CompleteAgentRequestInputSchema = z.object({
   runtime_id: IdSchema,
   claim_attempt: z.number().int().positive().optional(),
+  content_revision: z.number().int().nonnegative().optional(),
   idempotency_key: IdempotencyKeySchema,
   payload: JsonValueSchema,
   observed_model: z.string().trim().min(1).max(160).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/u).optional(),
@@ -625,6 +640,7 @@ export const CommitLocalTurnInputSchema = z.object({
   local_turn_id: IdSchema,
   runtime_id: IdSchema,
   based_on_sequence: z.number().int().nonnegative(),
+  content_revision: z.number().int().nonnegative().optional(),
   occurred_at: z.string().datetime(),
   observed_model: z.string().trim().min(1).max(160).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/u).optional(),
   observed_reasoning_effort: z.string().trim().min(1).max(80).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/u).optional(),
@@ -691,6 +707,7 @@ export const SnapshotRequestRecordSchema = z.object({
   kind: SnapshotRequestKindSchema,
   through_sequence: z.number().int().nonnegative(),
   status: SnapshotRequestStatusSchema,
+  content_revision: z.number().int().nonnegative().optional(),
   target_runtime_id: IdSchema.nullable(),
   claimed_by_runtime_id: IdSchema.nullable(),
   created_at: z.string().datetime(),
@@ -724,6 +741,7 @@ export const ReplayResponseSchema = z.object({
   events: z.array(CanonicalEventSchema),
   cursor: z.number().int().nonnegative(),
   has_more: z.boolean(),
+  content_revision: z.number().int().nonnegative().optional(),
 });
 
 export type ReplayResponse = z.infer<typeof ReplayResponseSchema>;
@@ -737,6 +755,7 @@ export const SessionListItemSchema = z.object({
   state: z.enum(["active", "archived"]),
   role: MembershipRoleSchema,
   current_sequence: z.number().int().nonnegative(),
+  content_revision: z.number().int().nonnegative().optional(),
   member_count: z.number().int().nonnegative().optional(),
   updated_at: z.string().datetime(),
 });

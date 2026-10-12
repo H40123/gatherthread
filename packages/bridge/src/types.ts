@@ -19,7 +19,8 @@ export type CanonicalEventType =
   | "attachment"
   | "context_snapshot"
   | "membership_change"
-  | "session_state_change";
+  | "session_state_change"
+  | "message_deleted";
 
 export interface RuntimeProvenance {
   userId: string;
@@ -44,12 +45,15 @@ export interface CanonicalEvent {
   timestamp: string;
   payload: unknown;
   runtime?: RuntimeProvenance;
+  contentRevision?: number;
+  deleted?: { deletedAt: string; reason: "author" | "request" | "summary_invalidated" };
 }
 
 export interface CommitLocalTurnInput {
   localTurnId: string;
   runtimeId: string;
   basedOnSequence: number;
+  contentRevision?: number;
   occurredAt: string;
   observedModel?: string;
   observedReasoningEffort?: string;
@@ -81,6 +85,7 @@ export interface SnapshotRequestSummary {
   sessionId: string;
   kind: SnapshotRequestKind;
   throughSequence: number;
+  contentRevision?: number;
   status: SnapshotRequestStatus;
   targetRuntimeId?: string;
   createdAt?: string;
@@ -101,6 +106,7 @@ export interface SessionSummary {
   state?: "active" | "archived";
   role?: "owner" | "participant" | "viewer";
   latestSequence?: number;
+  contentRevision?: number;
 }
 
 export interface ProjectSummary {
@@ -129,6 +135,7 @@ export interface ReadEventsResult {
   events: CanonicalEvent[];
   nextSequence: number;
   hasMore: boolean;
+  contentRevision?: number;
 }
 
 export interface AppendEventInput {
@@ -139,6 +146,7 @@ export interface AppendEventInput {
   visibility?: string;
   runtimeId?: string;
   claimAttempt?: number;
+  contentRevision?: number;
   runtime?: RuntimeProvenance;
   observedModel?: string;
   observedReasoningEffort?: string;
@@ -156,6 +164,7 @@ export interface RuntimeRegistration {
   captureFidelity: CaptureFidelity;
   capabilities?: readonly string[];
   purpose?: "execution" | "snapshot_connector";
+  contextDeletionVersion?: 1;
 }
 
 export interface RuntimeExecutionProfile {
@@ -184,11 +193,13 @@ export interface AgentRequestClaim {
   requestId: string;
   runtimeId: string;
   attemptCount?: number;
+  contentRevision?: number;
 }
 
 export interface CompleteAgentRequestInput {
   runtimeId: string;
   claimAttempt?: number;
+  contentRevision?: number;
   idempotencyKey: string;
   payload: unknown;
   observedModel?: string;
@@ -261,6 +272,8 @@ export interface HarnessExecutionInput {
   /** Optional server-authorized derived context frozen before this request. Raw history remains available. */
   historyContext?: HistoryContext;
   runtime: RegisteredRuntime;
+  /** Privacy revocation, independent of progress uploads. Stop the owned turn before returning. */
+  signal?: AbortSignal;
   publishProgress?: (update: HarnessProgressUpdate) => Promise<boolean | void>;
 }
 

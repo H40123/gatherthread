@@ -202,6 +202,7 @@ export class CollaborationService {
         ...(runtime.execution_profiles === undefined ? {} : { execution_profiles: runtime.execution_profiles }),
         status: runtime.status,
         last_seen_at: runtime.last_seen_at,
+        context_deletion_version: runtime.context_deletion_version ?? 0,
       }));
   }
 
@@ -413,6 +414,12 @@ export class CollaborationService {
     return this.database.readHistoryContext(actor, sessionId, view, throughSequence);
   }
 
+  deleteMessage(actor: Actor, sessionId: string, eventId: string, idempotencyKey: string) {
+    const result = this.database.deleteMessage(actor, sessionId, eventId, idempotencyKey);
+    this.publish(result.event);
+    return result;
+  }
+
   registerRuntime(actor: Actor, input: Parameters<CollaborationDatabase["registerRuntime"]>[1]): RuntimeRecord {
     if ((input.purpose ?? "execution") === "snapshot_connector") this.requireMembership(actor, input.session_id);
     else this.requireWrite(actor, input.session_id);
@@ -453,6 +460,7 @@ export class CollaborationService {
     observedModel?: string,
     observedReasoningEffort?: string,
     claimAttempt?: number,
+    contentRevision?: number,
   ): CanonicalEvent {
     if (payload !== null && typeof payload === "object" && !Array.isArray(payload) && "stream_mode" in payload) LiveOutputPayloadSchema.parse(payload);
     const { session } = this.requireWrite(actor, sessionId);
@@ -467,6 +475,7 @@ export class CollaborationService {
       observedModel,
       observedReasoningEffort,
       claimAttempt,
+      contentRevision,
     );
     this.publish(event);
     return event;
@@ -482,6 +491,7 @@ export class CollaborationService {
     observedModel?: string,
     observedReasoningEffort?: string,
     claimAttempt?: number,
+    contentRevision?: number,
   ): CanonicalEvent {
     const { session } = this.requireWrite(actor, sessionId);
     if (session.state !== "active") throw conflict("Archived sessions do not accept agent responses");
@@ -495,6 +505,7 @@ export class CollaborationService {
       observedModel,
       observedReasoningEffort,
       claimAttempt,
+      contentRevision,
     );
     this.publish(event);
     return event;
@@ -547,7 +558,8 @@ export class CollaborationService {
 
   presentEvent(actor: Actor, event: CanonicalEvent): CanonicalEvent {
     const role = this.requireMembership(actor, event.session_id);
-    return this.minimizeEventForActor(actor, role, event);
+    return this.minimizeEventForActor(actor, role, { ...this.database.getEvent(event.session_id, event.id),
+      content_revision: this.database.requireSession(event.session_id).content_revision ?? 0 });
   }
 
   requireMembership(actor: Actor, sessionId: string): MembershipRole {

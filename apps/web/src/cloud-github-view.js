@@ -1,5 +1,5 @@
-import { fillRepositoryFields, bindRepositoryFields } from "./github-setup.js?v=20261012-github-3";
-import { rememberGithubReturn, consumeGithubReturn } from "./github-return-context.js?v=20261012-github-3";
+import { fillRepositoryFields, bindRepositoryFields } from "./github-setup.js?v=20261012-content-1";
+import { rememberGithubReturn, consumeGithubReturn } from "./github-return-context.js?v=20261012-content-1";
 /** Private cloud repository tasks. No provider or GitHub credentials enter this module. */
 export function mountCloudGithub({ api: getApi, context, t, setText = (node, source) => { node.textContent = t(source); }, agentEnabled = false, openSurface = () => {}, document: doc = document }) {
   const el = (id) => doc.getElementById(id);
@@ -47,7 +47,7 @@ export function mountCloudGithub({ api: getApi, context, t, setText = (node, sou
     el("cloud-github-controls").hidden = true;
   }
   function updateContext() {
-    const c = context(), next = `${c.userId ?? ""}:${c.projectId ?? ""}:${c.sessionId ?? ""}`;
+    const c = context(), next = `${c.userId ?? ""}:${c.projectId ?? ""}:${c.sessionId ?? ""}:${c.contentRevision ?? 0}`;
     if (next !== key) { key = next; clear(); if (dialog.open) dialog.close(); }
     const available = Boolean(c.userId && c.projectId && c.sessionId);
     el("cloud-github-new").disabled = !agentEnabled || !available;
@@ -240,6 +240,7 @@ export function mountCloudGithub({ api: getApi, context, t, setText = (node, sou
       const revision = parentId && selected?.id === parentId ? selected.api_config_revision : input.apiConfigRevision;
       const task = await getApi().startHostedGithubTask(sessionId, { content: input.content, profile_id: input.profileId,
         idempotency_key: input.idempotencyKey, reply_to_event_id: input.replyTo ?? null,
+        ...(input.contentRevision === undefined ? {} : { content_revision: input.contentRevision }),
         ...(revision === undefined ? {} : { api_config_revision: revision }),
         ...(parentId ? { continue_task_id: parentId } : {}) });
       if (gen === generation && context().sessionId === sessionId) {

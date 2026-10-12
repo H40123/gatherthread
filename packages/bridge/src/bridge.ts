@@ -132,7 +132,7 @@ export class LocalBridge {
       if (event.sessionId !== runtime.sessionId) {
         throw new Error("Collaboration API returned an event for a different session");
       }
-      if (event.type === "agent_request") {
+      if (event.type === "agent_request" && !event.deleted) {
         const shouldExecute = event.actorId === runtime.userId
           && (executor.shouldExecute === undefined || await executor.shouldExecute(event, runtime));
         if (shouldExecute) {
@@ -319,6 +319,9 @@ export class LocalBridge {
     const claimAttempt = claim.attemptCount ?? 1;
 
     const canonicalHistory = await this.#readCanonicalHistory(request.sessionId, request.sequence);
+    const authoritativeRequest = canonicalHistory.find((event) => event.id === request.id);
+    if (request.deleted || authoritativeRequest?.deleted) throw new CollaborationHttpError(409, "Shared history changed; the request was deleted", "context_changed");
+    request = authoritativeRequest ?? request;
     // Freeze derived context before the current request. Summary generation is
     // still an explicitly claimed normal local-Agent turn; no other member's
     // runtime is ever borrowed. Older servers without summary records retain
@@ -328,14 +331,36 @@ export class LocalBridge {
       && "history_summary" in request.payload;
     const hasSummaryHistory = canonicalHistory.some((event) => event.type === "agent_request"
       && event.payload !== null && typeof event.payload === "object" && "history_summary" in event.payload);
-    if (hasSummaryHistory && !this.#api.readContext) {
+    const deletionAware = (claim.contentRevision ?? request.contentRevision ?? 0) > 0
+      || canonicalHistory.some((event) => event.deleted || event.type === "message_deleted");
+    if ((hasSummaryHistory || deletionAware) && !this.#api.readContext) {
       throw new Error("This connector cannot read GatherThread's summarized context; update the connector before continuing.");
     }
+    const readContext = this.#api.readContext
+      ? await this.#api.readContext(request.sessionId, undefined, request.sequence - 1) : undefined;
+    const revision = claim.contentRevision ?? request.contentRevision ?? 0;
+    if (readContext && (readContext.content_revision ?? 0) !== revision) throw new CollaborationHttpError(409,
+      "Shared history changed after this request was claimed; start a new request", "context_changed");
     const historyContext = summaryGeneration
-      ? { view: "summary" as const, through_sequence: request.sequence - 1, items: [] }
-      : this.#api.readContext && hasSummaryHistory
-        ? await this.#api.readContext(request.sessionId, undefined, request.sequence - 1)
-        : undefined;
+      ? { view: "summary" as const, through_sequence: request.sequence - 1, items: [], content_revision: readContext?.content_revision ?? revision }
+      : readContext;
+    const controller = new AbortController();
+    const contextChanged = () => new CollaborationHttpError(409, "Shared history changed; start a new request with current history", "context_changed");
+    let checking = false;
+    const checkRevision = async () => {
+      if (!this.#api.readContext || checking || controller.signal.aborted) return;
+      checking = true;
+      try {
+        const page = await this.#api.readEvents(request.sessionId, request.sequence, 1);
+        const current = page.contentRevision ?? (await this.#api.readContext(request.sessionId, undefined, request.sequence - 1)).content_revision ?? 0;
+        if (current !== revision) controller.abort(contextChanged());
+      } catch (error) {
+        if (error instanceof CollaborationHttpError && [401, 403, 404].includes(error.status)) controller.abort(contextChanged());
+      } finally { checking = false; }
+    };
+    const watch = this.#api.readContext ? setInterval(() => { void checkRevision(); }, 1000) : undefined;
+    watch?.unref();
+    try {
     await this.#appendProgressFailSoft(request, runtime, claimAttempt, {
       idempotencyKey: `${runtime.deviceId}:${hash(request.id)}:${claimAttempt}:progress:start`,
       payload: {
@@ -353,6 +378,7 @@ export class LocalBridge {
         canonicalHistory,
         ...(historyContext === undefined ? {} : { historyContext }),
         runtime,
+        signal: controller.signal,
         ...(this.#api.appendAgentProgress === undefined ? {} : {
           publishProgress: async (update) => {
             const redacted = redactText(update.content);
@@ -383,10 +409,12 @@ export class LocalBridge {
         }),
       });
     } catch (error) {
+      if (controller.signal.aborted) throw contextChanged();
       if (!(error instanceof HarnessExecutionTerminatedError)) throw error;
       const failure = await this.#api.completeAgentRequest(request.sessionId, request.id, {
         runtimeId: runtime.id,
         claimAttempt,
+        contentRevision: revision,
         idempotencyKey: `${runtime.deviceId}:${hash(request.id)}:complete`,
         payload: {
           text: `Agent execution failed: ${error.publicMessage}`,
@@ -398,6 +426,11 @@ export class LocalBridge {
       });
       return { claimed: true, completed: [failure] };
     }
+    if (this.#api.readContext) {
+      const finalContext = await this.#api.readContext(request.sessionId, undefined, request.sequence - 1);
+      if ((finalContext.content_revision ?? 0) !== revision) controller.abort(contextChanged());
+    }
+    if (controller.signal.aborted) throw contextChanged();
     const events = execution.events.map((event) => {
       if (event.captureFidelity !== "harness_transcript") {
         throw new Error("Harness execution output must be labelled harness_transcript");
@@ -408,7 +441,7 @@ export class LocalBridge {
       return toAppendEvent(redactTranscriptEvent(event, this.#redaction), {
         ...runtime,
         localSessionId: execution.localSessionId ?? runtime.localSessionId,
-      }, request.id, execution, { requestId: request.id, claimAttempt });
+      }, request.id, execution, { requestId: request.id, claimAttempt, contentRevision: revision });
     });
     const responseEvents = events.filter((event) => event.type === "agent_response");
     if (responseEvents.length === 0) throw new Error("Harness execution did not produce an assistant response");
@@ -422,12 +455,14 @@ export class LocalBridge {
     completed.push(await this.#api.completeAgentRequest(request.sessionId, request.id, {
       runtimeId: runtime.id,
       claimAttempt,
+      contentRevision: revision,
       idempotencyKey: `${runtime.deviceId}:${hash(request.id)}:complete`,
       payload: responsePayload,
       ...(execution.observedModel === undefined ? {} : { observedModel: execution.observedModel }),
       ...(execution.observedReasoningEffort === undefined ? {} : { observedReasoningEffort: execution.observedReasoningEffort }),
     }));
     return { claimed: true, completed };
+    } finally { if (watch) clearInterval(watch); }
   }
 
   async #appendProgressFailSoft(
@@ -441,11 +476,13 @@ export class LocalBridge {
       await this.#api.appendAgentProgress(request.sessionId, request.id, {
         runtimeId: runtime.id,
         claimAttempt,
+        contentRevision: request.contentRevision ?? 0,
         idempotencyKey: input.idempotencyKey,
         payload: input.payload,
       });
       return true;
-    } catch {
+    } catch (error) {
+      if (error instanceof CollaborationHttpError && (error.code === "context_changed" || error.code === "connector_update_required")) throw error;
       // Progress is supplementary. A transient progress upload failure must not
       // strand an already-claimed request before its canonical final response.
       return false;
@@ -508,7 +545,7 @@ function toAppendEvent(
   runtime: RegisteredRuntime,
   source: string,
   execution?: Pick<HarnessExecutionResult, "observedModel" | "observedReasoningEffort">,
-  claim?: { requestId: string; claimAttempt: number },
+  claim?: { requestId: string; claimAttempt: number; contentRevision: number },
 ): AppendEventInput {
   const eventType = {
     user: "human_chat",
@@ -536,6 +573,7 @@ function toAppendEvent(
     ...(claim === undefined ? {} : {
       replyTo: claim.requestId,
       claimAttempt: claim.claimAttempt,
+      contentRevision: claim.contentRevision,
     }),
     ...(execution?.observedModel === undefined ? {} : { observedModel: execution.observedModel }),
     ...(execution?.observedReasoningEffort === undefined ? {} : { observedReasoningEffort: execution.observedReasoningEffort }),

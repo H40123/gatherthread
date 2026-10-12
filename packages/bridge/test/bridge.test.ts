@@ -261,6 +261,46 @@ test("a marked summary session never falls back to raw context when the connecto
   }), /cannot read GatherThread's summarized context/);
 });
 
+test("deletion-aware native requests always read context even after the final summary was invalidated", async () => {
+  const api = new FakeApi();
+  const request = { ...canonical("session-1", 2, { type: "agent_request", idempotencyKey: "current", payload: { content: "Continue safely" } }), contentRevision: 1 };
+  api.history.push({ ...canonical("session-1", 1, { type: "human_chat", idempotencyKey: "gone", payload: { content: "[Message deleted]" } }),
+    deleted: { deletedAt: "2026-10-12T00:00:00.000Z", reason: "author" } } as any, request);
+  let reads = 0;
+  (api as CollaborationApi).readContext = async () => { reads++; return { view: "original", through_sequence: 1, content_revision: 1, items: [] }; };
+  const bridge = new LocalBridge({ api, cursorStore: new MemoryCursorStore(), runtime: runtimeRegistration(), transcriptRoots: {} });
+  await bridge.connect();
+  await bridge.processAgentRequest(request, { async execute(input) {
+    assert.equal(input.historyContext?.content_revision, 1);
+    assert.deepEqual(input.historyContext?.items, []);
+    return { events: [{ localEventId: "safe-final", harness: "codex", kind: "assistant", text: "Done", captureFidelity: "harness_transcript" }] };
+  } });
+  assert.equal(reads, 2, "revalidate authoritative revision before publishing the native answer");
+  (api as CollaborationApi).readContext = async () => ({ view: "original", through_sequence: 1, content_revision: 2, items: [] });
+  await assert.rejects(bridge.processAgentRequest(request, { async execute() { throw new Error("must not execute stale context"); } }), /history changed|context.*changed/i);
+  delete (api as CollaborationApi).readContext;
+  await assert.rejects(bridge.processAgentRequest(request, { async execute() { throw new Error("must not execute stale native memory"); } }), /update.*connector|cannot read.*context/i);
+});
+
+test("native execution is aborted when authoritative revision changes without a progress upload", async () => {
+  const api = new FakeApi();
+  const request = { ...canonical("session-1", 2, { type: "agent_request", idempotencyKey: "current", payload: { content: "Long task" } }), contentRevision: 1 };
+  api.history.push(request);
+  let reads = 0;
+  (api as CollaborationApi).readContext = async () => ({ view: "original", through_sequence: 1, content_revision: ++reads === 1 ? 1 : 2, items: [] });
+  const bridge = new LocalBridge({ api, cursorStore: new MemoryCursorStore(), runtime: runtimeRegistration(), transcriptRoots: {} });
+  await bridge.connect();
+  await assert.rejects(bridge.processAgentRequest(request, { async execute(input) {
+    assert.ok((input as any).signal, "each native execution must have an independently checked revocation signal");
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Deletion did not abort native execution")), 3000);
+      (input as any).signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+    });
+    return { events: [{ localEventId: "late", harness: "codex", kind: "assistant", text: "OLD_CONTEXT_ANSWER", captureFidelity: "harness_transcript" }] };
+  } }), /history changed|context.*changed/i);
+  assert.equal(api.completeInput, undefined);
+});
+
 test("pending request polling persists the server cursor only after execution completes", async () => {
   const api = new FakeApi();
   const cursorStore = new MemoryCursorStore();

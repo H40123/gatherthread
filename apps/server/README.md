@@ -55,6 +55,7 @@ Successful JSON responses use `{ "data": ... }`; failures use `{ "error": { "cod
 | `GET/PATCH` | `/v1/sessions/:session_id` | Read; project owner manages multi; Solo creator manages own Solo |
 | `GET` | `/v1/sessions/:session_id/members` | Visible members and their most relevant active runtime |
 | `POST` | `/v1/sessions/:session_id/events` | Append a validated, redacted canonical event |
+| `POST` | `/v1/sessions/:session_id/events/:event_id/delete` | Browser-only, current-writer author erasure with contiguous tombstones and revision fencing |
 | `GET` | `/v1/sessions/:session_id/events?after_sequence=N&limit=100` | Durable replay page and cursor |
 | `POST` | `/v1/sessions/:session_id/local-turns` | Atomically commit one trusted local request, bounded tool events, and response |
 | `POST` | `/v1/sessions/:session_id/snapshot-requests` | Freeze a new requester-owned read-only snapshot job |
@@ -69,6 +70,12 @@ Successful JSON responses use `{ "data": ... }`; failures use `{ "error": { "cod
 | `POST` | `/v1/realtime-ticket` | Issue a short-lived, one-use browser WebSocket ticket |
 
 The server derives actor identity from the credential and always assigns event ID (unless the client supplies a stable one), sequence, and canonical server timestamp. A local capture time is retained only as payload metadata and cannot change project ordering. An idempotency key is scoped to one session and is bound to the actor, event type, visibility, reply target, payload, and runtime; only an identical retry receives the original event, while a different operation returns `409 idempotency_conflict`. `agent_progress` requires the exact owned runtime and an active matching request claim; the generic event route cannot forge it. `agent_response`, `tool_call`, and `tool_result` appends require an owned execution `runtime_id`. A runtime may hold only one active request claim. `human_chat` is only an event append and has no execution side effect.
+
+Explicit message erasure is the exception to immutable payloads, not sequence order. All current reads and exact retries return a safe tombstone; dependent summaries, snapshots and private task caches cannot restore its body. Session/replay/context `content_revision` fences old execution, while fully adapted native runtimes advertise `context_deletion_version:1`. `context_changed` requires a fresh user request; `connector_update_required` requires updating/reconnecting a legacy connector. The strict browser route and bounded deletion receipt are owned by [the interface contract](../../docs/INTERFACE_CONTRACTS.md#author-message-deletion-and-execution-revision).
+
+Cloud and GitHub request inputs also carry the captured `content_revision`. Older unpinned requests are accepted only before a session's first deletion; afterward they receive `context_changed` with a refresh instruction. Source-ID summaries use a server-captured pin and transactionally rebuilt source text. Neither rejection reserves work or changes the private API payer.
+
+Live erasure enables SQLite secure-delete and schedules non-waiting WAL truncation at startup and every minute. A busy reader keeps the durable cleanup pending; an overdue fixed private warning requires operator action. This is distinct from 14-day backup/unreachable-Git and 30-day identifiable-log retention, and does not guarantee instantaneous physical media erasure. See [ADR-0050](../../docs/adr/0050-author-message-erasure-and-context-revisions.md).
 
 Personal Cloud Agent configurations additionally require an independent operator-managed encryption key. Existing free Cloud Agent and local Codex/DSH choices are unchanged when it is absent. Reads never return saved API keys; model requests pin the private configuration revision and cannot follow changed settings. See [personal API setup](../../docs/HOSTED_AGENT.md#personal-api-storage) and [the strict contract](../../docs/INTERFACE_CONTRACTS.md#personal-cloud-api-configuration) for supported transports, quotas and safe failures.
 

@@ -253,6 +253,7 @@ function writeSnapshot(root: string, files: CodeFile[]): void {
 export class HostedAgent {
   private readonly cooldowns = new Map<string, number>();
   private readonly controllers = new Map<string, AbortController>();
+  private readonly unsubscribeDeletion: () => void;
   readonly personalApi: CloudApiStore;
   constructor(private readonly service: CollaborationService, private readonly codeRepository: CodeRepository,
     private readonly options: HostedAgentOptions) {
@@ -281,7 +282,16 @@ export class HostedAgent {
       || !Number.isSafeInteger(userConcurrency) || userConcurrency < 1 || userConcurrency > options.maxConcurrent) {
       throw new Error("Cloud Agent user rate limits are out of range");
     }
+    this.unsubscribeDeletion = service.onEvent((event) => {
+      if (event.type !== "message_deleted") return;
+      for (const [requestId, controller] of this.controllers) {
+        const job = service.database.sqlite.prepare("SELECT session_id FROM hosted_agent_runs WHERE request_event_id=?").get(requestId);
+        if (job?.session_id === event.session_id) controller.abort();
+      }
+    });
   }
+
+  close(): void { this.unsubscribeDeletion(); for (const controller of this.controllers.values()) controller.abort(); }
 
   status(actor: Actor) {
     const usage = this.service.database.hostedAgentUsage(actor, this.options.userDailyRuns, this.options.globalDailyRuns);
@@ -352,6 +362,7 @@ export class HostedAgent {
     const job = database.sqlite.prepare("SELECT profile_id,provider,model FROM hosted_agent_runs WHERE request_event_id=? AND session_id=? AND user_id=?")
       .get(requestId, sessionId, actor.user_id) as { profile_id: string; provider: string; model: string } | undefined;
     if (!job) throw new ApiError(404, "hosted_request_unavailable", "Cloud Agent request is unavailable");
+    database.assertRequestContextCurrent(sessionId, requestId);
     const event = database.getEvent(sessionId, requestId);
     const payload = event.payload as { profile_id?: unknown; execution_profile?: { provider?: unknown; model?: unknown } };
     if (event.type !== "agent_request" || event.actor_user_id !== actor.user_id || payload.profile_id !== job.profile_id
@@ -407,7 +418,11 @@ export class HostedAgent {
     }
     const result = this.service.reserveHostedAgentRequest(actor, sessionId, input,
       endpoints.map((e) => ({ ...e, blocked: (this.cooldowns.get(e.quotaGroup) ?? 0) > Date.now() })),
-      this.limitsFor(endpoints), onReserved);
+      this.limitsFor(endpoints), (event) => {
+        if ((event.content_revision ?? 0) !== (context.content_revision ?? 0)) throw new ApiError(409,
+          "context_changed", "Shared history changed while preparing the task; start a new request");
+        onReserved(event);
+      });
     return { ...result, endpoint: endpoints.find((e) => e.id === result.endpointId), context };
   }
 
@@ -424,8 +439,9 @@ export class HostedAgent {
   }
 
   startSummary(actor: Actor, sessionId: string, input: HostedHistorySummaryInput) {
+    const contentRevision = this.service.database.requireSession(sessionId).content_revision ?? 0;
     return this.start(actor, sessionId, { profile_id: input.profile_id, content: "Summarize selected history",
-      include_code: false, idempotency_key: input.idempotency_key,
+      include_code: false, idempotency_key: input.idempotency_key, content_revision: contentRevision,
       ...(input.api_config_revision ? { api_config_revision: input.api_config_revision } : {}) }, input);
   }
 
@@ -457,14 +473,23 @@ export class HostedAgent {
       }
     }
     const reserved = this.service.reserveHostedAgentRequest(actor, sessionId, input,
-      endpoints.map((endpoint) => ({ ...endpoint, blocked: (this.cooldowns.get(endpoint.quotaGroup) ?? 0) > Date.now() })), this.limitsFor(endpoints), undefined, summary);
+      endpoints.map((endpoint) => ({ ...endpoint, blocked: (this.cooldowns.get(endpoint.quotaGroup) ?? 0) > Date.now() })), this.limitsFor(endpoints), (event) => {
+        if (context && (event.content_revision ?? 0) !== (context.content_revision ?? 0)) throw new ApiError(409,
+          "context_changed", "Shared history changed while preparing the task; start a new request");
+      }, summary);
     if (!reserved.created) return { request_event: reserved.event, replayed: true };
     const controller = new AbortController();
     this.controllers.set(reserved.event.id, controller);
+    const contextWatch = setInterval(() => {
+      if (!this.service.database.isRequestContextCurrent(sessionId, reserved.event.id)) controller.abort();
+    }, 1000);
+    contextWatch.unref();
     onAccepted?.(reserved.event);
     const endpoint = endpoints.find((e) => e.id === reserved.endpointId)!;
     const authorize = () => {
-      controller.signal.throwIfAborted(); this.assertRunCurrent(reserved.event.id);
+      controller.signal.throwIfAborted();
+      this.service.database.assertRequestContextCurrent(sessionId, reserved.event.id);
+      this.assertRunCurrent(reserved.event.id);
       this.service.database.assertActiveDevice(actor);
       const session = this.service.database.requireSession(sessionId), role = this.service.requireMembership(actor, sessionId);
       const job = this.service.database.sqlite.prepare("SELECT 1 FROM hosted_agent_runs WHERE request_event_id=? AND user_id=? AND device_id=? AND status='running'")
@@ -481,6 +506,7 @@ export class HostedAgent {
     catch {
       clearInterval(authorizationWatch);
       this.controllers.delete(reserved.event.id);
+      clearInterval(contextWatch);
       const result = this.service.finishHostedAgentRequest(reserved.event.id, {});
       return { request_event: reserved.event, response_event: result, replayed: false };
     }
@@ -563,7 +589,10 @@ export class HostedAgent {
           () => proxy.close().catch(() => undefined), () => rmSync(root, { recursive: true, force: true }),
         ]);
         await live.finish(Boolean(content));
-      } finally { clearInterval(authorizationWatch); await live.finish(false); this.controllers.delete(reserved.event.id); }
+      } finally {
+        clearInterval(authorizationWatch); clearInterval(contextWatch);
+        await live.finish(false); this.controllers.delete(reserved.event.id);
+      }
     }
     const result = this.service.finishHostedAgentRequest(reserved.event.id, {
       content, ...(errorCode ? { errorCode } : {}), providerAttempts: proxy.diagnostics().providerAttempts,

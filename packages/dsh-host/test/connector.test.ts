@@ -560,17 +560,76 @@ class LiveHost extends FakeHost {
 }
 
 class ContextApi extends FakeApi {
+  contentRevision = 0;
   contextCalls: Array<{ sessionId: string; view: unknown; throughSequence: unknown }> = [];
   contextError: Error | undefined;
   contextView: "summary" | "original" = "summary";
   async readContext(sessionId: string, view?: "summary" | "original", throughSequence?: number): Promise<HistoryContext> {
     this.contextCalls.push({ sessionId, view, throughSequence });
     if (this.contextError) throw this.contextError;
-    return { view: this.contextView, through_sequence: throughSequence!, items: [this.contextView === "summary"
+    return { view: this.contextView, content_revision: this.contentRevision, through_sequence: throughSequence!, items: [this.contextView === "summary"
       ? { kind: "summary", event_id: "summary-response", sequence: 1, actor_user_id: "user-2", content: "FROZEN_SUMMARY", source_event_ids: ["source-1", "source-3"] }
       : { kind: "original", event_id: "source-1", sequence: 1, actor_user_id: "user-2", content: "FROZEN_ORIGINAL" }] };
   }
 }
+
+test("DSH author deletion isolates an original-history request without any summaries and retires stale local upload", async () => {
+  const cfg = config(); const api = new ContextApi();
+  api.contentRevision = 1;
+  const deleted = canonical(1, "human_chat", {});
+  deleted.contentRevision = 1; deleted.deleted = { deletedAt: now, reason: "author" };
+  api.events.push(deleted, request(2));
+  const originalRead = api.readEvents.bind(api);
+  api.readEvents = async (...args) => ({ ...await originalRead(...args), contentRevision: api.contentRevision });
+  const persistence = freshPersistence();
+  persistence.events.push({ type: "user/message", seq: 0, time: eventTime,
+    data: { id: "old-local", role: "user", source: { kind: "user" }, content: [{ type: "text", text: "DELETED_SENTINEL" }] } });
+  const host = new ContextHost(cfg.dshSessionId, persistence);
+  const connector = new DshHostConnector({ config: cfg, api, host, stateStore: new MemoryConnectorStateStore() });
+  await connector.start({ schedule: false });
+  assert.equal(host.prompts.length, 0, "must not execute in the contaminated native Session");
+  assert.equal(host.execution.prompts.length, 1);
+  assert.equal(host.preparations[0]?.historyContext.content_revision, 1);
+  await connector.uploadLocalTurns();
+  assert.equal(api.localTurns.length, 0, "retired native input must remain local only even for manual upload");
+  await connector.stop();
+});
+
+test("DSH author deletion interrupt retains the execution permit until the native prompt actually stops", async () => {
+  const cfg = config(), api = new ContextApi();
+  api.sessions[0]!.contentRevision = 0;
+  const originalRead = api.readEvents.bind(api);
+  api.readEvents = async (...args) => ({ ...await originalRead(...args), contentRevision: api.contentRevision });
+  api.events.push(summaryRequest(1, "user-2"), request(2));
+  const host = new ContextHost(cfg.dshSessionId, freshPersistence());
+  let interrupted = false, released = false;
+  let started!: () => void, nativeStopped!: () => void;
+  const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+  const stoppedPromise = new Promise<void>((resolve) => { nativeStopped = resolve; });
+  host.prompt = async (_text, _profile, _id, signal?: AbortSignal) => {
+    signal?.addEventListener("abort", () => { interrupted = true; }, { once: true });
+    started(); await stoppedPromise;
+    released = true; signal?.throwIfAborted();
+    throw new Error("fixture should only terminate from context deletion");
+  };
+  const store = new MemoryConnectorStateStore();
+  const connector = new DshHostConnector({ config: cfg, api, host, stateStore: store });
+  await connector.start({ schedule: false, runImmediately: false });
+  const turn = connector.pollOnce();
+  const rejected = assert.rejects(turn, /context_changed/);
+  await startedPromise;
+  api.contentRevision = 1;
+  const timeout = Date.now() + 2500;
+  while (!interrupted && Date.now() < timeout) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(interrupted, true, "deletion must interrupt without waiting for model progress");
+  assert.equal(released, false, "cancellation notification is not proof of actual native termination");
+  assert.equal(api.completions.length, 0);
+  nativeStopped(); await rejected;
+  assert.equal(released, true);
+  assert.equal((await store.load())!.activeRequest, undefined);
+  assert.equal(api.completions.length, 0); assert.equal(api.appended.length, 0);
+  await connector.stop();
+});
 
 class ContextHost extends FakeHost {
   readonly execution: FakeHost;

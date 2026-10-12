@@ -1,5 +1,5 @@
-import { createIdempotencyKey, eventContent } from "./domain.js";
-import { eligibleHistorySources, historySelectionError, historySummaryTimeline, selectedHistorySourceIds } from "./history-summaries.js";
+import { createIdempotencyKey, eventContent } from "./domain.js?v=20261012-content-1";
+import { eligibleHistorySources, historySelectionError, historySummaryTimeline, selectedHistorySourceIds } from "./history-summaries.js?v=20261012-content-1";
 
 /** Derived display state is tab-local. It never edits canonical history or drafts. */
 export function mountHistorySummaries({ document, api, localizer, getContext, onChange, renderMarkdown, renderEventAvatar, eventAuthorLabel }) {
@@ -13,6 +13,7 @@ export function mountHistorySummaries({ document, api, localizer, getContext, on
   let original = false;
   let revealedSummaryId = null;
   let scope;
+  let contentRevision = 0;
   let attempt = null;
   let confirmationAttempt = null;
   let accepted = null;
@@ -53,6 +54,7 @@ export function mountHistorySummaries({ document, api, localizer, getContext, on
   }
   function reset() {
     scope = context().scope;
+    contentRevision = context().contentRevision ?? 0;
     selecting = false;
     original = false;
     revealedSummaryId = null;
@@ -68,7 +70,7 @@ export function mountHistorySummaries({ document, api, localizer, getContext, on
     el("history-summary-versions").replaceChildren();
   }
   function updateContext() {
-    if (scope !== context().scope) reset();
+    if (scope !== context().scope || contentRevision !== (context().contentRevision ?? 0)) reset();
     if (attempt) {
       const receipt = context().events.find((event) => event.idempotencyKey === attempt.idempotencyKey);
       if (receipt) { accepted = receipt; attempt = null; error = ""; selecting = false; selected.clear(); }

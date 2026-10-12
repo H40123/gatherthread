@@ -1,22 +1,24 @@
-import { renderAvatar, isAgentReply, eventAuthorLabel } from "./avatars.js";
-import { mountAvatarSettings } from "./avatar-settings.js";
-import { mountCloudGithub } from "./cloud-github-view.js?v=20261012-personal-1";
+import { renderAvatar, isAgentReply, eventAuthorLabel } from "./avatars.js?v=20261012-content-1";
+import { mountAvatarSettings } from "./avatar-settings.js?v=20261012-content-1";
+import { mountCloudGithub } from "./cloud-github-view.js?v=20261012-content-1";
 import { mountDeviceAuthorization } from "./device-authorization.js";
-import { createAccountEmailHint, mountCodexLauncher } from "./codex-launcher.js?v=20261012-dmg-2";
+import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261012-content-1";
 import { mountAccountDevices } from "./account-devices.js";
-import { mountPersonalCloudApi } from "./personal-cloud-api.js?v=20261012-personal-1";
-import { cloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261012-personal-1";
-import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261006-mobile-2";
+import { mountPersonalCloudApi } from "./personal-cloud-api.js?v=20261012-content-1";
+import { cloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261012-content-1";
+import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261012-content-1";
 import { mountRegistration } from "./registration.js";
-import { HttpCollaborationApi, MockCollaborationApi } from "./api.js?v=20261012-personal-1";
-import { mountMessageActions, agentWorkStatus } from "./message-actions.js";
+import { HttpCollaborationApi, MockCollaborationApi } from "./api.js?v=20261012-content-1";
+import { mountMessageActions, agentWorkStatus } from "./message-actions.js?v=20261012-content-1";
+import { mountMessageDeletion } from "./message-deletion.js?v=20261012-content-1";
 import { positionSessionContextPanel, bindSessionContextPanel } from "./session-context-panel.js";
-import { ExampleCollaborationApi } from "./example-api.js";
-import { mountOnboarding } from "./onboarding.js?v=20260927-1";
+import { ExampleCollaborationApi } from "./example-api.js?v=20261012-content-1";
+import { mountOnboarding } from "./onboarding.js?v=20261012-content-1";
 import { projectInvitationShareText } from "./invitation-share.js?v=20261012-invite-1";
 import { mountInvitationLink } from "./invitation-link.js?v=20261012-invite-1";
 import {
   canAppend,
+  agentContextUpdateReason,
   canRetryFailedAgentRequest,
   canOpenCodexLauncher,
   createIdempotencyKey,
@@ -47,14 +49,14 @@ import {
   sessionMetadataFromEvent,
   sessionDeliveryMode,
   snapshotStatusView,
-} from "./domain.js?v=20261012-stream-2";
-import { SessionSync } from "./realtime.js";
-import { mountCodeSync } from "./code-sync-view.js?v=20261012-github-3";
-import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20260924-2";
-import { mountHistorySummaries } from "./history-summary-view.js";
+} from "./domain.js?v=20261012-content-1";
+import { SessionSync } from "./realtime.js?v=20261012-content-1";
+import { mountCodeSync } from "./code-sync-view.js?v=20261012-content-1";
+import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20261012-content-1";
+import { mountHistorySummaries } from "./history-summary-view.js?v=20261012-content-1";
 import { DEFAULT_HISTORY_SUMMARY_INSTRUCTIONS } from "./history-summary-policy.js";
 import { createAmbientCanvas } from "./ambient-canvas.js?v=20260829-14";
-import { createLocalizer, memberRemovalAriaLabel, memberRoleAriaLabel } from "./i18n.js?v=20261012-personal-1";
+import { createLocalizer, memberRemovalAriaLabel, memberRoleAriaLabel } from "./i18n.js?v=20261012-content-1";
 import { automaticDeviceName } from "./device-name.js?v=20260830-1";
 import {
   CODEX_HARNESS,
@@ -71,7 +73,7 @@ import {
   resolveCodexRuntime,
   resolveDshRuntime,
   withoutDshPairingHash,
-} from "./dsh.js?v=20260925-3";
+} from "./dsh.js?v=20261012-content-1";
 import { renderMarkdown } from "./markdown.js?v=20260829-1";
 import { calendarDayKey, formatFullTimestamp, formatTimelineDay } from "./timeline-dates.js?v=20260927-1";
 import {
@@ -315,7 +317,8 @@ const agentRequestControl = mountAgentRequestControl({
   button: sendAgentButton, targetLabel: element("agent-target-label"), errorNode: sendError, api,
   getContext: () => ({
     events: state.sync.events, userId: state.currentUser?.id, sessionId: state.session?.id,
-    scope: `${authenticationGeneration}:${selectedSessionGeneration}:${state.project?.id}:${state.session?.id}`,
+    contentRevision: state.sync.contentRevision ?? 0,
+    scope: `${authenticationGeneration}:${selectedSessionGeneration}:${state.project?.id}:${state.session?.id}:${state.sync.contentRevision ?? 0}`,
     writable: canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase, kind: "human_chat" }).allowed,
     sending: Boolean(pendingMessageSend?.()),
     cloudProfiles: hostedAgentStatus.profiles,
@@ -377,11 +380,13 @@ const cloudGithubUi = mountCloudGithub({ api: () => api, t: (value) => localizer
   setText: (node, source) => localizer.setText(node, source),
   agentEnabled: CLOUD_AGENT_ENTRY_ENABLED,
   openSurface: () => codeSyncUi.openGithub({ refreshCloud: false }),
-  context: () => ({ userId: state.currentUser?.id, projectId: state.project?.id, sessionId: state.session?.id }) });
+  context: () => ({ userId: state.currentUser?.id, projectId: state.project?.id, sessionId: state.session?.id,
+    contentRevision: state.sync.contentRevision ?? 0 }) });
 element("cloud-agent-source").addEventListener("change", renderComposerPermissions);
 const codexDeviceAuthorization = mountDeviceAuthorization({ document, api, localizer,
   scope: () => `${authenticationGeneration}:${state.currentUser?.id}:${state.project?.id}` });
 const accountEmailHint = createAccountEmailHint();
+const agentPackageDownloads = mountAgentPackageDownloads({ document, localizer });
 const codexLauncher = mountCodexLauncher({ document, api, localizer, emailHint: accountEmailHint,
   context: () => state.currentUser && state.project ? {
     scope: `${authenticationGeneration}:${state.currentUser.id}:${state.project.id}`,
@@ -447,6 +452,7 @@ const historySummaryUi = mountHistorySummaries({
     sessionId: state.session?.id,
     userId: state.currentUser?.id,
     events: state.sync.events,
+    contentRevision: state.sync.contentRevision,
     writable: canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase, kind: "human_chat" }).allowed,
     executionProfile: historySummaryExecutionProfile(),
     instructions: state.settings.historySummaries.instructions,
@@ -485,9 +491,19 @@ function prepareExampleScenario(item) {
 }
 let connectCodexReturnFocus = null;
 let pendingHistoryTarget = null;
+let contentRefreshScroll = null;
+const messageDeletion = mountMessageDeletion({ document, api, localizer, announce, makeKey: createIdempotencyKey,
+  getContext: () => ({
+    scope: `${authenticationGeneration}:${selectedSessionGeneration}:${state.currentUser?.id}:${state.session?.id}`,
+    sessionId: state.session?.id, userId: state.currentUser?.id, events: state.sync.events,
+    writable: canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase, kind: "human_chat" }).allowed,
+  }),
+  onDeleted: receipt => sync.invalidateContent(receipt),
+});
 const messageActions = mountMessageActions({ document, api, localizer, announce, selectSession,
+  deletionAction: messageDeletion.action,
   getContext: () => ({ projectId: state.project?.id, sessionId: state.session?.id,
-    userId: state.currentUser?.id, members: state.session?.members ?? [],
+    userId: state.currentUser?.id, members: state.session?.members ?? [], events: state.sync.events,
     writable: canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase, kind: "human_chat" }).allowed }),
   revealEvent: (id, sequence) => {
     pendingHistoryTarget = { id, sequence, sessionId: state.session?.id };
@@ -614,6 +630,14 @@ void restoreBrowserSession();
 
 sync.subscribe((snapshot) => {
   const previousCount = state.sync.events.length;
+  const contentChanged = snapshot.contentRevision > (state.sync.contentRevision ?? 0);
+  if (contentChanged) {
+    contentRefreshScroll = captureTimelineScroll(timelineRegion, { automatic: false, followNewEvents: false, preserveAnchor: true });
+    messageActions.invalidateContent();
+    expandedWorklogs.clear(); collapsedWorklogs.clear(); progressSectionState.clear(); revealedProgressEvents.clear();
+    retryAgentRequestKeys.clear(); retryingAgentRequestIds.clear();
+    pendingHistoryTarget = null;
+  }
   const connectionTransition = advanceConnectionNotice(
     connectionNoticeState,
     snapshot,
@@ -622,8 +646,9 @@ sync.subscribe((snapshot) => {
   connectionNoticeState = connectionTransition.state;
   applySessionMetadataEvents(snapshot.events.slice(previousCount));
   state.sync = snapshot;
+  if (!snapshot.contentRefreshing) messageActions.reconcileContent();
   renderSyncState();
-  renderTimeline({ followNewEvents: snapshot.events.length > previousCount });
+  renderTimeline({ followNewEvents: !contentChanged && !contentRefreshScroll && snapshot.events.length > previousCount });
   renderComposerPermissions();
   renderSessionDeliveryControls();
   renderMembers();
@@ -952,6 +977,7 @@ element("done-connect-codex-button").addEventListener("click", () => connectCode
 connectCodexDialog.addEventListener("close", () => {
   codexDeviceAuthorization.clear();
   codexLauncher.close();
+  agentPackageDownloads.close("codex");
   const returnFocus = connectCodexReturnFocus;
   connectCodexReturnFocus = null;
   requestAnimationFrame(() => returnFocus?.isConnected && returnFocus.focus());
@@ -964,6 +990,7 @@ element("close-connect-dsh-button").addEventListener("click", () => connectDshDi
 element("done-connect-dsh-button").addEventListener("click", () => connectDshDialog.close());
 element("refresh-dsh-runtimes-button").addEventListener("click", () => void refreshDshRuntimes({ announceFailure: true }));
 connectDshDialog.addEventListener("close", () => {
+  agentPackageDownloads.close("dsh");
   const returnFocus = connectDshReturnFocus;
   connectDshReturnFocus = null;
   requestAnimationFrame(() => returnFocus?.isConnected && returnFocus.focus());
@@ -1353,6 +1380,7 @@ function resetWorkspaceToAuth() {
   sessionContextDetails.open = false;
   updateSessionContextDisclosure();
   messageActions.reset();
+  messageDeletion.reset(); contentRefreshScroll = null;
   authenticationGeneration += 1;
   workspaceLoadGeneration += 1;
   pendingMessageSend?.restore?.();
@@ -1582,6 +1610,8 @@ async function selectSession(sessionId) {
   codeSyncUi.close();
   historySummaryUi.reset();
   messageActions.reset();
+  messageDeletion.reset();
+  contentRefreshScroll = null;
   pendingHistoryTarget = null;
   if (state.session?.id !== sessionId) {
     expandedWorklogs.clear();
@@ -2181,7 +2211,8 @@ function renderSyncState() {
 
 function renderTimeline({ followNewEvents = false, preserveAnchor = false, focusSummaryId = null } = {}) {
   const focusedProgressToggle = document.activeElement?.dataset.progressToggle;
-  const scrollSnapshot = captureTimelineScroll(timelineRegion, {
+  const focusedMessageId = document.activeElement?.closest?.(".message-action, .event-card")?.closest?.(".event-card")?.id;
+  const scrollSnapshot = contentRefreshScroll ?? captureTimelineScroll(timelineRegion, {
     automatic: state.settings.composer.autoScroll,
     followNewEvents,
     preserveAnchor,
@@ -2247,6 +2278,7 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     const time = document.createElement("time");
 
     article.className = `event-card event-${event.type}`;
+    if (event.deleted || event.contentUnavailable) article.classList.add("event-message-deleted");
     article.id = `message-${event.id}`;
     article.dataset.historyAnchor = event.id;
     article.tabIndex = -1;
@@ -2280,13 +2312,15 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     header.append(identity, sequence, timeButton);
     const sourceControl = historySummaryUi.sourceControl(event);
     if (sourceControl) identity.prepend(sourceControl);
-    const content = eventContent(event);
+    const content = event.deleted ? localizer.t(event.deleted.reason === "author"
+      ? "Message deleted" : "Unavailable because its source was deleted")
+      : event.contentUnavailable ? localizer.t("Refreshing history…") : eventContent(event);
     const quoted = messageActions.quoted(event, events);
     article.append(header);
     if (quoted) article.append(quoted);
     if (content) {
       let body;
-      if (event.type === "agent_response") {
+      if (event.type === "agent_response" && !event.deleted && !event.contentUnavailable) {
         body = renderMarkdown(failedResponse ? localizer.t(content) : content);
       } else {
         body = document.createElement("p");
@@ -2358,12 +2392,14 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     ...scrollSnapshot,
     follow: scrollSnapshot.follow && events.length > 0,
   });
+  if (!state.sync.contentRefreshing) contentRefreshScroll = null;
   renderTimelineBottomControl();
   if (focusedProgressToggle) {
     Array.from(timeline.querySelectorAll("[data-progress-toggle]"))
       .find((toggle) => toggle.dataset.progressToggle === focusedProgressToggle)?.focus({ preventScroll: true });
   }
   if (focusSummaryId) element(`message-${focusSummaryId}`)?.querySelector("[data-summary-view-toggle]")?.focus({ preventScroll: true });
+  if (focusedMessageId && !focusedProgressToggle) element(focusedMessageId)?.focus({ preventScroll: true });
   if (pendingHistoryTarget && state.session && pendingHistoryTarget.sessionId === state.session.id) {
     const target = element(`message-${pendingHistoryTarget.id}`);
     if (target) {
@@ -2994,15 +3030,16 @@ function renderComposerPermissions() {
   const resolution = harness === DSH_HARNESS ? currentDshResolution() : currentCodexResolution();
   const cloud = harness === "cloud";
   const cloudProfile = currentCloudProfile();
-  const agentAllowed = chat.allowed && (cloud ? CLOUD_AGENT_ENTRY_ENABLED && cloudProfile?.available === true : resolution.runtime !== null);
-  const agentReason = chat.allowed ? (cloud ? cloudStatusText(cloudProfile) : resolution.reason) : chat.reason;
+  const contextNotice = cloud ? "" : agentContextUpdateReason(resolution.runtime, state.sync.contentRevision ?? 0);
+  const agentAllowed = chat.allowed && !contextNotice && (cloud ? CLOUD_AGENT_ENTRY_ENABLED && cloudProfile?.available === true : resolution.runtime !== null);
+  const agentReason = chat.allowed ? (contextNotice || (cloud ? cloudStatusText(cloudProfile) : resolution.reason)) : chat.reason;
   const sending = Boolean(pendingMessageSend?.());
   sendChatButton.disabled = sending || !chat.allowed;
   sendAgentButton.disabled = sending || !agentAllowed;
   element("send-cloud-agent-help").hidden = !cloud || !CLOUD_AGENT_ENTRY_ENABLED;
   element("cloud-agent-include-code").closest("label").hidden = element("cloud-agent-source").value === "github";
   messageInput.disabled = !chat.allowed && !agentAllowed;
-  element("composer-permission").textContent = chat.allowed ? "" : chat.reason;
+  element("composer-permission").textContent = localizer.t(chat.allowed ? contextNotice : chat.reason);
   const dshSelection = harness === DSH_HARNESS && resolution.runtime
     ? dshExecutionSelection(
       resolution.runtime,
@@ -3074,6 +3111,7 @@ async function sendMessage(kind) {
   }
   const isCurrent = captureWorkspaceScope();
   const sessionId = state.session.id;
+  const contentRevision = state.sync.contentRevision ?? 0;
   const draft = messageInput.value;
   const metadata = messageActions.metadata();
   const metadataFingerprint = JSON.stringify(metadata);
@@ -3091,9 +3129,9 @@ async function sendMessage(kind) {
       const includeCode = element("cloud-agent-include-code").checked;
       element("cloud-agent-include-code").checked = false;
       if (element("cloud-agent-source").value === "github") {
-        await cloudGithubUi.start(sessionId, { ...input, profileId: cloudProfile?.id, apiConfigRevision: cloudProfile?.api_config_revision });
+        await cloudGithubUi.start(sessionId, { ...input, contentRevision, profileId: cloudProfile?.id, apiConfigRevision: cloudProfile?.api_config_revision });
       } else {
-        await api.appendHostedAgentRequest(sessionId, { ...input, includeCode, profileId: cloudProfile?.id, apiConfigRevision: cloudProfile?.api_config_revision });
+        await api.appendHostedAgentRequest(sessionId, { ...input, contentRevision, includeCode, profileId: cloudProfile?.id, apiConfigRevision: cloudProfile?.api_config_revision });
       }
       void api.getHostedAgentStatus().then((status) => {
         if (isCurrent()) { hostedAgentStatus = status; renderComposerPermissions(); }
@@ -3113,7 +3151,7 @@ async function sendMessage(kind) {
           model: agentModelSelect.value,
           reasoningEffort: agentEffortSelect.value,
         });
-      await api.appendAgentRequest(sessionId, { ...input, executionProfile });
+      await api.appendAgentRequest(sessionId, { ...input, contentRevision, executionProfile });
     }
     if (isCurrent() && messageInput.value === draft && JSON.stringify(messageActions.metadata()) === metadataFingerprint) {
       messageInput.value = "";
@@ -3141,11 +3179,20 @@ async function retryAgentRequest(requestId, button) {
   const request = state.session
     ? state.sync.events.find((event) => event.type === "agent_request" && event.id === requestId)
     : undefined;
-  if (!request || !state.session || request.actor?.id !== state.currentUser?.id
+  if (!request || request.deleted || request.contentUnavailable || !state.session || request.actor?.id !== state.currentUser?.id
     || !retryAgentRequestPermission(request, { session: state.session, currentUser: state.currentUser,
       connectionPhase: state.sync.phase }).allowed) return;
-  const isCurrent = captureWorkspaceScope();
-  const retryScope = `${state.currentUser.id}:${state.session.id}:${requestId}`;
+  const sessionId = state.session.id, contentRevision = state.sync.contentRevision ?? 0;
+  const workspaceCurrent = captureWorkspaceScope();
+  const isCurrent = () => workspaceCurrent() && contentRevision === (state.sync.contentRevision ?? 0);
+  const currentRequest = () => {
+    if (!isCurrent()) return undefined;
+    const source = state.sync.events.find(event => event.type === "agent_request" && event.id === requestId);
+    return source && !source.deleted && !source.contentUnavailable && source.actor?.id === state.currentUser?.id
+      && retryAgentRequestPermission(source, { session: state.session, currentUser: state.currentUser,
+        connectionPhase: state.sync.phase }).allowed ? source : undefined;
+  };
+  const retryScope = `${state.currentUser.id}:${sessionId}:${requestId}:${contentRevision}`;
   const retryKey = retryAgentRequestKeys.get(retryScope) ?? createIdempotencyKey("agent-retry");
   retryingAgentRequestIds.add(requestId);
   button.disabled = true;
@@ -3164,16 +3211,20 @@ async function retryAgentRequest(requestId, button) {
     if (request.payload?.execution_profile?.harness === "opencode") {
       if (!CLOUD_AGENT_ENTRY_ENABLED) throw new Error(localizer.t("Cloud Agent · coming later"));
       const selection = request.payload?.profile_id?.startsWith("api-")
-        ? await api.getHostedAgentSelection(state.session.id, request.id) : undefined;
-      if (!isCurrent()) return;
-      const input = cloudRequestInput(request, retryKey, hostedAgentStatus.profiles, selection);
-      if (request.payload.include_code && !window.confirm(localizer.t("Retry with current GT Cloud code and save changes to your branch?"))) return;
+        ? await api.getHostedAgentSelection(sessionId, request.id) : undefined;
+      const authoritative = currentRequest();
+      if (!authoritative) return;
+      const input = cloudRequestInput(authoritative, retryKey, hostedAgentStatus.profiles, selection, contentRevision);
+      if (authoritative.payload.include_code && !window.confirm(localizer.t("Retry with current GT Cloud code and save changes to your branch?"))) return;
+      if (!currentRequest()) return;
       retryAgentRequestKeys.set(retryScope, retryKey);
-      await api.appendHostedAgentRequest(state.session.id, input);
+      await api.appendHostedAgentRequest(sessionId, input);
       void refreshHostedAgentStatus();
     } else {
+      const authoritative = currentRequest();
+      if (!authoritative) return;
       retryAgentRequestKeys.set(retryScope, retryKey);
-      await api.appendAgentRequest(state.session.id, retryAgentRequestInput(request, retryKey));
+      await api.appendAgentRequest(sessionId, { ...retryAgentRequestInput(authoritative, retryKey), contentRevision });
     }
     retryAgentRequestKeys.delete(retryScope);
   } catch (error) {
@@ -3309,6 +3360,7 @@ function openConnectCodexDialog() {
   }
   connectCodexReturnFocus = document.activeElement;
   connectCodexDialog.showModal();
+  void agentPackageDownloads.open("codex");
   if (launcherAvailable) void codexLauncher.open();
   requestAnimationFrame(() => element("close-connect-codex-button").focus());
 }
@@ -3364,6 +3416,7 @@ function openConnectDshDialog() {
   renderDshConnectionStatus();
   renderDshRuntimeList();
   if (!connectDshDialog.open) connectDshDialog.showModal();
+  void agentPackageDownloads.open("dsh");
   void refreshDshRuntimes({ announceFailure: true });
   requestAnimationFrame(() => element("close-connect-dsh-button").focus());
 }

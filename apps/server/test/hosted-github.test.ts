@@ -113,6 +113,204 @@ async function settled(f: ReturnType<typeof fixture>, id: string) {
  throw new Error("Cloud task did not settle");
 }
 
+for (const payer of ["service", "personal"] as const) {
+ for (const pin of ["stale", "missing"] as const) {
+ unixTest(`GitHub ${payer} automatic retry with a ${pin} history pin is refused before reserving or dispatching`, async () => {
+  const f = fixture(), other = deletionPeer(f);
+  try {
+   await connect(f);
+   const saved = payer === "personal" ? f.agent.putPersonalApi(f.actor, randomUUID(), { expected_revision: null,
+    provider_id: "anthropic", model: "claude-fixture", label: "Own retry API", api_key: ["synthetic", "retry", "provider", "key"].join("-"), enabled: true }) : undefined;
+   const input = { content: "Original GitHub request", profile_id: saved?.profile_id ?? "coding",
+    ...(saved ? { api_config_revision: saved.revision } : {}), idempotency_key: "github-in-flight-original" };
+   const receipt = f.github.start(f.actor, f.session.id, input), completed = await settled(f, receipt.id);
+   assert.equal(completed.state, "completed");
+   const original = f.db.sqlite.prepare("SELECT request_event_id FROM hosted_github_tasks WHERE id=?").get(receipt.id)!;
+   assert.ok(f.agent.selection(f.actor, f.session.id, String(original.request_event_id)));
+   other.deleteMessage(f.actor, f.session.id, String(original.request_event_id), "github-in-flight-delete");
+   f.advance();
+   const before = f.service.replay(f.actor, f.session.id, 0, 100).events.length, calls = f.calls.length;
+   assert.throws(() => f.github.start(f.actor, f.session.id, { ...input, ...(pin === "stale" ? { content_revision: 0 } : {}),
+    idempotency_key: "github-in-flight-automatic-retry" } as typeof input),
+     e => e instanceof ApiError && e.code === "context_changed" && (pin === "stale" || /refresh/iu.test(e.message)));
+   assert.equal(f.calls.length, calls); assert.equal(f.runs(), 1); assert.equal(f.db.hostedActiveRuns(), 0);
+   assert.equal(f.service.replay(f.actor, f.session.id, 0, 100).events.length, before);
+   assert.equal(f.db.hostedAgentUsage(f.actor, 100, 1000, payer).user_used_runs, 1);
+   assert.equal(f.db.hostedAgentUsage(f.actor, 100, 1000, payer === "service" ? "personal" : "service").user_used_runs, 0);
+   assert.equal(f.db.sqlite.prepare("SELECT count(*) AS n FROM events WHERE idempotency_key=?").get("github-in-flight-automatic-retry")?.n, 0);
+   const current = f.github.start(f.actor, f.session.id, { ...input, content: "New explicitly authored GitHub request",
+    content_revision: 1, idempotency_key: "github-current-history" } as typeof input);
+   assert.equal((await settled(f, current.id)).state, "completed"); assert.equal(f.runs(), 2);
+   const currentRequest = f.db.sqlite.prepare("SELECT request_event_id FROM hosted_github_tasks WHERE id=?").get(current.id)!;
+   assert.equal(f.db.getEvent(f.session.id, String(currentRequest.request_event_id)).content_revision, 1);
+   assert.equal(f.db.hostedAgentUsage(f.actor, 100, 1000, payer).user_used_runs, 2);
+   assert.equal(f.db.hostedAgentUsage(f.actor, 100, 1000, payer === "service" ? "personal" : "service").user_used_runs, 0);
+  } finally { await f.close(); other.close(); }
+ });
+ }
+}
+
+async function inactive(f: ReturnType<typeof fixture>) {
+ for (let n = 0; n < 500 && f.db.hostedActiveRuns(); n++) await setTimeout(5);
+ assert.equal(f.db.hostedActiveRuns(), 0);
+}
+
+function deletionPeer(f: ReturnType<typeof fixture>) {
+ return new CollaborationDatabase(join(f.directory, "db"), { authTokenPepper: "github-test-pepper-long",
+   clock: () => new Date("2026-10-03T00:01:00Z") });
+}
+
+unixTest("deleted history makes private GitHub answers, source snapshots, continuation and publication inaccessible", { timeout: fixtureTimeout }, async () => {
+ const f = fixture(), other = deletionPeer(f);
+ try {
+  const source = f.service.appendEvent(f.actor, f.session.id, { type: "human_chat", visibility: "session", idempotency_key: "github-deleted-source",
+   payload: { content: "GITHUB_DELETED_PRIVATE_SOURCE" } });
+  await connect(f);
+  const input = { content: "Work", profile_id: "coding", idempotency_key: "github-delete-completed" };
+  const receipt = f.github.start(f.actor, f.session.id, input);
+  const task = await settled(f, receipt.id);
+  assert.equal(task.state, "completed"); assert.ok(task.revision && task.changes.length);
+  const calls = f.calls.length, runs = f.runs();
+  other.deleteMessage(f.actor, f.session.id, source.id, "github-delete-source");
+  const changed = (e: unknown) => e instanceof ApiError && e.code === "context_changed";
+  assert.throws(() => f.github.view(f.actor, task.id), changed);
+  assert.throws(() => f.github.start(f.actor, f.session.id, { ...input, idempotency_key: "github-delete-continue", continue_task_id: task.id }), changed);
+  await assert.rejects(f.github.publish(f.actor, task.id, { expected_revision: task.revision!, title: "Old result", body: "Old result" }), changed);
+  assert.equal(f.calls.length, calls); assert.equal(f.runs(), runs);
+  const row = f.db.sqlite.prepare("SELECT input_json,initial_files,starting_files,result_files,answer,revision,error_code FROM hosted_github_tasks WHERE id=?").get(task.id)!;
+  assert.equal(JSON.parse(String(row.input_json)).content, "[Message deleted]");
+  for (const field of ["initial_files", "starting_files", "result_files", "answer", "revision"]) assert.equal(row[field], null);
+  assert.equal(row.error_code, "context_changed");
+  assert.deepEqual(f.github.list(f.actor, f.session.project_id), []);
+  assert.equal(f.db.sqlite.prepare("SELECT count(*) AS n FROM hosted_github_tasks WHERE id=?").get(task.id)?.n, 0,
+   "already-stopped erased task metadata must not occupy invisible, unremovable task-storage quota");
+ } finally { await f.close(); other.close(); }
+});
+
+unixTest("deletion during GitHub source lookup blocks later fetches and model dispatch", { timeout: fixtureTimeout }, async () => {
+ const f = fixture(), other = deletionPeer(f), entered = deferred(), release = deferred();
+ const original = f.githubOptions.fetch;
+ let armed = false;
+ f.githubOptions.fetch = async (url, init) => {
+  if (armed && new URL(String(url)).pathname === "/repos/owner/project") { armed = false; entered.resolve(); await release.promise; }
+  return original(url, init);
+ };
+ try {
+  const source = f.service.appendEvent(f.actor, f.session.id, { type: "human_chat", visibility: "session", idempotency_key: "github-snapshot-source", payload: { content: "OLD_SOURCE_FETCH" } });
+  await connect(f); armed = true;
+  const task = f.github.start(f.actor, f.session.id, { content: "Work", profile_id: "coding", idempotency_key: "github-source-race" });
+  await entered.promise;
+  other.deleteMessage(f.actor, f.session.id, source.id, "github-delete-source-race");
+  const calls = f.calls.length;
+  release.resolve(); await inactive(f);
+  assert.equal(f.runs(), 0);
+  assert.equal(f.calls.length, calls + 1, "only the already-started lookup may settle; no next fetch may start");
+  const row = f.db.sqlite.prepare("SELECT initial_files,starting_files,result_files,answer,error_code FROM hosted_github_tasks WHERE id=?").get(task.id)!;
+  assert.equal(row.initial_files, null); assert.equal(row.starting_files, null); assert.equal(row.result_files, null); assert.equal(row.answer, null);
+  assert.equal(row.error_code, "context_changed");
+ } finally { release.resolve(); await f.close(); other.close(); }
+});
+
+unixTest("deletion at private GitHub result sealing cannot repopulate scrubbed snapshots", { timeout: fixtureTimeout }, async () => {
+ const f = fixture(), other = deletionPeer(f);
+ try {
+  const source = f.service.appendEvent(f.actor, f.session.id, { type: "human_chat", visibility: "session", idempotency_key: "github-seal-source", payload: { content: "SEALED_OLD_SOURCE" } });
+  await connect(f);
+  const seal = (f.github as any).seal.bind(f.github);
+  let count = 0;
+  (f.github as any).seal = (value: unknown, owner: string) => {
+   // The first two calls prepare initial/starting files. Invalidate just before
+   // the result cache is committed, after all asynchronous model work settled.
+   if (++count === 3) other.deleteMessage(f.actor, f.session.id, source.id, "github-delete-at-seal");
+   return seal(value, owner);
+  };
+  const task = f.github.start(f.actor, f.session.id, { content: "Work", profile_id: "coding", idempotency_key: "github-seal-race" });
+  await inactive(f);
+  const row = f.db.sqlite.prepare("SELECT initial_files,starting_files,result_files,answer,revision,error_code FROM hosted_github_tasks WHERE id=?").get(task.id)!;
+  for (const field of ["initial_files", "starting_files", "result_files", "answer", "revision"]) assert.equal(row[field], null);
+  assert.equal(row.error_code, "context_changed");
+ } finally { await f.close(); other.close(); }
+});
+
+unixTest("history deletion fences GitHub publication after an already-issued remote read", { timeout: fixtureTimeout }, async () => {
+ const f = fixture(), other = deletionPeer(f), entered = deferred(), release = deferred();
+ let publication: Promise<unknown> | undefined, armed = false;
+ const original = f.githubOptions.fetch;
+ f.githubOptions.fetch = async (url, init) => {
+  if (armed && new URL(String(url)).pathname === "/repos/owner/project") { armed = false; entered.resolve(); await release.promise; }
+  return original(url, init);
+ };
+ try {
+  const source = f.service.appendEvent(f.actor, f.session.id, { type: "human_chat", visibility: "session", idempotency_key: "github-publish-source", payload: { content: "PUBLISH_OLD_SOURCE" } });
+  await connect(f);
+  const task = await settled(f, f.github.start(f.actor, f.session.id, { content: "Work", profile_id: "coding", idempotency_key: "github-publish-race" }).id);
+  assert.ok(task.revision); armed = true;
+  const writes = f.calls.filter(c => c.method !== "GET").length;
+  publication = f.github.publish(f.actor, task.id, { expected_revision: task.revision!, title: "Fixture", body: "Fixture" });
+  const outcome = publication.catch((error: unknown) => error);
+  await entered.promise;
+  other.deleteMessage(f.actor, f.session.id, source.id, "github-delete-during-publish");
+  release.resolve();
+  assert.equal((await outcome as ApiError).code, "context_changed");
+  assert.equal(f.calls.filter(c => c.method !== "GET").length, writes);
+  assert.equal(f.db.sqlite.prepare("SELECT pr_url FROM hosted_github_tasks WHERE id=?").get(task.id)?.pr_url, null);
+ } finally { release.resolve(); await publication?.catch(() => undefined); await f.close(); other.close(); }
+});
+
+unixTest("another database's deletion aborts an active GitHub run but keeps its slot until actual exit", { timeout: fixtureTimeout }, async () => {
+ const f = fixture(), other = deletionPeer(f), entered = deferred(), release = deferred();
+ const original = f.runOptions.runContainer!;
+ let signal: AbortSignal | undefined, runs = 0;
+ const prompts: string[] = [];
+ f.runOptions.runContainer = async (...args) => {
+  runs++; signal = args[2];
+  const mount = args[0].find((value) => value.endsWith("dst=/run/gatherthread,readonly"))!;
+  prompts.push(readFileSync(join(mount.split("src=")[1]!.split(",dst=")[0]!, "prompt.txt"), "utf8"));
+  if (runs === 1) { entered.resolve(); await release.promise; }
+  return original(...args);
+ };
+ try {
+  const source = f.service.appendEvent(f.actor, f.session.id, { type: "human_chat", visibility: "session", idempotency_key: "github-active-source", payload: { content: "GITHUB_ACTIVE_DELETED_SENTINEL" } });
+  f.service.appendEvent(f.actor, f.session.id, { type: "human_chat", visibility: "session", idempotency_key: "github-active-surviving", payload: { content: "GITHUB_ACTIVE_SURVIVING_SENTINEL" } });
+  await connect(f);
+  const task = f.github.start(f.actor, f.session.id, { content: "Work", profile_id: "coding", idempotency_key: "github-active-race" });
+  await entered.promise;
+  assert.match(prompts[0]!, /GITHUB_ACTIVE_DELETED_SENTINEL/);
+  other.deleteMessage(f.actor, f.session.id, source.id, "github-delete-active");
+  for (let n = 0; n < 400 && !signal?.aborted; n++) await setTimeout(5);
+  assert.equal(signal?.aborted, true, "independent authority poll must abort without in-process notification");
+  assert.equal(f.db.hostedActiveRuns(), 1, "a still-running executor is not a free resource slot");
+  assert.equal(f.service.appendHostedGithubProgress(task.id, { id: "late", content: "GITHUB_ACTIVE_DELETED_SENTINEL", phase: "stream",
+   streamId: "00000000-0000-4000-8000-000000000001", streamMode: "snapshot", streamKind: "answer", streamRevision: 1, streamState: "running" }), false);
+  release.resolve(); await inactive(f);
+  const row = f.db.sqlite.prepare("SELECT result_files,answer,revision,error_code FROM hosted_github_tasks WHERE id=?").get(task.id)!;
+  assert.equal(row.result_files, null); assert.equal(row.answer, null); assert.equal(row.revision, null); assert.equal(row.error_code, "context_changed");
+  f.advance();
+  const next = f.github.start(f.actor, f.session.id, { content: "New work", profile_id: "coding", content_revision: 1, idempotency_key: "github-active-fresh" });
+  assert.equal((await settled(f, next.id)).state, "completed");
+  assert.doesNotMatch(prompts[1]!, /GITHUB_ACTIVE_DELETED_SENTINEL/); assert.match(prompts[1]!, /GITHUB_ACTIVE_SURVIVING_SENTINEL/);
+  assert.equal(runs, 2); assert.equal(f.db.hostedAgentUsage(f.actor, 20, 20).user_used_runs, 2);
+ } finally { release.resolve(); await f.close(); other.close(); }
+});
+
+unixTest("deletion before GitHub execution authorization releases an undispatched reserved slot", { timeout: fixtureTimeout }, async () => {
+ const f = fixture(), other = deletionPeer(f);
+ try {
+  const source = f.service.appendEvent(f.actor, f.session.id, { type: "human_chat", visibility: "session", idempotency_key: "github-before-start-source", payload: { content: "UNDISPATCHED_SOURCE" } });
+  await connect(f);
+  const read = (f.github as any).task.bind(f.github);
+  let armed = true;
+  (f.github as any).task = (...args: unknown[]) => {
+   if (armed) { armed = false; other.deleteMessage(f.actor, f.session.id, source.id, "github-delete-before-authorize"); }
+   return read(...args);
+  };
+  assert.throws(() => f.github.start(f.actor, f.session.id, { content: "Work", profile_id: "coding", idempotency_key: "github-no-dispatch" }),
+   (e: unknown) => e instanceof ApiError && e.code === "context_changed");
+  assert.equal(f.runs(), 0);
+  assert.equal(f.db.hostedActiveRuns(), 0, "authorization failure before any executor starts must not leak the reserved slot");
+ } finally { await f.close(); other.close(); }
+});
+
 function deferred() {
  let resolve!: () => void;
  const promise = new Promise<void>((done) => { resolve = done; });

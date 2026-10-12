@@ -1,4 +1,4 @@
-import { eventContent, isFailedAgentResponse } from "./domain.js";
+import { eventContent, isFailedAgentResponse } from "./domain.js?v=20261012-content-1";
 import {
   activeHistorySummaries, createHistorySummarySourceResolver, historySummaryMarker, historySummaryText,
   historySummaryVersions as validatedHistorySummaryVersions, isHistorySummaryRequest, selectHistorySummarySources,
@@ -15,7 +15,9 @@ const sourceTypes = new Set(["human_chat", "agent_request", "agent_response"]);
 export function historyWireEvents(events) {
   return events.map((event) => ({
     id: event.id, sequence: event.sequence, type: event.type, actor_user_id: event.actor?.id ?? event.actor_user_id,
-    payload: event.payload, reply_to_event_id: replyTo(event), visibility: publicEvent(event) ? "session" : "owner_only",
+    payload: event.deleted || event.contentUnavailable ? { content: "" } : event.payload,
+    reply_to_event_id: replyTo(event), visibility: publicEvent(event) ? "session" : "owner_only",
+    ...(event.deleted ? { deleted: event.deleted } : {}),
   }));
 }
 
@@ -33,6 +35,11 @@ function historySummaryIndex(events) {
   const requests = [];
   for (let index = 0; index < wire.length; index += 1) {
     const item = wire[index];
+    if (item.visibility === "session" && item.type === "agent_response" && item.reply_to_event_id
+      && !firstResponseByRequest.has(item.reply_to_event_id)) {
+      firstResponseByRequest.set(item.reply_to_event_id, events[index]);
+    }
+    if (events[index].deleted || events[index].contentUnavailable) continue;
     if (isHistorySummaryRequest(item)) summaryIds.add(item.id);
     if (item.visibility !== "session") continue;
     if (historySummaryText(item.payload).trim()) nonemptyIds.add(item.id);
@@ -40,7 +47,6 @@ function historySummaryIndex(events) {
     if (metadata) requests.push({ request: events[index], metadata });
     if (item.type !== "agent_response") continue;
     const parent = item.reply_to_event_id;
-    if (parent && !firstResponseByRequest.has(parent)) firstResponseByRequest.set(parent, events[index]);
     // Match the shared leaf predicate exactly, without its per-source relation
     // scans. In particular, a defined error (even null/false) is not success.
     if (nonemptyIds.has(item.id) && item.payload?.error === undefined
@@ -51,12 +57,12 @@ function historySummaryIndex(events) {
   }
   const validated = validatedHistorySummaryVersions(wire);
   const summaries = new Set(validated.map((version) => version.response.id));
-  const eligible = events.filter((event) => publicEvent(event) && (summaryIds.has(replyTo(event))
+  const eligible = events.filter((event) => !event.deleted && !event.contentUnavailable && publicEvent(event) && (summaryIds.has(replyTo(event))
     ? summaries.has(event.id)
     : sourceTypes.has(event.type) && nonemptyIds.has(event.id) && !summaryIds.has(event.id)
       && (event.type === "human_chat" || successfulResponseIds.has(event.id)
         || (event.type === "agent_request" && completedRequestIds.has(event.id)))));
-  return { wire, eligible, validated, requests, firstResponseByRequest,
+  return { wire, eligible, validated, requests, summaryIds, firstResponseByRequest,
     sourceMap: new Map(eligible.map((event) => [event.id, event])) };
 }
 
@@ -67,7 +73,7 @@ export function eligibleHistorySources(events) {
 function versionsFromIndex({ sourceMap, validated, requests, firstResponseByRequest }) {
   const completed = new Map(validated.map((version) => [version.request.id, version]));
   const sourcesFor = createHistorySummarySourceResolver(validated);
-  return requests.map(({ request, metadata }) => {
+  return requests.filter(({ request }) => !firstResponseByRequest.get(request.id)?.deleted).map(({ request, metadata }) => {
     const response = firstResponseByRequest.get(request.id);
     const sources = metadata.source_event_ids.map((id) => sourceMap.get(id)).filter(Boolean).sort((a, b) => a.sequence - b.sequence);
     const available = sources.length === metadata.source_event_ids.length && sources.every((event) => event.sequence < request.sequence);
@@ -92,8 +98,8 @@ export function historySummaryTimeline(events, { original = false, selecting = f
   const versions = versionsFromIndex(index);
   const activeIds = new Set(activeHistorySummaries(index.wire).map((version) => version.request.id));
   const active = versions.filter((version) => activeIds.has(version.id));
-  const requestIds = new Set(versions.map((version) => version.id));
-  const hidden = new Set(events.filter((event) => requestIds.has(event.id) || requestIds.has(replyTo(event))).map((event) => event.id));
+  const hidden = new Set(events.filter((event) => index.summaryIds.has(event.id)
+    || index.summaryIds.has(replyTo(event)) && !event.deleted).map((event) => event.id));
   const before = new Map();
   const add = (id, version) => before.set(id, [...(before.get(id) ?? []), version]);
   if (!original && !selecting) {

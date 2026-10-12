@@ -144,7 +144,7 @@ export class CodeRepository {
         review_status=CASE WHEN code_branches.head_commit=excluded.head_commit THEN code_branches.review_status ELSE 'draft' END`)
         .run(projectId, id, `gt/${id.slice(7)}`, actor.user_id, commit, logicalBytes);
       return commit;
-    });
+    }, authorizeExecution);
   }
 
   snapshot(actor: Actor, projectId: string, branchId: string): CodeSnapshotResult {
@@ -317,11 +317,15 @@ export class CodeRepository {
     } catch (error) { if (sql.isTransaction) sql.exec("ROLLBACK"); throw error; }
   }
 
-  private mutate(actor: Actor, projectId: string, operation: string, input: { idempotency_key: string }, permission: "owner" | "writer", apply: () => string): CodeMutationResult {
+  private mutate(actor: Actor, projectId: string, operation: string, input: { idempotency_key: string }, permission: "owner" | "writer", apply: () => string,
+    authorizeExecution?: () => void): CodeMutationResult {
     const sql = this.database.sqlite;
     sql.exec("BEGIN IMMEDIATE");
     try {
       this.authorize(actor, projectId, permission);
+      // Model work is pinned to the history it read. Check under the same write lock
+      // as the head/receipt mutation, not only before entering this transaction.
+      authorizeExecution?.();
       this.pruneExpiredReceipts(projectId);
       const hash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
       const receipt = sql.prepare("SELECT * FROM code_mutations WHERE project_id=? AND idempotency_key=?")

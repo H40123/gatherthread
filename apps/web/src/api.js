@@ -1,13 +1,14 @@
-import { avatarImage } from "./avatars.js";
+import { avatarImage } from "./avatars.js?v=20261012-content-1";
 import { HostedGithubStatusSchema, HostedGithubAuthorizationSchema, HostedGithubConnectionSchema, HostedGithubDisconnectionSchema,
   HostedGithubTaskSchema, HostedGithubTaskListSchema, HostedAgentAcceptedSchema, HostedAgentPausedSchema,
-  ProjectInvitationPreviewSchema, CloudApiStatusSchema, CloudApiSavedSchema, HostedAgentSelectionSchema } from "@gatherthread/protocol";
+  ProjectInvitationPreviewSchema, DeleteMessageResultSchema, CloudApiStatusSchema, CloudApiSavedSchema,
+  HostedAgentSelectionSchema } from "@gatherthread/protocol";
 import {
   createIdempotencyKey,
   isExecutionRuntime,
   normalizeInvitation,
   normalizeSnapshotRequest,
-} from "./domain.js";
+} from "./domain.js?v=20261012-content-1";
 
 const TITLE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
 
@@ -33,7 +34,8 @@ function normalizeMockTitle(value, label) {
 
 export class ApiError extends Error {
   constructor(message, { status = 0, code = "unknown" } = {}) {
-    super(message);
+    super(code === "connector_update_required" ? "Update and reconnect your Agent connector before continuing."
+      : code === "context_changed" ? "Shared history changed. Start a new Agent request with the current history." : message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
@@ -159,6 +161,7 @@ export class HttpCollaborationApi {
         memberCount: Number(session.member_count ?? 0),
         role: session.role,
         currentSequence: session.current_sequence,
+        contentRevision: session.content_revision ?? 0,
       };
     });
   }
@@ -305,6 +308,7 @@ export class HttpCollaborationApi {
         memberCount: Number(session.member_count ?? 0),
         role: session.role,
         currentSequence: session.current_sequence,
+        contentRevision: session.content_revision ?? 0,
       };
     });
   }
@@ -394,6 +398,7 @@ export class HttpCollaborationApi {
       model: runtime.model,
       status: runtime.status,
       lastSeenAt: runtime.last_seen_at,
+      ...(runtime.context_deletion_version === undefined ? {} : { contextDeletionVersion: runtime.context_deletion_version }),
       ...(Array.isArray(runtime.execution_profiles) ? {
         executionProfiles: runtime.execution_profiles.map((profile) => ({
           provider: profile.provider,
@@ -550,7 +555,21 @@ export class HttpCollaborationApi {
       head_sequence: this.sessionHeads.get(sessionId) ?? page.cursor,
       next_after_sequence: page.cursor,
       has_more: page.has_more,
+      content_revision: page.content_revision ?? 0,
     };
+  }
+
+  async deleteMessage(sessionId, eventId, input) {
+    const result = await hostedResponse(DeleteMessageResultSchema,
+      this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}/delete`, {
+        method: "POST", body: JSON.stringify({ idempotency_key: input.idempotencyKey }),
+      }), "Deletion response is invalid. Refresh the history and try again.");
+    if (result.target_event_id !== eventId || result.event.session_id !== sessionId || result.event.type !== "message_deleted"
+      || result.event.payload?.target_event_id !== eventId || result.event.payload?.content_revision !== result.content_revision) {
+      throw new Error("Deletion response is invalid. Refresh the history and try again.");
+    }
+    return { event: this.#event(result.event), targetEventId: result.target_event_id, contentRevision: result.content_revision,
+      affectedEventIds: result.affected_event_ids, affectedTruncated: result.affected_truncated };
   }
 
   appendHumanChat(sessionId, input) {
@@ -592,6 +611,7 @@ export class HttpCollaborationApi {
       method: "POST",
       body: JSON.stringify({ profile_id: input.profileId ?? "default", content: input.content, include_code: input.includeCode === true,
         idempotency_key: input.idempotencyKey, reply_to_event_id: input.replyTo ?? null,
+        ...(input.contentRevision === undefined ? {} : { content_revision: input.contentRevision }),
         ...(input.apiConfigRevision === undefined ? {} : { api_config_revision: input.apiConfigRevision }) }),
     }), HOSTED_AGENT_RESPONSE_ERROR);
   }
@@ -618,7 +638,7 @@ export class HttpCollaborationApi {
       }), HOSTED_AGENT_RESPONSE_ERROR);
       return this.#event(receipt.request_event);
     }
-    const { historySummaryExecutionWire } = await import("./history-summaries.js");
+    const { historySummaryExecutionWire } = await import("./history-summaries.js?v=20261012-content-1");
     const { event } = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/history-summaries`, {
       method: "POST",
       body: JSON.stringify({
@@ -668,6 +688,7 @@ export class HttpCollaborationApi {
         },
         idempotency_key: input.idempotencyKey,
         reply_to_event_id: input.replyTo ?? null,
+        ...(input.contentRevision === undefined ? {} : { content_revision: input.contentRevision }),
       }),
     }).then(({ event }) => this.#event(event));
   }
@@ -714,6 +735,7 @@ export class HttpCollaborationApi {
       role,
       updatedAt: session.updated_at,
       connectorState: session.connector_state ?? session.connectorState ?? null,
+      contentRevision: session.content_revision ?? 0,
     };
   }
 
@@ -734,6 +756,8 @@ export class HttpCollaborationApi {
       createdAt: event.created_at,
       replyTo: event.reply_to_event_id ?? null,
       payload: event.payload,
+      ...(event.content_revision === undefined ? {} : { contentRevision: event.content_revision }),
+      ...(event.deleted ? { deleted: event.deleted } : {}),
       provenance: provenance ? {
         username,
         runtimeId: provenance.runtime_id,
@@ -1585,7 +1609,71 @@ export class MockCollaborationApi {
       headSequence,
       nextAfterSequence,
       hasMore: nextAfterSequence < headSequence,
+      contentRevision: this.#findSession(sessionId).contentRevision ?? 0,
     };
+  }
+
+  async deleteMessage(sessionId, eventId, input) {
+    await this.#wait();
+    const session = this.#findSession(sessionId);
+    const member = session.members.find(item => item.userId === this.currentUser.id);
+    const events = this.events.get(sessionId) ?? [];
+    const target = events.find(event => event.id === eventId);
+    if (!member || member.role === "viewer" || target?.actor?.id !== this.currentUser.id
+      || !["human_chat", "agent_request", "agent_response"].includes(target?.type)
+      || (session.mode === "solo" && session.ownerUserId !== this.currentUser.id)) {
+      throw new ApiError("Only the author may delete a writable message.", { status: 403, code: "forbidden" });
+    }
+    this.deletionReceipts ??= new Map();
+    const key = `${sessionId}:${this.currentUser.id}:${input.idempotencyKey}`;
+    const previous = this.deletionReceipts.get(key);
+    if (previous) {
+      if (previous.targetEventId !== eventId) throw new ApiError("Deletion retry conflicts.", { status: 409, code: "idempotency_conflict" });
+      return structuredClone(previous);
+    }
+    if (target.deleted) throw new ApiError("This message was already deleted.", { status: 409, code: "message_deleted" });
+    const reasons = new Map([[eventId, "author"]]);
+    const includeLinked = (requestId, reason) => {
+      for (const event of events) if (event.id !== eventId && event.replyTo === requestId
+        && ["agent_response", "agent_progress", "tool_call", "tool_result"].includes(event.type)) reasons.set(event.id, reason);
+    };
+    if (target.type === "agent_request") includeLinked(eventId, "request");
+    if (target.type === "agent_response" && target.replyTo) includeLinked(target.replyTo, "request");
+    reasons.set(eventId, "author");
+    // Match the real service's conservative invalidation of old generated work.
+    // An independently authored request/chat is retained, never impersonated.
+    for (const event of events) if (event.type === "agent_request" && event.sequence > target.sequence) includeLinked(event.id, "request");
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const event of events) {
+        if (reasons.has(event.id) || !event.payload?.history_summary?.source_event_ids?.some(id => reasons.has(id))) continue;
+        reasons.set(event.id, "summary_invalidated"); includeLinked(event.id, "summary_invalidated"); expanded = true;
+      }
+    }
+    session.contentRevision = (session.contentRevision ?? 0) + 1;
+    const deletedAt = new Date().toISOString();
+    for (const event of events) if (reasons.has(event.id)) {
+      event.payload = { content: "[Message deleted]" }; event.provenance = null;
+      event.contentRevision = session.contentRevision;
+      event.deleted = { deleted_at: deletedAt, reason: reasons.get(event.id) };
+    }
+    for (const request of [...events]) {
+      if (request.type !== "agent_request" || request.deleted
+        || events.some(event => event.replyTo === request.id && event.type === "agent_response" && !event.deleted)) continue;
+      const terminal = this.#makeEvent(sessionId, "agent_response", { actor: request.actor, replyTo: request.id,
+        idempotencyKey: createIdempotencyKey("mock-context-changed") });
+      terminal.payload = { content: "Shared history changed. Start a new Agent request with the current history.",
+        status: "failed", error: { code: "context_changed" } };
+      this.#publish(sessionId, terminal);
+    }
+    const marker = this.#makeEvent(sessionId, "message_deleted", { actor: this.currentUser, idempotencyKey: input.idempotencyKey });
+    marker.payload = { target_event_id: eventId, content_revision: session.contentRevision };
+    const receipt = { event: marker, targetEventId: eventId, contentRevision: session.contentRevision,
+      affectedEventIds: [...reasons.keys()].slice(0, 256), affectedTruncated: reasons.size > 256 };
+    this.deletionReceipts.set(key, receipt);
+    this.#publish(sessionId, marker);
+    return structuredClone(receipt);
   }
 
   appendHumanChat(sessionId, input) {
@@ -1598,6 +1686,7 @@ export class MockCollaborationApi {
     if (existing) return request;
     const actor = structuredClone(this.currentUser);
     const settled = () => !this.sessions.some((session) => session.id === sessionId)
+      || (this.events.get(sessionId) ?? []).some(event => event.id === request.id && event.deleted)
       || (this.events.get(sessionId) ?? []).some((event) => event.replyTo === request.id
         && (event.type === "agent_response" || event.payload?.status === "paused"));
     for (const [delay, content] of [
@@ -1675,7 +1764,8 @@ export class MockCollaborationApi {
   async createHistorySummary(sessionId, input) {
     const existing = this.idempotentEvents.get(`${sessionId}:${input.idempotencyKey}`);
     if (existing) return structuredClone(existing);
-    const { historyWireEvents, historySummaryExecutionWire } = await import("./history-summaries.js");
+    const contentRevision = this.#findSession(sessionId).contentRevision ?? 0;
+    const { historyWireEvents, historySummaryExecutionWire } = await import("./history-summaries.js?v=20261012-content-1");
     const { selectHistorySummarySources, historySummarySourceJson, buildHistorySummaryPrompt } = await import("./history-summary-policy.js");
     historySummaryExecutionWire(input.executionProfile);
     let sources;
@@ -1685,7 +1775,7 @@ export class MockCollaborationApi {
     const marker = { version: 1, source_event_ids: sources.map((event) => event.id),
       source_digest: [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("") };
     return this.appendAgentRequest(sessionId, { ...input,
-      content: buildHistorySummaryPrompt(sources, input.instructions), historySummary: marker });
+      contentRevision, content: buildHistorySummaryPrompt(sources, input.instructions), historySummary: marker });
   }
 
   async getProjectContextPolicy(projectId) {
@@ -1730,6 +1820,13 @@ export class MockCollaborationApi {
     }
     const existing = this.idempotentEvents.get(`${sessionId}:${input.idempotencyKey}`);
     if (existing) return structuredClone(existing);
+    if (type === "agent_request" && ((input.contentRevision !== undefined && input.contentRevision !== (session.contentRevision ?? 0))
+      || ((session.contentRevision ?? 0) > 0 && input.contentRevision === undefined))) {
+      throw new ApiError("Shared history changed.", { status: 409, code: "context_changed" });
+    }
+    if (input.replyTo && (this.events.get(sessionId) ?? []).find(event => event.id === input.replyTo)?.deleted) {
+      throw new ApiError("The quoted message was deleted.", { status: 409, code: "message_deleted" });
+    }
     const event = this.#makeEvent(sessionId, type, {
       content: input.content,
       actor: this.currentUser,
@@ -1764,6 +1861,7 @@ export class MockCollaborationApi {
       sequence: (bucket.at(-1)?.sequence ?? 0) + 1,
       idempotencyKey,
       type,
+      contentRevision: this.#findSession(sessionId).contentRevision ?? 0,
       actor: structuredClone(actor),
       createdAt: new Date().toISOString(),
       visibility: "session",
@@ -1829,6 +1927,7 @@ export class MockCollaborationApi {
       memberCount: session.members.length,
       role: membership?.role ?? "viewer",
       latestSequence: this.events.get(session.id)?.at(-1)?.sequence ?? 0,
+      contentRevision: session.contentRevision ?? 0,
     };
   }
 

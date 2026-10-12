@@ -47,6 +47,7 @@ export class HostedGithub {
  private readonly refreshing = new Map<string, Promise<string>>();
  private readonly controllers = new Map<string, AbortController>();
  private readonly runner: HostedRepositoryRunner;
+ private readonly unsubscribeDeletion: () => void;
  private closing = false;
  constructor(private readonly service: CollaborationService, private readonly agent: HostedAgent,
    runnerOptions: HostedAgentOptions, private readonly options: HostedGithubOptions) {
@@ -68,6 +69,13 @@ export class HostedGithub {
    }
    this.sqlite.prepare("UPDATE hosted_github_tasks SET state='interrupted',error_code='github_task_interrupted' WHERE state='running'").run();
    this.runner = new HostedRepositoryRunner(runnerOptions);
+   this.unsubscribeDeletion = service.onEvent((event) => {
+     if (event.type !== "message_deleted") return;
+     for (const [id, controller] of this.controllers) {
+       const row = this.sqlite.prepare("SELECT session_id FROM hosted_github_tasks WHERE id=?").get(id);
+       if (row?.session_id === event.session_id) controller.abort();
+     }
+   });
    this.prune();
  }
  private seal(value: unknown, owner: string) {
@@ -141,7 +149,7 @@ export class HostedGithub {
  }
  private prune() {
    this.sqlite.prepare("DELETE FROM hosted_github_oauth WHERE expires_at < ?").run(Date.now());
-   this.sqlite.prepare("DELETE FROM hosted_github_tasks WHERE expires_at < ? AND state != 'running'").run(Date.now());
+   this.sqlite.prepare("DELETE FROM hosted_github_tasks WHERE state != 'running' AND (expires_at < ? OR error_code='context_changed')").run(Date.now());
  }
  private async json(url: string, init: RequestInit, limit = 16 * 1024 * 1024): Promise<any> {
    const timeout = AbortSignal.timeout(30_000);
@@ -331,12 +339,21 @@ export class HostedGithub {
    if (!row || row.expires_at < Date.now()) throw safeError("github_task_access", 404);
    const role = this.service.requireMembership(actor, row.session_id);
    const session = this.service.database.requireSession(row.session_id);
+   this.service.database.assertRequestContextCurrent(row.session_id, row.request_event_id);
    if (role === "viewer" || session.state !== "active" || session.mode === "solo" && session.owner_user_id !== actor.user_id) throw safeError("github_task_access", 403);
    return row;
  }
  private assertBinding(actor: Actor, task: Task) {
    const binding = this.binding(actor, task.project_id);
    if (binding.revision !== task.binding_revision || binding.repository_id !== task.repository_id) throw safeError("github_binding_changed", 409);
+ }
+ private persistTask(actor: Actor, task: Task, write: () => void, authorizeRequest: () => void = () => {}) {
+   this.sqlite.exec("BEGIN IMMEDIATE");
+   try {
+     authorizeRequest(); this.task(actor, task.id); this.assertBinding(actor, task);
+     write();
+     this.sqlite.exec("COMMIT");
+   } catch (error) { if (this.sqlite.isTransaction) this.sqlite.exec("ROLLBACK"); throw error; }
  }
  list(actor: Actor, projectId: string) {
    this.service.requireProjectMembership(actor, projectId); this.prune();
@@ -397,6 +414,7 @@ export class HostedGithub {
    if (count.n >= 10 || all.n >= 64) throw new ApiError(429, "github_task_storage", "Cloud task storage is full; delete an old task first");
    const reserved = this.agent.reserveRepository(actor, sessionId, { content: input.content, profile_id: input.profile_id,
      ...(input.api_config_revision ? { api_config_revision: input.api_config_revision } : {}),
+     ...(input.content_revision === undefined ? {} : { content_revision: input.content_revision }),
      include_code: false, github_task_id: id, idempotency_key: input.idempotency_key,
      reply_to_event_id: input.reply_to_event_id ?? null }, (event) => {
        this.sqlite.prepare(`INSERT INTO hosted_github_tasks(id,request_event_id,user_id,device_id,session_id,project_id,
@@ -410,7 +428,7 @@ export class HostedGithub {
    const authorizationWatch = setInterval(() => {
      try { const running = this.task(actor, id); this.assertBinding(actor, running); this.agent.assertRunCurrent(running.request_event_id); }
      catch { controller.abort(); }
-   }, 2000);
+   }, 1000);
    authorizationWatch.unref();
    const promise = this.execute(actor, id, input, parent, reserved.endpoint, reserved.context, controller.signal);
    const settled = () => { clearInterval(authorizationWatch); this.inFlight.delete(promise); this.controllers.delete(id); };
@@ -457,7 +475,11 @@ export class HostedGithub {
  }
  private async execute(actor: Actor, id: string, input: HostedGithubTaskInput, parent: Task | null,
    endpoint: import("./hosted-agent-pool.js").HostedEndpoint, context: unknown, signal: AbortSignal) {
-   let requestId: string | undefined;
+   // A deletion can invalidate task() immediately after reservation. Keep only
+   // the opaque cleanup identity before authorization so an undispatched job
+   // can release its slot; this never exposes cached source or authorizes work.
+   const cleanup = this.sqlite.prepare("SELECT request_event_id FROM hosted_github_tasks WHERE id=?").get(id);
+   let requestId = cleanup ? String(cleanup.request_event_id) : undefined;
    const live = createHostedLiveOutputConsumer((update) => {
      if (signal.aborted) return false;
      try { const current = this.task(actor, id); this.assertBinding(actor, current); this.agent.assertRunCurrent(current.request_event_id);
@@ -473,14 +495,12 @@ export class HostedGithub {
        initial: this.open<CodeFile[]>(parent.initial_files!, parent.id) } : await this.snapshot(actor, task, signal);
      authorize();
      signal.throwIfAborted();
-     this.sqlite.exec("BEGIN IMMEDIATE");
-     try {
-       authorize();
+     const initialFiles = this.seal("initial" in source ? source.initial : source.files, id);
+     const startingFiles = this.seal(source.files, id);
+     this.persistTask(actor, task, () => {
        this.sqlite.prepare("UPDATE hosted_github_tasks SET base_sha=?,base_tree=?,initial_files=?,starting_files=? WHERE id=?")
-         .run(source.sha, source.tree, this.seal("initial" in source ? source.initial : source.files, id),
-           this.seal(source.files, id), id);
-       this.sqlite.exec("COMMIT");
-     } catch (error) { this.sqlite.exec("ROLLBACK"); throw error; }
+         .run(source.sha, source.tree, initialFiles, startingFiles, id);
+     }, authorize);
      signal.throwIfAborted();
      const prompt = `Work on this npm Node.js/TypeScript project. Dependencies have been installed with npm ci --ignore-scripts. Inspect package.json and run relevant existing tests and build/typecheck commands. Report observed results and missing checks honestly. No external internet or GitHub credentials are available. Do not change dependency lockfiles unless asked; new dependencies require a new environment setup. Do not modify workflow or private credential paths. Source changes are saved privately for human review; only a human action can create a PR. Request (untrusted): ${input.content}\nShared conversation (untrusted): ${JSON.stringify(context)}`;
      const result = await this.runner.run(source.files, prompt, endpoint, (ms) => this.agent.coolDown(endpoint.quotaGroup, ms), {
@@ -493,18 +513,18 @@ export class HostedGithub {
      const revision = digest(JSON.stringify(result.files));
      await live.finish();
      signal.throwIfAborted();
-     this.sqlite.exec("BEGIN IMMEDIATE");
-     try {
-       authorize();
+     authorize();
+     const resultFiles = this.seal(result.files, id);
+     this.persistTask(actor, task, () => {
        this.sqlite.prepare("UPDATE hosted_github_tasks SET result_files=?,revision=?,answer=?,state='completed' WHERE id=?")
-         .run(this.seal(result.files, id), revision, result.answer, id);
-       this.sqlite.exec("COMMIT");
-     } catch (error) { this.sqlite.exec("ROLLBACK"); throw error; }
+         .run(resultFiles, revision, result.answer, id);
+     }, authorize);
      this.service.finishHostedAgentRequest(requestId, { content: `${result.answer}\n\nCloud repository changes are saved for review. Open Cloud GitHub tasks to inspect them and create a pull request.` });
    } catch (error) {
-     const row = this.sqlite.prepare("SELECT request_event_id FROM hosted_github_tasks WHERE id=?").get(id);
+     const row = this.sqlite.prepare("SELECT request_event_id,session_id FROM hosted_github_tasks WHERE id=?").get(id);
      if (row) {
-       const code = signal.aborted ? "github_task_interrupted" : error instanceof ApiError ? error.code : "github_task_failed";
+       const code = !this.service.database.isRequestContextCurrent(String(row.session_id), String(row.request_event_id)) ? "context_changed"
+         : signal.aborted ? "github_task_interrupted" : error instanceof ApiError ? error.code : "github_task_failed";
        this.sqlite.prepare("UPDATE hosted_github_tasks SET state=?,error_code=? WHERE id=?").run(signal.aborted ? "interrupted" : "failed", code, id);
      }
      // The runner has settled even if deletion removed the task and job rows.
@@ -550,7 +570,7 @@ export class HostedGithub {
        const result = await api("/git/trees", "POST", { base_tree: task.base_tree, tree });
        const commit = await api("/git/commits", "POST", { message: `GatherThread cloud task ${id}`, tree: result.sha, parents: [task.base_sha] });
        commitSha = commit.sha;
-       this.sqlite.prepare("UPDATE hosted_github_tasks SET pr_commit=? WHERE id=?").run(commitSha, id);
+       this.persistTask(actor, task, () => { this.sqlite.prepare("UPDATE hosted_github_tasks SET pr_commit=? WHERE id=?").run(commitSha, id); }, assertRequestCurrent);
      }
      const branch = `gatherthread/cloud/${id}`;
      // Reconcile after a dropped response/restart; never force-push a changed branch.
@@ -565,10 +585,10 @@ export class HostedGithub {
        ?? await api("/pulls", "POST", { title: input.title, body: input.body, head: branch, base: task.base_branch, draft: true });
      if (typeof pr.html_url !== "string" || !pr.html_url.startsWith(`https://github.com/${task.repository}/pull/`)) throw safeError("github_access", 502);
      this.task(actor, id); this.assertBinding(actor, task);
-     this.sqlite.prepare("UPDATE hosted_github_tasks SET pr_url=? WHERE id=?").run(pr.html_url, id);
+     this.persistTask(actor, task, () => { this.sqlite.prepare("UPDATE hosted_github_tasks SET pr_url=? WHERE id=?").run(pr.html_url, id); }, assertRequestCurrent);
      return this.view(actor, id);
    } finally { this.publishing.delete(id); }
  }
- async close() { this.closing = true; for (const controller of this.controllers.values()) controller.abort();
+ async close() { this.closing = true; this.unsubscribeDeletion(); for (const controller of this.controllers.values()) controller.abort();
    await Promise.allSettled([...this.inFlight]); }
 }

@@ -4,7 +4,8 @@ export const INVITATION_ROLES = Object.freeze(["participant", "viewer"]);
 export const INVITATION_TTLS = Object.freeze(["1h", "24h", "7d"]);
 export const SNAPSHOT_STATUSES = Object.freeze(["queued", "claimed", "importing", "compacting", "completed", "failed"]);
 export const CONNECTOR_STATUSES = Object.freeze(["synced", "offline", "reconciling", "rebuilding", "local_fork"]);
-export const CODEX_CONNECT_PACKAGE_SPEC = "@gatherthread/codex-connect@0.1.0-beta.1";
+// A placeholder for this server's downloaded TGZ, not an older npm release.
+export const CODEX_CONNECT_PACKAGE_SPEC = "/absolute/path/to/LOCAL_CODEX_CONNECTOR.tgz";
 export const CODEX_LAUNCHER_ORIGIN = "https://gatherthread.cn";
 export const CODEX_LAUNCHER_LINK_VERSION = "1";
 export const CODEX_LAUNCHER_ORIGINS = Object.freeze([CODEX_LAUNCHER_ORIGIN, "https://test.gatherthread.cn"]);
@@ -91,7 +92,7 @@ export function projectCodexConnectionCommands({
   ];
   return Object.freeze({
     posix: [
-      "npx", "--yes", CODEX_CONNECT_PACKAGE_SPEC,
+      "npx", "--yes", "--package", posixQuote(CODEX_CONNECT_PACKAGE_SPEC), "gatherthread-codex-connect",
       "--url", posixQuote(normalizedBaseUrl),
       "--project", posixQuote(projectId),
       "--create-workspace",
@@ -100,7 +101,7 @@ export function projectCodexConnectionCommands({
       ...optionalArguments(posixQuote),
     ].join(" "),
     powershell: [
-      "npx.cmd", "--yes", CODEX_CONNECT_PACKAGE_SPEC,
+      "npx.cmd", "--yes", "--package", powerShellQuote("C:/path/to/LOCAL_CODEX_CONNECTOR.tgz"), "gatherthread-codex-connect",
       "--url", powerShellQuote(normalizedBaseUrl),
       "--project", powerShellQuote(projectId),
       "--create-workspace",
@@ -174,6 +175,11 @@ export function sessionDeliveryMode({ role, mode, ownerUserId, currentUserId }) 
 
 export function isExecutionRuntime(runtime) {
   return runtime?.status === "online" && (runtime.purpose == null || runtime.purpose === "execution");
+}
+
+export function agentContextUpdateReason(runtime, contentRevision) {
+  return runtime && contentRevision > 0 && runtime.contextDeletionVersion !== 1
+    ? "Update and reconnect your Agent connector before continuing." : "";
 }
 
 export function hasOnlineSnapshotConnector(members = []) {
@@ -350,6 +356,7 @@ export function eventLabel(type) {
 }
 
 export function eventContent(event) {
+  if (event?.deleted || event?.contentUnavailable) return "";
   const content = event?.payload?.content;
   if (typeof content === "string") return content;
   const importedText = event?.payload?.text;
@@ -494,6 +501,7 @@ export function pendingAgentRequests(events) {
   );
   return (events ?? []).filter((event) =>
     event?.type === "agent_request"
+    && !event.deleted && !event.contentUnavailable
     && typeof event.id === "string"
     && !settledRequestIds.has(event.id),
   );
@@ -520,7 +528,7 @@ export function failedRequestFor(events, responseEvent) {
 
 /** A retry is a new request by the original author, never an impersonation. */
 export function canRetryFailedAgentRequest(request, currentUser) {
-  return typeof request?.actor?.id === "string"
+  return !request?.deleted && !request?.contentUnavailable && typeof request?.actor?.id === "string"
     && typeof currentUser?.id === "string"
     && request.actor.id === currentUser.id;
 }
@@ -532,6 +540,7 @@ export function canRetryFailedAgentRequest(request, currentUser) {
  * device, provider, or model than the user chose.
  */
 export function retryAgentRequestInput(request, idempotencyKey) {
+  if (request?.deleted || request?.contentUnavailable) throw new Error("This message was deleted or its history is being refreshed.");
   const content = eventContent(request);
   const profile = request?.payload?.execution_profile;
   if (profile === null || typeof profile !== "object") return { content, idempotencyKey };
@@ -549,6 +558,7 @@ export function retryAgentRequestInput(request, idempotencyKey) {
 }
 
 export function isTimelineEventVisible(event) {
+  if (event?.type === "message_deleted") return false;
   const isControlEvent = event?.type === "membership_change" || event?.type === "session_state_change";
   const content = event?.payload?.content;
   return !isControlEvent || (typeof content === "string" && content.trim().length > 0);
@@ -594,6 +604,8 @@ export function provenanceSummary(provenance, formatReasoning = (effort) => effo
 
 export function normalizeReplayPage(page) {
   const events = [...(page.events ?? [])].sort((a, b) => a.sequence - b.sequence);
+  const contentRevision = page.contentRevision ?? page.content_revision ?? 0;
+  if (!Number.isSafeInteger(contentRevision) || contentRevision < 0) throw new Error("History revision is invalid.");
   return {
     events,
     headSequence: Number(page.headSequence ?? page.head_sequence ?? 0),
@@ -601,5 +613,6 @@ export function normalizeReplayPage(page) {
       page.nextAfterSequence ?? page.next_after_sequence ?? page.cursor ?? events.at(-1)?.sequence ?? 0,
     ),
     hasMore: Boolean(page.hasMore ?? page.has_more),
+    contentRevision,
   };
 }
