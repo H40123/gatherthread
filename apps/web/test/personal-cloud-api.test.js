@@ -84,3 +84,21 @@ test("upstream errors never reveal private response data or a key", async () => 
   assert.equal(f.node("cloud-api-status").textContent, "Could not save this API connection. Refresh and try again.");
   assert.equal(f.node("cloud-api-save").disabled, false);
 });
+
+test("an uncertain new save cannot create a second configuration on retry", async () => {
+  const ids = []; const f = fixture({ getCloudApi: async () => ({ enabled: true, providers: [provider], configurations: [] }),
+    putCloudApi: async (value) => { ids.push(value); throw Error("Uncertain acknowledgement"); } });
+  await f.controller.load(); f.node("cloud-api-new").click();
+  f.node("cloud-api-label").value = "Fixture"; f.node("cloud-api-model").value = "deepseek-chat";
+  for (let i = 0; i < 2; i++) { f.node("cloud-api-key").value = "fixture-k"; f.node("cloud-api-save").click(); await nextTurn(); }
+  assert.equal(ids.length, 2); assert.equal(ids[0], ids[1]);
+});
+
+test("changing provider never reuses the saved key at another endpoint", async () => {
+  const other = { ...provider, id: "openai", label: "OpenAI" };
+  const f = fixture({ getCloudApi: async () => ({ enabled: true, providers: [provider, other], configurations: [configuration] }) });
+  await f.controller.load(); f.edit(); f.node("cloud-api-provider").value = other.id;
+  f.node("cloud-api-provider").handlers.change(); f.node("cloud-api-save").click(); await nextTurn();
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.node("cloud-api-status").textContent, "Changing provider requires a new API key.");
+});
