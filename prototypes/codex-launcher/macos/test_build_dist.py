@@ -235,5 +235,36 @@ class DmgPackagingTests(unittest.TestCase):
         self.assertTrue("emphasized: true" in source, "Native security instructions are emphasized")
 
 
+class ReviewedPluginTests(unittest.TestCase):
+    def test_only_git_reviewed_plugin_files_enter_the_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin = root / "plugins/gatherthread"
+            plugin.mkdir(parents=True)
+            (plugin / "reviewed.json").write_text("reviewed fixture")
+            (plugin / "untracked-private.txt").write_text("not distribution content")
+            output = root / "copied-plugin"
+            with patch.object(BUILD, "ROOT", root), \
+                    patch.object(BUILD.subprocess, "check_output", return_value=b"plugins/gatherthread/reviewed.json\0"):
+                BUILD.copy_reviewed_plugin(output)
+            self.assertEqual((output / "reviewed.json").read_text(), "reviewed fixture")
+            self.assertFalse((output / "untracked-private.txt").exists())
+
+    def test_reviewed_plugin_symlinks_and_path_escape_are_refused(self):
+        for selected in (b"plugins/gatherthread/link.json\0", b"plugins/gatherthread/../../outside.txt\0"):
+            with self.subTest(selected=selected), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                plugin = root / "plugins/gatherthread"
+                plugin.mkdir(parents=True)
+                (root / "outside.txt").write_text("synthetic excluded content")
+                (plugin / "link.json").symlink_to(root / "outside.txt")
+                output = root / "copied-plugin"
+                with patch.object(BUILD, "ROOT", root), \
+                        patch.object(BUILD.subprocess, "check_output", return_value=selected):
+                    with self.assertRaises(SystemExit):
+                        BUILD.copy_reviewed_plugin(output)
+                self.assertFalse(output.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
