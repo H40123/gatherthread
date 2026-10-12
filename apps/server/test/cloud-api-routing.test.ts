@@ -80,9 +80,9 @@ socketTest("configuration replacement aborts active work, fences progress and su
     f.agent.putPersonalApi(f.actor, f.saved.id, { expected_revision: f.saved.revision, provider_id: "anthropic", label: "Changed",
       model: "claude-sonnet-fixture", enabled: true });
     assert.equal(signal?.aborted, true);
-    assert.equal(f.service.appendHostedAgentProgress(receipt.request_event.id, { id: randomUUID(), progress: {
-      content: "Late work", phase: "stream", stream_id: randomUUID(), stream_kind: "answer", stream_revision: 1,
-      stream_mode: "snapshot", stream_state: "running" } }), false);
+    assert.equal(f.service.appendHostedAgentProgress(receipt.request_event.id, { id: randomUUID(),
+      content: "Late work", phase: "stream", streamId: randomUUID(), streamKind: "answer", streamRevision: 1,
+      streamMode: "snapshot", streamState: "running" }), false);
     assert.equal(f.database.hostedActiveRuns(), 1, "capacity stays held until the executor exits");
     release.resolve(JSON.stringify({ answer: "Late answer must be refused", files: [] }));
     for (let tries = 0; f.database.hostedActiveRuns() && tries < 100; tries++) await new Promise(resolve => setTimeout(resolve, 5));

@@ -26,7 +26,7 @@ export const CloudApiSavedSchema = z.object({ configuration: CloudApiConfigurati
 
 /** Personal profiles must freeze a configuration revision. Service IDs stay backward compatible. */
 export const PersonalCloudRevisionSchema = z.string().uuid().optional();
-export function hasValidPersonalCloudRevision(value: { profile_id: string; api_config_revision?: string }): boolean {
+export function hasValidPersonalCloudRevision(value: { profile_id: string; api_config_revision?: string | undefined }): boolean {
   return value.profile_id.startsWith("api-") ? /^api-[0-9a-f-]{36}$/u.test(value.profile_id) && value.api_config_revision !== undefined
     : value.api_config_revision === undefined;
 }

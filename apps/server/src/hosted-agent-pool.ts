@@ -122,9 +122,11 @@ export interface HostedAllocation {
   blocked?: boolean;
   id: string; profileId: string; provider: string; model: string; quotaGroup: string;
   dailyRuns: number | null; maxConcurrent: number;
+  personal?: { configId: string; configRevision: string; userId: string };
 }
 
 export interface HostedRunLimits {
   userDailyRuns: number | null; globalDailyRuns: number | null; maxConcurrent: number;
   userMinIntervalSeconds?: number; userMaxConcurrent?: number;
+  billingSource?: "service" | "personal";
 }
