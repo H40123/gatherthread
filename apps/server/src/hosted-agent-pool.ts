@@ -102,6 +102,7 @@ export function validateHostedEndpoints(endpoints: HostedEndpoint[]): void {
     throw new Error("invalid or duplicate endpoint IDs");
   }
   for (const endpoint of endpoints) {
+    if (endpoint.profileId.startsWith("api-")) throw new Error("Personal API profile IDs are reserved");
     if (endpoint.dailyRuns === null && !isSiliconFlowFreeEndpoint(endpoint)) {
       throw new Error("unlimited runs require a zero-price model");
     }

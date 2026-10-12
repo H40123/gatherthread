@@ -86,6 +86,12 @@ export class CloudApiStore {
       if (old && old.user_id !== actor.user_id) throw unavailable();
       const apiKey = input.api_key ?? (old ? this.open(old) : undefined);
       if (!apiKey) throw new ApiError(400, "cloud_api_invalid", "A new personal API configuration requires an API key");
+      // Labels/model IDs are returned to the browser and may appear in shared
+      // provenance. Catch accidental key pastes without ever reflecting them.
+      const visible = `${input.label}\n${input.model}`;
+      if (visible.includes(apiKey) || /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|AIza[A-Za-z0-9_-]{20,}|Bearer\s+\S{8,})/iu.test(visible)) {
+        throw new ApiError(400, "cloud_api_invalid", "Use a display label and model ID, not credentials");
+      }
       const same = old && old.provider_id === input.provider_id && old.label === input.label && old.model === input.model
         && Boolean(old.enabled) === input.enabled && (() => { const a = Buffer.from(this.open(old)), b = Buffer.from(apiKey);
           return a.length === b.length && timingSafeEqual(a, b); })();

@@ -173,6 +173,12 @@ export function loadServerConfig(
     throw new ConfigurationError("SiliconFlow free-model selection requires the siliconflow-free preset");
   }
   const hostedEnabled = parseBoolean("GATHERTHREAD_HOSTED_AGENT_ENABLED", env.GATHERTHREAD_HOSTED_AGENT_ENABLED, false);
+  const personalApiEncryptionKey = env.GATHERTHREAD_CLOUD_API_ENCRYPTION_KEY;
+  if (personalApiEncryptionKey !== undefined && (!hostedEnabled || Buffer.from(personalApiEncryptionKey, "base64").length !== 32
+    || Buffer.from(personalApiEncryptionKey, "base64").toString("base64") !== personalApiEncryptionKey
+    || personalApiEncryptionKey === rawAuthTokenPepper || personalApiEncryptionKey === env.GATHERTHREAD_HOSTED_GITHUB_ENCRYPTION_KEY)) {
+    throw new ConfigurationError("Personal API storage requires Cloud Agent and its own 32-byte base64 encryption key");
+  }
   let hostedAgent: HostedAgentOptions | undefined;
   if (hostedEnabled) {
     if (process.platform === "win32") throw new ConfigurationError("Cloud Agent requires a Linux Docker host with Unix sockets");
@@ -248,7 +254,8 @@ export function loadServerConfig(
         throw new Error("unlimited user or global runs require only confirmed zero-price endpoints");
       }
       hostedAgent = { image, endpoints, userDailyRuns, globalDailyRuns, maxConcurrent, userMinIntervalSeconds, userMaxConcurrent,
-        memoryMiB, repositoryMemoryMiB, memoryPolicy, ...(cpuSet !== undefined ? { cpuSet } : {}) };
+        memoryMiB, repositoryMemoryMiB, memoryPolicy, ...(cpuSet !== undefined ? { cpuSet } : {}),
+        ...(personalApiEncryptionKey !== undefined ? { personalApiEncryptionKey } : {}) };
     } catch {
       // Validation errors can contain the private JSON input; never print them.
       throw new ConfigurationError("Invalid Cloud Agent endpoints, account quotas, or credential environment variables");

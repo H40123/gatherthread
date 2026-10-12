@@ -30,3 +30,8 @@ export function hasValidPersonalCloudRevision(value: { profile_id: string; api_c
   return value.profile_id.startsWith("api-") ? /^api-[0-9a-f-]{36}$/u.test(value.profile_id) && value.api_config_revision !== undefined
     : value.api_config_revision === undefined;
 }
+/** Requester-private immutable execution selection; never a shared history field. */
+export const HostedAgentSelectionSchema = z.object({
+  profile_id: z.string().min(1).max(64), api_config_revision: PersonalCloudRevisionSchema,
+}).strict().refine(hasValidPersonalCloudRevision, "Personal Cloud Agent selection requires its exact revision");
+export type HostedAgentSelection = z.infer<typeof HostedAgentSelectionSchema>;

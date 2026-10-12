@@ -3378,6 +3378,12 @@ export class CollaborationDatabase {
         if (!this.sqlite.prepare("SELECT 1 FROM hosted_agent_runs WHERE request_event_id=?").get(event.id)) {
           throw idempotencyConflict("The key belongs to another Agent request");
         }
+        const pin = this.sqlite.prepare("SELECT user_id,config_id,config_revision FROM cloud_api_run_bindings WHERE request_event_id=?")
+          .get(event.id) as { user_id: string; config_id: string; config_revision: string } | undefined;
+        const personal = endpoints[0]!.personal;
+        if (personal ? !pin || pin.user_id !== actor.user_id || pin.config_id !== personal.configId || pin.config_revision !== personal.configRevision : pin !== undefined) {
+          throw new ApiError(409, "cloud_api_changed", "The request key belongs to a different personal API revision");
+        }
         return { event, created: false };
       }
       if (this.hostedActiveRuns() >= limits.maxConcurrent) throw new ApiError(429, "hosted_agent_busy", "Cloud Agent is busy; try again later");
