@@ -6365,8 +6365,8 @@ html[data-boot-state] .boot-screen { display: flex; min-height: 100dvh; align-it
   .workspace:not([data-mobile-ui="true"]) .composer { padding-block: 8px; }
   .workspace:not([data-mobile-ui="true"]) .composer > label, .workspace:not([data-mobile-ui="true"]) .intent-help > span { display: none; }
 }
-.github-mode-picker { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
-.github-mode-picker [aria-pressed="true"] { border-color: var(--teal); color: var(--teal); }
+.github-computer-option { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.github-computer-option .field-help { margin-bottom: 0; max-width: 52ch; }
 #code-github-panel[data-github-mode="cloud"] #github-code-section,
 #code-github-panel[data-github-mode="local"] #cloud-github-panel { display: none; }
 .github-step { color: var(--teal); font-size: .85rem; margin: 12px 0; }

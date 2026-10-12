@@ -49,7 +49,7 @@ import {
   snapshotStatusView,
 } from "./domain.js?v=20261012-stream-2";
 import { SessionSync } from "./realtime.js";
-import { mountCodeSync } from "./code-sync-view.js?v=20260924-1";
+import { mountCodeSync } from "./code-sync-view.js?v=20261012-github-3";
 import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20260924-2";
 import { mountHistorySummaries } from "./history-summary-view.js";
 import { DEFAULT_HISTORY_SUMMARY_INSTRUCTIONS } from "./history-summary-policy.js";
@@ -1437,7 +1437,10 @@ async function enterWorkspace(preferredProjectId) {
   }
   const isCurrent = () => authentication === authenticationGeneration
     && load === workspaceLoadGeneration && Boolean(state.currentUser);
-  void cloudGithubUi.completeAuthorization();
+  // Complete OAuth before project selection rewrites the URL. Restore only
+  // this account's short-lived navigation hint, then reopen setup below.
+  const githubSetup = await cloudGithubUi.completeAuthorization();
+  if (!isCurrent()) return;
   void api.getHostedAgentStatus().then((status) => {
     if (!isCurrent()) return;
     hostedAgentStatus = status;
@@ -1485,6 +1488,11 @@ async function enterWorkspace(preferredProjectId) {
   }
   if (!isCurrent()) return;
   maybeOpenPendingDshPairing();
+  if (githubSetup?.handled) {
+    codeSyncUi.closeNotice();
+    await cloudGithubUi.openSetup(githubSetup.error);
+    return;
+  }
   onboarding.offer();
 }
 
