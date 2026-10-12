@@ -3,7 +3,7 @@ export function mountPersonalCloudApi({ document, api, localizer, getContext, ma
   confirm = () => false, onChanged = () => {} }) {
   const el = id => document.getElementById(`cloud-api-${id}`);
   const controls = ["refresh", "new", "save", "cancel", "delete", "provider", "label", "model", "key", "enabled"];
-  let generation = 0, busy = false, snapshot = null, selected = null, scope = null, statusSource = "";
+  let generation = 0, busy = false, snapshot = null, selected = null, draftId = null, scope = null, statusSource = "";
   const translations = [];
   const current = (run, context) => run === generation && getContext()?.scope === context.scope;
   const setStatus = value => { statusSource = value; el("status").textContent = localizer.t(value); };
@@ -18,7 +18,7 @@ export function mountPersonalCloudApi({ document, api, localizer, getContext, ma
     update(); return result;
   };
   function cancelEdit() {
-    selected = null; el("key").value = ""; el("editor").hidden = true;
+    selected = null; draftId = null; el("key").value = ""; el("editor").hidden = true;
     for (const id of ["label", "model"]) el(id).value = "";
   }
   function clear() {
@@ -39,7 +39,7 @@ export function mountPersonalCloudApi({ document, api, localizer, getContext, ma
   }
   function edit(configuration = null) {
     if (busy || !snapshot?.enabled || !getContext() || getContext().scope !== scope) return;
-    selected = configuration;
+    selected = configuration; draftId = configuration?.id ?? makeId();
     el("provider").value = configuration?.provider_id ?? snapshot.providers[0]?.id ?? "";
     el("label").value = configuration?.label ?? ""; el("model").value = configuration?.model ?? "";
     el("enabled").checked = configuration?.enabled ?? true;
@@ -85,9 +85,12 @@ export function mountPersonalCloudApi({ document, api, localizer, getContext, ma
       || !selected && !key || key && (key.length < 8 || key.length > 4096 || /[^\x21-\x7e]/u.test(key))) {
       setStatus("Choose a provider, model and label; a new connection also needs an API key."); return;
     }
-    const run = generation, id = selected?.id ?? makeId();
+    const run = generation, id = draftId;
     const input = { expected_revision: selected?.revision ?? null, provider_id: providerId, label, model,
       enabled: el("enabled").checked, ...(key ? { api_key: key } : {}) };
+    if (selected && selected.provider_id !== providerId && !key) {
+      setStatus("Changing provider requires a new API key."); return;
+    }
     setBusy(true); setStatus("Saving API connection…");
     try {
       await api.putCloudApi(id, input); if (!current(run, context)) return;
