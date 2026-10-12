@@ -453,6 +453,8 @@ const ZH_CN = Object.freeze({
   "History summary": "历史摘要",
   "Summary pending": "摘要等待生成",
   "Summary failed": "摘要生成失败",
+  "Summary timed out": "摘要生成超时",
+  "Summary generation timed out. Continue uses the original selected messages and instructions in a new round.": "摘要生成已超时。点击“继续”，将使用原先选中的记录和指令开启新一轮。",
   "Derived, lossy summary. Original messages are preserved.": "摘要是有损的派生内容，原始消息仍然保留。",
   "Waiting for the selected local Agent. A new generation is unavailable until this request finishes.": "正在等待所选本地 Agent。本次请求结束前，不能发起新的摘要生成。",
   "Waiting for the selected Agent. A new generation is unavailable until this request finishes.": "正在等待所选 Agent。本次请求结束前，不能发起新的摘要生成。",

@@ -459,6 +459,10 @@ const historySummaryUi = mountHistorySummaries({
     instructions: state.settings.historySummaries.instructions,
   }),
   onChange: (options) => renderTimeline(options),
+  onContinue: (requestId, button) => retryAgentRequest(requestId, button, true),
+  canContinue: (request) => !retryingAgentRequestIds.has(request.id) && retryAgentRequestPermission(request, {
+    session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase,
+  }).allowed,
 });
 function prepareExampleScenario(item) {
   if (!exampleMode || !state.project || !state.session) return;
