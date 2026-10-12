@@ -6,7 +6,7 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 ### Added
 
-- Stream public Codex agent output into the shared conversation as it is written, instead of showing only a generic working label. Public agent-message text is published in throttled, size-capped fragments under one identity per message, and the Web timeline merges them into a single growing work-log entry with a reduced-motion-aware caret; the pending-answer indicator shows the tail of what the agent is writing. The generic busy/thinking marker now appears only while streamed output is quiet, so it still reports silent tool work and still renews the claim lease. Hidden reasoning and tool-output streams are never published, a fully streamed item is not repeated under its own identity, and the completed item is still published whenever the two differ. DSH keeps its existing content-free heartbeats. See [ADR-0044](docs/adr/0044-streamed-public-agent-output.md).
+- Stream live answers, native-visible thinking summaries, tool activity and plans across Codex, DeepSeek Harness and Cloud Agent. Keep independent collapsible sections, paused partial output, exact quoted revisions and stable history position. Bounded cumulative snapshots preserve interleaving/replay, redact split credentials and retry identical updates until acknowledgement; Codex hidden reasoning and unrelated local conversations remain excluded. Matching native connector/plugin builds and a matching hosted image are required. See [ADR-0045](docs/adr/0045-streamed-public-agent-output.md).
 
 ### Fixed
 
