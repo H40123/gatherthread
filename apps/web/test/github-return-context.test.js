@@ -8,6 +8,11 @@ function storage() {
 }
 const context = { userId: "user-fixture", projectId: "project-fixture", sessionId: "session-fixture" };
 
+test("a new project without a conversation can return to its own setup", () => {
+  const saved = storage(); rememberGithubReturn(saved, { ...context, sessionId: null }, 1000);
+  assert.deepEqual(consumeGithubReturn(saved, context.userId, 2000), { projectId: context.projectId, sessionId: null });
+});
+
 test("GitHub return hints contain only bounded navigation data and are consumed once", () => {
   const saved = storage();
   rememberGithubReturn(saved, { ...context, password: "fixture", token: "fixture" }, 1000);

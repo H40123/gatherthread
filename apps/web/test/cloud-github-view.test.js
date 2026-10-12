@@ -83,6 +83,14 @@ test("OAuth failure still opens useful setup without redirecting to an old accou
   assert.equal(ui.el("cloud-github-error").textContent, result.error);
 });
 
+test("OAuth failure returns a same-account user to the initiating empty project", async () => {
+  const ui = fixture({ completeHostedGithub: async () => { throw Error("Private upstream details"); } }, { hash: "#github_code=fixture-code&github_state=fixture-state" });
+  rememberGithubReturn(ui.storage, { userId: "u1", projectId: "empty-project", sessionId: null });
+  const result = await ui.view.completeAuthorization();
+  assert.equal(result.handled, true); assert.equal(ui.location.hash, "#project=empty-project");
+  assert.doesNotMatch(ui.location.href, /github_code|github_state/);
+});
+
 test("raw answers, source and paths are excluded from automatic UI translation", async () => {
   const detail = { ...task(), answer: "failed", changes: [{ path: "Ready", before_base64: btoa("Settings"),
     after_base64: btoa("Ready"), before_executable: false, after_executable: true }] };
