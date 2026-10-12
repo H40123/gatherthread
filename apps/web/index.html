@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#FBFAF7" />
+    <meta name="referrer" content="no-referrer" />
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="./favicon-16x16.png" />
@@ -14,7 +15,7 @@
       content="GatherThread, a lightweight multi-harness collaboration client."
     />
     <title>GatherThread</title>
-    <link rel="stylesheet" href="./src/styles.css?v=20261012-stream-1" />
+    <link rel="stylesheet" href="./src/styles.css?v=20261012-invite-1" />
   </head>
   <body>
     <div id="boot-screen" class="boot-screen" role="status" aria-live="polite"><img src="./favicon-32x32.png" alt="" width="32" height="32"><span>GatherThread</span></div>
@@ -63,7 +64,8 @@
           </a>
           <button id="auth-language-button" class="auth-language-button" type="button" aria-label="Switch language / 切换语言" title="Switch language / 切换语言">中</button>
         </div>
-        <h2 id="login-title">Enter your workspace</h2>
+        <h2 id="login-title" tabindex="-1">Enter your workspace</h2>
+        <p id="invitation-auth-hint" class="field-help" hidden>Sign in or register to review your project invitation. Joining requires your confirmation.</p>
         <p class="muted">Sign in or create an account to collaborate.</p>
         <nav id="auth-entry-chooser" class="auth-entry-chooser" aria-label="Choose how to enter">
           <p class="field-help">Choose one way to enter. You can come back and switch at any time.</p>
@@ -170,6 +172,35 @@
           </form>
         </section>
         <p class="auth-privacy-link"><a href="../privacy/" target="_blank" rel="noopener noreferrer">Privacy &amp; account deletion</a></p>
+      </section>
+    </main>
+
+    <main id="invitation-link-view" class="invitation-page" aria-labelledby="invitation-link-title" hidden>
+      <section class="invitation-card">
+        <div class="invitation-page-header">
+          <a class="wordmark" href="../" aria-label="GatherThread home">
+            <img class="brand-lockup-image brand-lockup-image-light" src="./brand/lockup-color-transparent-light.svg" alt="" />
+            <img class="brand-lockup-image brand-lockup-image-dark" src="./brand/lockup-color-transparent-dark.svg" alt="" />
+          </a>
+          <button id="invitation-language-button" class="text-button" type="button" aria-label="Switch language">EN</button>
+        </div>
+        <p class="eyebrow">Project invitation</p>
+        <h1 id="invitation-link-title" tabindex="-1" data-i18n-skip>Join a project</h1>
+        <div id="invitation-details" hidden>
+          <dl class="invitation-details-list">
+            <div><dt>Invited by</dt><dd id="invitation-inviter" data-i18n-skip></dd></div>
+            <div><dt>Joining as</dt><dd id="invitation-account" data-i18n-skip></dd></div>
+            <div><dt>Project role</dt><dd id="invitation-member-role" data-i18n-skip></dd></div>
+            <div><dt>Valid until</dt><dd id="invitation-expires" data-i18n-skip></dd></div>
+          </dl>
+        </div>
+        <p id="invitation-link-status" class="field-help" role="status" aria-live="polite" data-i18n-skip></p>
+        <div class="invitation-page-actions">
+          <button id="invitation-confirm-button" class="button button-primary" type="button" disabled data-i18n-skip>Confirm and join</button>
+          <button id="invitation-decline-button" class="button button-secondary" type="button">Not now</button>
+          <button id="invitation-retry-button" class="button button-secondary" type="button" hidden>Try again</button>
+        </div>
+        <button id="invitation-switch-account-button" class="text-button" type="button">Switch account</button>
       </section>
     </main>
 

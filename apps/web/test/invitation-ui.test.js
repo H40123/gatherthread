@@ -32,7 +32,7 @@ test("owner secret is rendered only from create response and cleared on session 
   const main = await readFile(mainPath, "utf8");
   assert.match(main, /createdInvitationSecret = result\.inviteToken/);
   assert.match(main, /createdInvitationDetails = result\.invitation/);
-  assert.match(main, /createdInvitationShareText = projectInvitationShareText\(createdInvitationSecret, createdInvitationDetails, locale\)/);
+  assert.match(main, /createdInvitationShareText = projectInvitationShareText\(createdInvitationSecret, createdInvitationDetails, locale, location\.origin\)/);
   assert.match(main, /element\("created-invite-secret"\)\.textContent = createdInvitationShareText/);
   assert.match(main, /navigator\.clipboard\.writeText\(createdInvitationShareText\)/);
   assert.match(main, /if \(localeChanged\) updateCreatedInvitationShareText\(normalized\.general\.locale\)/);

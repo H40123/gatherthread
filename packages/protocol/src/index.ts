@@ -399,6 +399,23 @@ export const AcceptInvitationInputSchema = z.object({
 
 export type AcceptInvitationInput = z.infer<typeof AcceptInvitationInputSchema>;
 
+// Invitation links carry only a project invitation capability, never an account
+// or native-device credential. Preview cannot create membership.
+export const PreviewProjectInvitationInputSchema = z.object({
+  invite_token: z.string().regex(/^gti_[A-Za-z0-9_-]{32,508}$/),
+}).strict();
+
+export const ProjectInvitationPreviewSchema = z.object({
+  project: z.object({ id: IdSchema, title: z.string().min(1).max(200) }).strict(),
+  inviter_display_name: z.string().min(1).max(120),
+  role: InvitationRoleSchema,
+  created_at: z.string().datetime(),
+  expires_at: z.string().datetime(),
+  already_member: z.boolean(),
+}).strict();
+
+export type ProjectInvitationPreview = z.infer<typeof ProjectInvitationPreviewSchema>;
+
 export const InvitationRecordSchema = z.object({
   id: IdSchema,
   session_id: IdSchema,
