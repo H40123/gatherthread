@@ -27,7 +27,7 @@ jobs:
       - run: node scripts/test-hosted-container.mjs
         env:
           GATHERTHREAD_TEST_HOSTED_IMAGE: gt-hosted-smoke
-          GATHERTHREAD_HOSTED_AGENT_MEMORY_MIB: 512
+          GATHERTHREAD_HOSTED_AGENT_MEMORY_MIB: 768
       - run: node scripts/test-hosted-repository-container.mjs
         env:
           GATHERTHREAD_TEST_HOSTED_IMAGE: gt-hosted-smoke

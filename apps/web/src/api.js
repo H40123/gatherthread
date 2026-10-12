@@ -1,7 +1,7 @@
 import { avatarImage } from "./avatars.js";
 import { HostedGithubStatusSchema, HostedGithubAuthorizationSchema, HostedGithubConnectionSchema, HostedGithubDisconnectionSchema,
   HostedGithubTaskSchema, HostedGithubTaskListSchema, HostedAgentAcceptedSchema, HostedAgentPausedSchema,
-  ProjectInvitationPreviewSchema } from "@gatherthread/protocol";
+  ProjectInvitationPreviewSchema, CloudApiStatusSchema, CloudApiSavedSchema, HostedAgentSelectionSchema } from "@gatherthread/protocol";
 import {
   createIdempotencyKey,
   isExecutionRuntime,
@@ -12,6 +12,7 @@ import {
 const TITLE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
 
 const HOSTED_AGENT_RESPONSE_ERROR = "Cloud Agent response is invalid. Refresh and try again.";
+const PERSONAL_API_RESPONSE_ERROR = "Personal API response is invalid. Refresh and try again.";
 
 async function hostedResponse(schema, request, errorMessage = "Cloud GitHub response is invalid. Refresh and try again.") {
   const parsed = schema.safeParse(await request);
@@ -571,6 +572,17 @@ export class HttpCollaborationApi {
   publishHostedGithub(id, input) { return hostedResponse(HostedGithubTaskSchema, this.request(`/v1/hosted-github/tasks/${encodeURIComponent(id)}/pull-request`, { method: "POST", body: JSON.stringify(input) })); }
   deleteHostedGithubTask(id) { return this.request(`/v1/hosted-github/tasks/${encodeURIComponent(id)}`, { method: "DELETE" }); }
 
+  getCloudApi() { return hostedResponse(CloudApiStatusSchema, this.request("/v1/cloud-api"), PERSONAL_API_RESPONSE_ERROR); }
+  putCloudApi(id, input) { return hostedResponse(CloudApiSavedSchema, this.request(`/v1/cloud-api/${encodeURIComponent(id)}`, {
+    method: "PUT", body: JSON.stringify(input),
+  }), PERSONAL_API_RESPONSE_ERROR); }
+  deleteCloudApi(id, input) { return this.request(`/v1/cloud-api/${encodeURIComponent(id)}`, {
+    method: "DELETE", body: JSON.stringify(input),
+  }); }
+  getHostedAgentSelection(sessionId, requestId) {
+    return hostedResponse(HostedAgentSelectionSchema, this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/hosted-agent-requests/${encodeURIComponent(requestId)}/selection`), PERSONAL_API_RESPONSE_ERROR);
+  }
+
   getHostedAgentStatus() {
     return this.request("/v1/hosted-agent");
   }
@@ -579,7 +591,8 @@ export class HttpCollaborationApi {
     return hostedResponse(HostedAgentAcceptedSchema, this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/hosted-agent-requests`, {
       method: "POST",
       body: JSON.stringify({ profile_id: input.profileId ?? "default", content: input.content, include_code: input.includeCode === true,
-        idempotency_key: input.idempotencyKey, reply_to_event_id: input.replyTo ?? null }),
+        idempotency_key: input.idempotencyKey, reply_to_event_id: input.replyTo ?? null,
+        ...(input.apiConfigRevision === undefined ? {} : { api_config_revision: input.apiConfigRevision }) }),
     }), HOSTED_AGENT_RESPONSE_ERROR);
   }
 
@@ -599,6 +612,7 @@ export class HttpCollaborationApi {
     if (input.executionProfile?.harness === "opencode") {
       const receipt = await hostedResponse(HostedAgentAcceptedSchema, this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/hosted-history-summaries`, {
         method: "POST", body: JSON.stringify({ profile_id: input.executionProfile.cloudProfileId,
+          ...(input.executionProfile.apiConfigRevision === undefined ? {} : { api_config_revision: input.executionProfile.apiConfigRevision }),
           source_event_ids: input.sourceEventIds, idempotency_key: input.idempotencyKey,
           ...(input.instructions === undefined ? {} : { instructions: input.instructions }) }),
       }), HOSTED_AGENT_RESPONSE_ERROR);
@@ -744,6 +758,7 @@ const users = {
 };
 
 export class MockCollaborationApi {
+  async getCloudApi() { return { enabled: false, providers: [], configurations: [] }; }
   async getHostedAgentStatus() { return { enabled: false }; }
   async getHostedGithubStatus() { return { enabled: false }; }
 
