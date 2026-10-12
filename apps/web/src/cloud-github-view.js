@@ -70,10 +70,12 @@ export function mountCloudGithub({ api: getApi, context, t, setText = (node, sou
     selected = task;
     const status = el("cloud-github-task-status"); status.replaceChildren();
     appendLabel(status, task.repository, true); status.append(doc.createTextNode(" · "));
-    appendLabel(status, task.state);
+    appendLabel(status, task.error_code === "github_task_timeout" ? "Timed out" : task.state);
     if (task.error_code) {
       status.append(doc.createTextNode(" · "));
-      appendLabel(status, "Review the project setup and reconnect GitHub if needed.");
+      appendLabel(status, task.error_code === "github_task_timeout"
+        ? "Continue starts a new round from the saved source snapshot. Unsaved work from the stopped process is unavailable."
+        : "Review the project setup and reconnect GitHub if needed.");
     }
     el("cloud-github-answer").setAttribute("data-i18n-skip", "");
     el("cloud-github-answer").textContent = task.answer ?? "";

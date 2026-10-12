@@ -24,6 +24,10 @@ export function cloudRequestInput(request, idempotencyKey, profiles, selection, 
     ...(contentRevision === undefined ? {} : { contentRevision }) };
 }
 
+export function continueCloudRequestInput(request, idempotencyKey, profiles, selection, contentRevision) {
+  return { ...cloudRequestInput(request, idempotencyKey, profiles, selection, contentRevision), continueFromEventId: request.id };
+}
+
 const targetId = (event) => event.replyTo ?? event.reply_to_event_id ?? event.payload?.reply_to_event_id;
 const hasRecordedTarget = (request) => {
   const profile = request?.payload?.execution_profile;

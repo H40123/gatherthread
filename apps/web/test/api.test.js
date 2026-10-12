@@ -942,3 +942,26 @@ test("cloud GitHub rejects invalid or private response fields with a safe messag
     await assert.rejects(api.listHostedGithubTasks("project"), /Cloud GitHub response is invalid/);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("timeout Continue sends server-owned linkage to strict trial or summary endpoint", async () => {
+  const originalFetch = globalThis.fetch, requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), body: JSON.parse(options.body) });
+    return Response.json({ data: { replayed: false, request_event: { id: "continued", session_id: "session", sequence: 2,
+      idempotency_key: "continue-stable-key", type: "agent_request", actor_user_id: "fixture", created_at: "2026-10-12T00:00:00Z",
+      visibility: "session", reply_to_event_id: null, payload: { content: "Original task", continue_from_event_id: "timed-out" }, runtime_provenance: null } } });
+  };
+  try {
+    const api = new HttpCollaborationApi({ baseUrl: "https://gatherthread.example" });
+    await api.appendHostedAgentRequest("session", { content: "Original task", profileId: "exact", includeCode: true,
+      idempotencyKey: "continue-stable-key", continueFromEventId: "timed-out" });
+    await api.createHistorySummary("session", { sourceEventIds: ["selected"], executionProfile: { harness: "opencode", cloudProfileId: "exact" },
+      idempotencyKey: "summary-continue-key", continueFromEventId: "timed-out-summary" });
+    assert.deepEqual(requests, [
+      { url: "https://gatherthread.example/v1/sessions/session/hosted-agent-requests", body: { profile_id: "exact", content: "Original task", include_code: true,
+        idempotency_key: "continue-stable-key", reply_to_event_id: null, continue_from_event_id: "timed-out" } },
+      { url: "https://gatherthread.example/v1/sessions/session/hosted-history-summaries", body: { profile_id: "exact", source_event_ids: ["selected"],
+        idempotency_key: "summary-continue-key", continue_from_event_id: "timed-out-summary" } },
+    ]);
+  } finally { globalThis.fetch = originalFetch; }
+});

@@ -41,7 +41,7 @@ import type {
   SnapshotRequestStatus,
 } from "@gatherthread/protocol";
 import {
-  AvatarIdSchema, SetAccountAvatarInputSchema,
+  AvatarIdSchema, SetAccountAvatarInputSchema, HostedAgentFailurePayloadSchema,
   MAX_SNAPSHOT_RESULT_BYTES, RuntimeExecutionProfilesSchema, MessageMentionsSchema, isCodeSyncRequestKind,
   GitHubConnectionInputSchema, githubCodeSyncRequestKinds, isGitHubCodeSyncRequestKind,
   HISTORY_SUMMARY_MAX_CONTEXT_BYTES, HistorySummaryError, buildHistoryContext,
@@ -60,7 +60,7 @@ import { CLOUD_API_SCHEMA } from "./cloud-api-schema.js";
 import { cloudApiRunIsCurrent } from "./cloud-api.js";
 import { ApiError, agentRequestAlreadyClaimed, agentRequestAlreadyCompleted, agentRequestFailed, conflict, forbidden, idempotencyConflict, notFound, runtimeBusy, sessionQuotaExceeded, snapshotStorageQuotaExceeded, storageQuotaExceeded, unauthorized } from "./errors.js";
 import { redactJson } from "./redaction.js";
-import { hostedFailureCode, hostedFailureContent } from "./hosted-agent-errors.js";
+import { hostedFailureCode, hostedFailureContent, hostedFailureOutcome } from "./hosted-agent-errors.js";
 
 export interface Actor {
   user_id: string;
@@ -370,6 +370,10 @@ const MAX_HISTORY_SUMMARY_DEPENDENCY_EVENTS = 10_000;
 const MAX_HISTORY_SUMMARY_DEPENDENCY_BYTES = 16 * 1024 * 1024;
 
 function rejectHistorySummaryMetadata(payload: JsonValue): void {
+  if (payload !== null && typeof payload === "object" && !Array.isArray(payload)
+    && Object.hasOwn(payload, "continue_from_event_id")) {
+    throw forbidden("continue_from_event_id is server-owned metadata; use the Cloud Agent endpoint");
+  }
   if (payload !== null && typeof payload === "object" && !Array.isArray(payload)
     && Object.hasOwn(payload, "history_summary")) {
     throw forbidden("history_summary is server-owned metadata; use the history-summaries endpoint");
@@ -3584,11 +3588,47 @@ export class CollaborationDatabase {
         || summary.idempotency_key !== input.idempotency_key)) {
         throw conflict("Cloud summaries cannot include code or another execution target");
       }
+      let continuationSummary: { content: JsonValue; history_summary: JsonValue } | undefined;
+      if (input.continue_from_event_id) {
+        const previous = this.getEvent(sessionId, input.continue_from_event_id);
+        this.assertRequestContextCurrent(sessionId, previous.id);
+        const originalPin = this.sqlite.prepare("SELECT user_id,config_id,config_revision FROM cloud_api_run_bindings WHERE request_event_id=?")
+          .get(previous.id) as { user_id: string; config_id: string; config_revision: string } | undefined;
+        const personal = endpoints[0]!.personal;
+        if (personal ? !originalPin || originalPin.user_id !== actor.user_id || originalPin.config_id !== personal.configId
+          || originalPin.config_revision !== personal.configRevision : originalPin !== undefined) {
+          throw new ApiError(409, "cloud_api_changed", "Cloud continuation must keep its original API configuration revision");
+        }
+        const recorded = previous.payload as { content?: unknown; profile_id?: unknown; include_code?: unknown;
+          github_task_id?: unknown; execution_profile?: { harness?: unknown; provider?: unknown; model?: unknown } };
+        const outcome = this.sqlite.prepare("SELECT outcome FROM hosted_agent_outcomes WHERE request_event_id=?")
+          .get(previous.id);
+        if (input.github_task_id || previous.type !== "agent_request" || previous.actor_user_id !== actor.user_id
+          || recorded.github_task_id || Boolean(summary) !== isHistorySummaryRequest(previous) || outcome?.outcome !== "timed_out"
+          || recorded.execution_profile?.harness !== "opencode") {
+          throw forbidden("Only the author may continue a timed-out Cloud Agent request");
+        }
+        if (input.profile_id !== recorded.profile_id || !summary && input.content !== recorded.content
+          || input.include_code !== recorded.include_code || (input.reply_to_event_id ?? null) !== previous.reply_to_event_id
+          || endpoints[0]!.provider !== recorded.execution_profile.provider || endpoints[0]!.model !== recorded.execution_profile.model) {
+          throw conflict("Cloud continuation must keep the original task, model and code selection");
+        }
+        if (summary) {
+          if (summary.instructions !== undefined) throw conflict("Cloud summary continuation keeps the original instructions");
+          const validated = this.historySummaryPayload(sessionId, summary);
+          const original = previous.payload as { content: JsonValue; history_summary: JsonValue };
+          if (stableJson(validated.history_summary) !== stableJson(original.history_summary)) {
+            throw conflict("Cloud summary continuation must keep the original selected sources");
+          }
+          continuationSummary = { content: original.content, history_summary: original.history_summary };
+        }
+      }
       const payload: JsonValue = redactJson({
-        ...(summary ? this.historySummaryPayload(sessionId, summary) : { content: input.content }),
+        ...(summary ? continuationSummary ?? this.historySummaryPayload(sessionId, summary) : { content: input.content }),
         include_code: input.include_code,
         profile_id: input.profile_id,
         ...(input.github_task_id ? { github_task_id: input.github_task_id } : {}),
+        ...(input.continue_from_event_id ? { continue_from_event_id: input.continue_from_event_id } : {}),
         execution_profile: { harness: "opencode", provider: endpoints[0]!.provider,
           model: endpoints[0]!.model },
       });
@@ -3612,6 +3652,11 @@ export class CollaborationDatabase {
           throw new ApiError(409, "cloud_api_changed", "The request key belongs to a different personal API revision");
         }
         return { event, created: false };
+      }
+      if (input.continue_from_event_id && this.sqlite.prepare(`SELECT 1 FROM events WHERE session_id=? AND type='agent_request'
+        AND actor_user_id=? AND id IN (SELECT request_event_id FROM hosted_agent_runs)
+        AND json_extract(payload_json,'$.continue_from_event_id')=?`).get(sessionId, actor.user_id, input.continue_from_event_id)) {
+        throw conflict("This timed-out request already has a continuation");
       }
       if (this.hostedActiveRuns() >= limits.maxConcurrent) throw new ApiError(429, "hosted_agent_busy", "Cloud Agent is busy; try again later");
       const day = this.now().slice(0, 10);
@@ -3754,7 +3799,7 @@ export class CollaborationDatabase {
       // choosing a public chat idempotency key. The job transition deduplicates.
       const terminalKey = `hosted-terminal-${randomUUID()}`;
       const failure = (code: string) => ({ content: hostedFailureContent(code),
-        status: "failed", error: { code, ...(code !== "storage_quota_exceeded" && code !== "access_changed" && Number.isSafeInteger(outcome.providerAttempts)
+        status: "failed", outcome: hostedFailureOutcome(code), error: { code, ...(code !== "storage_quota_exceeded" && code !== "access_changed" && Number.isSafeInteger(outcome.providerAttempts)
           && outcome.providerAttempts! >= 0 && outcome.providerAttempts! <= 64 ? { provider_attempts: outcome.providerAttempts! } : {}) } });
       const append = (payload: JsonValue, provenance: RuntimeProvenance | null, marker = false) =>
         this.appendInsideTransaction(job.user_id, job.session_id, {
@@ -3779,6 +3824,11 @@ export class CollaborationDatabase {
         }
       } else {
         event = append(failure(authorized ? hostedFailureCode(new Error(outcome.errorCode)) : "access_changed"), null, true);
+      }
+      if (!success) {
+        const terminal = event.payload as { outcome: string; error: { code: string } };
+        this.sqlite.prepare("INSERT INTO hosted_agent_outcomes(request_event_id,outcome,error_code) VALUES(?,?,?)")
+          .run(requestId, terminal.outcome, terminal.error.code);
       }
       this.sqlite.prepare(`UPDATE hosted_agent_runs SET status=?,finished_at=? WHERE request_event_id=?`).run(
         success ? "completed" : "failed", this.now(), requestId,
@@ -5569,9 +5619,9 @@ export class CollaborationDatabase {
       if (eventBytes > 1024 || provenance !== null || request?.type !== "agent_request"
         || request.actor_user_id !== actorUserId || job?.status !== "running"
         || input.type !== "agent_response" || input.visibility !== "session"
-        || !safeAttempts || !(code === "storage_quota_exceeded" || code === "access_changed" || code === hostedFailureCode(new Error(code)))
+        || !HostedAgentFailurePayloadSchema.safeParse(input.payload).success || !safeAttempts || !(code === "storage_quota_exceeded" || code === "access_changed" || code === hostedFailureCode(new Error(code)))
         || stableJson(input.payload) !== stableJson({ content: hostedFailureContent(code),
-          status: "failed", error: { code, ...(attempts === undefined ? {} : { provider_attempts: attempts }) } })) throw conflict("Invalid server hosted terminal marker");
+          status: "failed", outcome: hostedFailureOutcome(code), error: { code, ...(attempts === undefined ? {} : { provider_attempts: attempts }) } })) throw conflict("Invalid server hosted terminal marker");
     }
     // Exactly one fixed, <=1 KiB failed terminal per accepted job. It is charged
     // normally; subsequent ordinary writes cannot use this control allowance.

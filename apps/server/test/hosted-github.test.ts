@@ -63,7 +63,7 @@ function fixture() {
    runs++;
    assert.ok(args.includes("none") && args.includes("2048m") && args.includes("GT_HOSTED_REPOSITORY=1"));
    assert.equal(args[args.indexOf("--memory-swap") + 1], "2048m");
-   assert.equal(timeout, 900000);
+   assert.equal(timeout, 720000);
    assert.ok(!JSON.stringify(args).includes("ghu_test") && !JSON.stringify(args).includes("fake-model-secret"));
    const mount = args.find((arg) => arg.endsWith("dst=/input,readonly"))!;
    const root = mount.split("src=")[1]!.split(",dst=")[0]!;
@@ -1096,4 +1096,32 @@ unixTest("revoking the initiating device prevents result source persistence and 
    assert.equal(stored.state, "failed"); assert.equal(stored.result_files, null);
    assert.equal(f.db.sqlite.prepare("SELECT status FROM hosted_agent_runs").get()!.status, "failed");
  } finally { release?.(JSON.stringify({ answer: "Done", files: initial })); await f.close(); }
+});
+
+unixTest("repository timeout is distinct and Continue carries the maximum-size original task with saved source in a fresh 12-minute round", async () => {
+ const f = fixture(); let calls = 0;
+ const original = "测".repeat(6000);
+ f.runOptions.runContainer = async (args, timeout, signal) => {
+  assert.equal(timeout, 720_000); assert.equal(signal?.aborted, false);
+  if (++calls === 1) throw new Error("container_timeout");
+  const control = args.find(value => value.endsWith("dst=/run/gatherthread,readonly"))!.split("src=")[1]!.split(",dst=")[0]!;
+  const prompt = readFileSync(join(control, "prompt.txt"), "utf8");
+  assert.equal(prompt.split(original).length, 2); assert.ok(prompt.includes("Continue with the observed saved source."));
+  assert.ok(prompt.includes("hidden thinking and unsaved work are not restored"));
+  return JSON.stringify({ answer: "Verified saved source", files: initial, save_error: null });
+ };
+ try {
+  await connect(f);
+  const first = f.github.start(f.actor, f.session.id, { content: original, profile_id: "coding", idempotency_key: "github-timeout-original" });
+  const timedOut = await settled(f, first.id); assert.equal(timedOut.state, "failed");
+  assert.equal(timedOut.error_code, "github_task_timeout"); assert.equal(timedOut.resumable, true);
+  const response = f.service.replay(f.actor, f.session.id, 0, 100).events.find(event => event.type === "agent_response")!;
+  assert.equal((response.payload as {outcome: string}).outcome, "timed_out"); f.advance();
+  assert.throws(() => f.github.start(f.actor, f.session.id, { content: "Continue", profile_id: "other", continue_task_id: first.id,
+    idempotency_key: "github-timeout-wrong-model" }), error => error instanceof ApiError && error.code === "hosted_profile_changed");
+  const second = f.github.start(f.actor, f.session.id, { content: "Continue with the observed saved source.", profile_id: "coding",
+    continue_task_id: first.id, idempotency_key: "github-timeout-continue" });
+  assert.equal((await settled(f, second.id)).state, "completed"); assert.equal(calls, 2);
+  assert.equal(f.db.hostedAgentUsage(f.actor, 20, 20).user_used_runs, 2);
+ } finally { await f.close(); }
 });

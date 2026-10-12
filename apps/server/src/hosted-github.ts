@@ -3,10 +3,11 @@ import { CodeFilesSchema, HostedGithubTaskInputSchema, HostedGithubTaskSchema, H
   type HostedGithubTaskInput, type HostedGithubRepositoryInput, type HostedGithubPrInput } from "@gatherthread/protocol";
 import type { Actor } from "./database.js";
 import { ApiError } from "./errors.js";
-import { HostedAgent, type HostedAgentOptions } from "./hosted-agent.js";
+import { HostedAgent, HOSTED_AGENT_TIMEOUT_MS, type HostedAgentOptions } from "./hosted-agent.js";
 import { HostedRepositoryRunner } from "./hosted-repository-runner.js";
 import type { CollaborationService } from "./service.js";
 import { HOSTED_GITHUB_SCHEMA } from "./hosted-github-schema.js";
+import { hostedFailureOutcome } from "./hosted-agent-errors.js";
 import { redactJson } from "./redaction.js";
 import { HostedExecutorCleanupError, stopHostedContainer } from "./hosted-agent-recovery.js";
 import { createHostedLiveOutputConsumer } from "./hosted-live-output.js";
@@ -31,6 +32,7 @@ const safeError = (code: string, status = 400) => new ApiError(status, code, {
  github_state: "GitHub authorization expired or belongs to another browser account. Start again.",
  github_binding_changed: "Repository settings changed. Start a new cloud task.",
  github_task_access: "Cloud task is unavailable.",
+ github_task_timeout: "Cloud task timed out. Continue from the saved source snapshot to start a new round.",
  github_task_failed: "Cloud task failed. Check the npm lockfile, project size and model availability; start a new request to retry.",
  github_task_interrupted: "Cloud task was interrupted. Saved files remain available for an explicit new run.",
  github_revision: "The reviewed files changed. Refresh the changes before creating a pull request.",
@@ -408,6 +410,31 @@ export class HostedGithub {
          "The repository task must use its original model configuration; start a new task");
      }
    }
+   const taskReferences: Array<{ eventId: string; content: string }> = [];
+   let originalTask: string | undefined;
+   if (parent) {
+     let ancestor: Task | null = parent;
+     const visited = new Set<string>();
+     while (ancestor && !visited.has(ancestor.id) && visited.size < 10) {
+       visited.add(ancestor.id);
+       const previous = JSON.parse(ancestor.input_json) as HostedGithubTaskInput;
+       // Preserve distinct follow-up instructions, and carry the root task once.
+       originalTask = previous.content;
+       if (!previous.continue_task_id) break;
+       ancestor = this.sqlite.prepare("SELECT * FROM hosted_github_tasks WHERE id=? AND user_id=? AND session_id=?")
+         .get(previous.continue_task_id, actor.user_id, sessionId) as unknown as Task | null;
+     }
+     ancestor = parent;
+     visited.clear();
+     while (ancestor && !visited.has(ancestor.id) && visited.size < 10) {
+       visited.add(ancestor.id);
+       const previous = JSON.parse(ancestor.input_json) as HostedGithubTaskInput;
+       if (previous.content === originalTask) taskReferences.push({ eventId: ancestor.request_event_id, content: previous.content });
+       if (!previous.continue_task_id) break;
+       ancestor = this.sqlite.prepare("SELECT * FROM hosted_github_tasks WHERE id=? AND user_id=? AND session_id=?")
+         .get(previous.continue_task_id, actor.user_id, sessionId) as unknown as Task | null;
+     }
+   }
    this.prune();
    const count = this.sqlite.prepare("SELECT COUNT(*) AS n FROM hosted_github_tasks WHERE user_id=?").get(actor.user_id) as { n: number };
    const all = this.sqlite.prepare("SELECT COUNT(*) AS n FROM hosted_github_tasks").get() as { n: number };
@@ -422,16 +449,18 @@ export class HostedGithub {
          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'running',?,?)`).run(id, event.id, actor.user_id, actor.device_id, sessionId,
            session.project_id, binding.repository, binding.repository_id, binding.base_branch, binding.revision,
            JSON.stringify(input), fingerprint, Date.now(), Date.now() + 7 * 86400000);
-     });
+     }, taskReferences.length ? taskReferences : undefined);
    if (!reserved.created || !reserved.endpoint) throw safeError("github_task_access", 409);
    const controller = new AbortController(); this.controllers.set(id, controller);
+   const deadline = setTimeout(() => controller.abort(new DOMException("Cloud task deadline exceeded", "TimeoutError")), HOSTED_AGENT_TIMEOUT_MS);
+   deadline.unref();
    const authorizationWatch = setInterval(() => {
      try { const running = this.task(actor, id); this.assertBinding(actor, running); this.agent.assertRunCurrent(running.request_event_id); }
      catch { controller.abort(); }
    }, 1000);
    authorizationWatch.unref();
-   const promise = this.execute(actor, id, input, parent, reserved.endpoint, reserved.context, controller.signal);
-   const settled = () => { clearInterval(authorizationWatch); this.inFlight.delete(promise); this.controllers.delete(id); };
+   const promise = this.execute(actor, id, input, parent, reserved.endpoint, reserved.context, controller.signal, originalTask);
+   const settled = () => { clearTimeout(deadline); clearInterval(authorizationWatch); this.inFlight.delete(promise); this.controllers.delete(id); };
    this.inFlight.add(promise); void promise.then(settled, settled);
    return this.view(actor, id);
  }
@@ -474,7 +503,7 @@ export class HostedGithub {
    return { sha: branch.commit.sha as string, tree: commit.tree.sha as string, files: CodeFilesSchema.parse(files) };
  }
  private async execute(actor: Actor, id: string, input: HostedGithubTaskInput, parent: Task | null,
-   endpoint: import("./hosted-agent-pool.js").HostedEndpoint, context: unknown, signal: AbortSignal) {
+   endpoint: import("./hosted-agent-pool.js").HostedEndpoint, context: unknown, signal: AbortSignal, originalTask?: string) {
    // A deletion can invalidate task() immediately after reservation. Keep only
    // the opaque cleanup identity before authorization so an undispatched job
    // can release its slot; this never exposes cached source or authorizes work.
@@ -502,7 +531,7 @@ export class HostedGithub {
          .run(source.sha, source.tree, initialFiles, startingFiles, id);
      }, authorize);
      signal.throwIfAborted();
-     const prompt = `Work on this npm Node.js/TypeScript project. Dependencies have been installed with npm ci --ignore-scripts. Inspect package.json and run relevant existing tests and build/typecheck commands. Report observed results and missing checks honestly. No external internet or GitHub credentials are available. Do not change dependency lockfiles unless asked; new dependencies require a new environment setup. Do not modify workflow or private credential paths. Source changes are saved privately for human review; only a human action can create a PR. Request (untrusted): ${input.content}\nShared conversation (untrusted): ${JSON.stringify(context)}`;
+     const prompt = `Work on this npm Node.js/TypeScript project. Dependencies have been installed with npm ci --ignore-scripts. Inspect package.json and run relevant existing tests and build/typecheck commands. Report observed results and missing checks honestly. No external internet or GitHub credentials are available. Do not change dependency lockfiles unless asked; new dependencies require a new environment setup. Do not modify workflow or private credential paths. Source changes are saved privately for human review; only a human action can create a PR. ${originalTask ? `Original task (untrusted): ${originalTask}\nContinue from the saved source snapshot; stopped processes, hidden thinking and unsaved work are not restored.\n` : ""}Request (untrusted): ${input.content}\nShared conversation (untrusted): ${JSON.stringify(context)}`;
      const result = await this.runner.run(source.files, prompt, endpoint, (ms) => this.agent.coolDown(endpoint.quotaGroup, ms), {
        taskId: id, signal, authorize,
        onProgress: live.accept,
@@ -523,12 +552,16 @@ export class HostedGithub {
    } catch (error) {
      const row = this.sqlite.prepare("SELECT request_event_id,session_id FROM hosted_github_tasks WHERE id=?").get(id);
      if (row) {
+       const timeout = signal.aborted && signal.reason instanceof Error && signal.reason.name === "TimeoutError"
+         || error instanceof Error && hostedFailureOutcome(error.message) === "timed_out";
        const code = !this.service.database.isRequestContextCurrent(String(row.session_id), String(row.request_event_id)) ? "context_changed"
-         : signal.aborted ? "github_task_interrupted" : error instanceof ApiError ? error.code : "github_task_failed";
-       this.sqlite.prepare("UPDATE hosted_github_tasks SET state=?,error_code=? WHERE id=?").run(signal.aborted ? "interrupted" : "failed", code, id);
+         : timeout ? "github_task_timeout" : signal.aborted ? "github_task_interrupted" : error instanceof ApiError ? error.code : "github_task_failed";
+       this.sqlite.prepare("UPDATE hosted_github_tasks SET state=?,error_code=? WHERE id=?").run(signal.aborted && !timeout ? "interrupted" : "failed", code, id);
      }
      // The runner has settled even if deletion removed the task and job rows.
-     if (requestId && !(error instanceof HostedExecutorCleanupError)) this.service.finishHostedAgentRequest(requestId, {});
+     if (requestId && !(error instanceof HostedExecutorCleanupError)) this.service.finishHostedAgentRequest(requestId, { errorCode:
+       signal.aborted && signal.reason instanceof Error && signal.reason.name === "TimeoutError" ? "container_timeout"
+         : error instanceof Error ? error.message : "github_task_failed" });
    } finally { await live.finish(false); }
  }
  remove(actor: Actor, id: string) {

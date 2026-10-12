@@ -259,3 +259,12 @@ test("closed cloud Agent entry preserves GitHub binding and review but refuses n
   await assert.rejects(ui.view.start("s1", { content: "Edit", profileId: "coding", idempotencyKey: "request" }), /coming later/);
   assert.equal(runs, 0);
 });
+
+test("repository timeout is localized separately from failure and saved-source Continue remains available", async () => {
+  const detail = { ...task(), state: "failed", error_code: "github_task_timeout", answer: null };
+  const ui = fixture({ getHostedGithubTask: async () => detail }, { locale: "zh-CN" });
+  await ui.view.openTask(detail.id);
+  assert.equal(ui.el("cloud-github-task-status").children[2].textContent, "已超时");
+  assert.ok(ui.el("cloud-github-task-status").children.some(child => child.textContent?.includes("已保存的源代码快照")));
+  assert.equal(ui.el("cloud-github-continue").disabled, false);
+});

@@ -137,7 +137,7 @@ unixTest("repository reduction uses its independent cap and retains source/netwo
       assert.equal(args[args.indexOf("--memory-swap") + 1], "512m");
       assert.equal(args[args.indexOf("--cpus") + 1], "2");
       assert.equal(args[args.indexOf("--pids-limit") + 1], "256");
-      assert.equal(timeout, 900_000);
+      assert.equal(timeout, 720_000);
       for (const argument of ["none", "--read-only", "ALL", "no-new-privileges", "10001:10001"]) assert.ok(args.includes(argument));
       assert.ok(args.some((arg) => arg.endsWith("dst=/input,readonly")));
       assert.ok(args.some((arg) => arg.endsWith("dst=/run/npm.sock")));

@@ -611,6 +611,7 @@ export class HttpCollaborationApi {
       method: "POST",
       body: JSON.stringify({ profile_id: input.profileId ?? "default", content: input.content, include_code: input.includeCode === true,
         idempotency_key: input.idempotencyKey, reply_to_event_id: input.replyTo ?? null,
+        ...(input.continueFromEventId ? { continue_from_event_id: input.continueFromEventId } : {}),
         ...(input.contentRevision === undefined ? {} : { content_revision: input.contentRevision }),
         ...(input.apiConfigRevision === undefined ? {} : { api_config_revision: input.apiConfigRevision }) }),
     }), HOSTED_AGENT_RESPONSE_ERROR);
@@ -634,6 +635,7 @@ export class HttpCollaborationApi {
         method: "POST", body: JSON.stringify({ profile_id: input.executionProfile.cloudProfileId,
           ...(input.executionProfile.apiConfigRevision === undefined ? {} : { api_config_revision: input.executionProfile.apiConfigRevision }),
           source_event_ids: input.sourceEventIds, idempotency_key: input.idempotencyKey,
+          ...(input.continueFromEventId ? { continue_from_event_id: input.continueFromEventId } : {}),
           ...(input.instructions === undefined ? {} : { instructions: input.instructions }) }),
       }), HOSTED_AGENT_RESPONSE_ERROR);
       return this.#event(receipt.request_event);
