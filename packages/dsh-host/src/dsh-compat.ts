@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { parseHistoryContext } from "@gatherthread/bridge";
 import type {
   DshAgentStatus,
@@ -9,8 +9,11 @@ import type {
   DshSessionEventRecord,
   DshLocalSessionCandidate,
   DshContextExecutionInput,
+  DshLiveOutputEvent,
+  DshAssistantStreamFrame,
 } from "./types.js";
 import { hasCompletedDshLocalTurn } from "./connector.js";
+import { parseDshAssistantStreamFrame } from "./live-event-mapper.js";
 
 /** Exact upstream surface verified by the isolated Host and SDK PoCs. */
 export const DSH_COMPATIBILITY = Object.freeze({
@@ -217,6 +220,7 @@ export function createDshHostFacade(options: DshCompatibilityOptions): DshHostFa
     ? undefined
     : requireService<DshWorkspaceRegistryLike>(context, "workspaceRegistry", ["create"]);
   const eventSubscribers = new Set<(event: DshSessionEventRecord) => void>();
+  const liveSubscribers = new Set<(event: DshLiveOutputEvent) => void>();
   const statusSubscribers = new Set<(status: DshAgentStatus, sourceSessionId?: string) => void>();
   const listenerDisposers: Array<() => void> = [];
   const lifecycleAbort = new AbortController();
@@ -234,12 +238,72 @@ export function createDshHostFacade(options: DshCompatibilityOptions): DshHostFa
   let knownProjectionMessageIds: Set<string> | undefined;
   let disposePromise: Promise<void> | undefined;
   let disposed = false;
+  let livePrompt: { agent: DshAgentLike; turn?: number; step?: number; closed: boolean;
+    nativeFrames: boolean; isLoopRequest?: (request: unknown) => boolean;
+    provider: string; model: string; revision: number } | undefined;
+
+  const emitLive = (owner: NonNullable<typeof livePrompt>, event: DshLiveOutputEvent): void => {
+    if (disposed || livePrompt !== owner || owner.closed) return;
+    for (const subscriber of liveSubscribers) subscriber(event);
+  };
 
   listenerDisposers.push(context.on("session/event", (...args) => {
     const session = asSession(args[0]);
     const event = asSessionEvent(args[1]);
     if (session === undefined || (session.id !== options.sessionId && session.id !== executionHandle?.agent.session.id) || event === undefined) return;
     for (const subscriber of eventSubscribers) subscriber({ ...event, sourceSessionId: session.id });
+    const owner = livePrompt;
+    if (owner === undefined || owner.closed || session !== owner.agent.session) return;
+    const data = asObject(event.data);
+    if (event.type === "turn/start" && owner.turn === undefined && Number.isSafeInteger(data?.turn)) {
+      owner.turn = Number(data!.turn);
+    }
+    if (owner.turn === undefined || (data?.turn !== undefined && data.turn !== owner.turn)) return;
+    if (event.type === "step/start" && Number.isSafeInteger(data?.step)) owner.step = Number(data!.step);
+    if (["assistant/message", "assistant/attempt", "tool/call", "tool/result", "todo/write"].includes(event.type)) {
+      emitLive(owner, { kind: "session-event", sourceSessionId: session.id, event });
+    }
+    if (event.type === "turn/end") owner.closed = true;
+  }, { global: true }));
+  listenerDisposers.push(context.on("agent/assistant-stream", (...args) => {
+    const owner = livePrompt;
+    const payload = asObject(args[0]);
+    if (owner === undefined || !owner.nativeFrames || owner.turn === undefined || payload?.agent !== owner.agent) return;
+    const frame = parseDshAssistantStreamFrame(payload.frame);
+    if (frame === undefined || (frame.type === "start" && frame.turn !== owner.turn)) return;
+    emitLive(owner, { kind: "assistant-stream", sourceSessionId: owner.agent.session.id, frame });
+  }, { global: true }));
+  // Published 0.1.2 has no assistant-stream frames. Its public waterfall and
+  // process-local loop marker distinguish the owned conversation call from
+  // compaction, title generation and arbitrary same-session auxiliary calls.
+  listenerDisposers.push(context.on("llm/stream", (...args) => {
+    const request = asObject(args[0]);
+    const next = args[1];
+    if (typeof next !== "function") return;
+    const stream = (next as () => AsyncIterable<unknown>)();
+    const owner = livePrompt;
+    if (owner === undefined || owner.nativeFrames || owner.closed || owner.turn === undefined
+      || owner.step === undefined || owner.isLoopRequest === undefined || request === undefined
+      || !Object.isFrozen(args[0])
+      || request.sessionId !== owner.agent.session.id || request.provider !== owner.provider || request.model !== owner.model
+      || typeof agents.get !== "function" || agents.get(owner.agent.session.id) !== owner.agent
+      || !owner.isLoopRequest(args[0])) return stream;
+    const attemptId = randomUUID();
+    const publish = (frame: DshAssistantStreamFrame) => emitLive(owner, {
+      kind: "assistant-stream", sourceSessionId: owner.agent.session.id, frame,
+    });
+    return (async function* () {
+      let index = 0;
+      publish({ type: "start", attemptId, revision: ++owner.revision, turn: owner.turn!, step: owner.step! });
+      for await (const chunk of stream) {
+        // Copy only output chunks. The request object is never retained or
+        // projected, including its system, messages, tools and credentials.
+        publish({ type: "chunk", attemptId, revision: ++owner.revision, index: index++, time: Date.now(), chunk });
+        yield chunk;
+      }
+      // Durable assistant/message is emitted after this wrapper returns. Its
+      // allowlisted content settles items; no synthetic durable end is made.
+    })();
   }, { global: true }));
   listenerDisposers.push(context.on("agent/status", (...args) => {
     const payload = asObject(args[0]);
@@ -632,6 +696,19 @@ export function createDshHostFacade(options: DshCompatibilityOptions): DshHostFa
       throwIfDisposed(disposed, lifecycleAbort.signal, "prompt");
       if (agent.status !== "idle" || agent.session.seq !== fromSequence) throw new Error("DSH Agent changed while preparing a GatherThread prompt");
       if (requestedExecutionId !== undefined) { assertExecutionParentIdle(); assertExecutionOwnership(agent); }
+      if (liveSubscribers.size > 0) {
+        let imported: Record<string, unknown> | undefined;
+        try { imported = asObject(await (options.moduleImporter ?? importDshModule)(USER_MESSAGE_MODULE)); }
+        catch { /* Unsupported ephemeral API keeps the allowlisted durable path. */ }
+        throwIfDisposed(disposed, lifecycleAbort.signal, "prompt");
+        if (agent.status !== "idle" || agent.session.seq !== fromSequence) throw new Error("DSH Agent changed while preparing live output");
+        livePrompt = { agent, closed: false, revision: 0,
+          nativeFrames: typeof imported?.expandAssistantStream === "function",
+          ...(typeof imported?.isAgentLoopRequest === "function"
+            ? { isLoopRequest: imported.isAgentLoopRequest as (request: unknown) => boolean } : {}),
+          provider: requestedSelection?.provider ?? options.provider,
+          model: requestedSelection?.model ?? options.model };
+      }
       agent.followup(message);
       await agent.whenIdle();
       throwIfDisposed(disposed, lifecycleAbort.signal, "prompt");
@@ -649,6 +726,7 @@ export function createDshHostFacade(options: DshCompatibilityOptions): DshHostFa
         selectionRef.assembled = undefined;
       }
       disposeSelection?.();
+      livePrompt = undefined;
       promptActive = false;
     }
   };
@@ -757,6 +835,11 @@ export function createDshHostFacade(options: DshCompatibilityOptions): DshHostFa
       if (disposed) throw new Error("DSH host facade is disposed");
       eventSubscribers.add(listener);
       return () => eventSubscribers.delete(listener);
+    },
+    onLiveOutput(listener) {
+      if (disposed) throw new Error("DSH host facade is disposed");
+      liveSubscribers.add(listener);
+      return () => liveSubscribers.delete(listener);
     },
     onStatus(listener) {
       if (disposed) throw new Error("DSH host facade is disposed");

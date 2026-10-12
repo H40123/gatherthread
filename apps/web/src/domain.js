@@ -359,33 +359,64 @@ export function eventContent(event) {
 /**
  * Collapse a request's progress into the entries a reader actually sees.
  *
- * A connector publishes streamed public output in bounded slices so the server
- * receives a steady trickle rather than one enormous event. Adjacent slices
- * sharing a `stream_id` are merged here, because a growing message is what the
- * reader asked to watch — not one line per slice. An identity is never reused
- * across two native messages, so a later message cannot be folded into an
- * earlier one. The first slice keeps the entry's identity and timestamp, so the
- * entry does not jump in the timeline or lose its anchor while it grows.
+ * Snapshots replace earlier revisions of the same request and stream, including
+ * when another stream appears between updates. Legacy fragments concatenate.
+ * The first event keeps the visual anchor; actions retain a canonical event.
+ * A legacy aggregate has a separate copy body and cannot be quoted as one event.
  */
 export function mergeProgressFragments(progressEvents) {
   const entries = [];
-  for (const event of progressEvents ?? []) {
-    const streamId = event?.payload?.stream_id;
-    const streaming = typeof streamId === "string" && streamId.length > 0;
-    const previous = entries.at(-1);
-    if (streaming && previous?.streamId === streamId) {
-      previous.content += eventContent(event);
-      previous.event = { ...previous.event, payload: { ...previous.event.payload, content: previous.content } };
+  const streams = new Map();
+  const seen = new Set();
+  for (const [index, event] of (progressEvents ?? []).entries()) {
+    if (event?.id && seen.has(event.id)) continue;
+    if (event?.id) seen.add(event.id);
+    const payload = event?.payload ?? {};
+    const streamId = payload.stream_id;
+    const snapshot = payload.stream_mode === "snapshot" && Number.isSafeInteger(payload.stream_revision) && payload.stream_revision >= 0;
+    const streaming = payload.phase === "stream" && typeof streamId === "string" && streamId.length > 0
+      && (snapshot || payload.stream_mode === undefined);
+    const key = streaming ? JSON.stringify([event.replyTo ?? event.reply_to_event_id ?? null, snapshot ? "snapshot" : "fragments", streamId]) : event?.id;
+    const previous = streaming ? streams.get(key) : undefined;
+    if (previous) {
+      previous.sourceIds.push(event.id);
+      if (snapshot) {
+        if (payload.stream_revision < previous.streamRevision
+          || (payload.stream_revision === previous.streamRevision && (event.sequence ?? 0) <= (previous.event.sequence ?? 0))) continue;
+        previous.content = eventContent(event);
+        previous.event = event;
+        previous.streamRevision = payload.stream_revision;
+        previous.streamState = payload.stream_state;
+        previous.streamKind = payload.stream_kind;
+        previous.title = payload.title;
+        previous.plan = Array.isArray(payload.plan) ? payload.plan : [];
+      } else {
+        previous.content += eventContent(event);
+        previous.copyEvent = { ...previous.event, payload: { ...previous.event.payload, content: previous.content } };
+        previous.quoteable = false;
+      }
+      previous.updatedIndex = index;
       continue;
     }
     const content = eventContent(event);
-    entries.push({
+    const entry = {
       id: event?.id,
+      key,
       createdAt: event?.createdAt,
       streamId: streaming ? streamId : undefined,
+      streamKind: streaming ? payload.stream_kind ?? "answer" : undefined,
+      streamRevision: snapshot ? payload.stream_revision : undefined,
+      streamState: snapshot ? payload.stream_state : undefined,
+      title: payload.title,
+      plan: Array.isArray(payload.plan) ? payload.plan : [],
       content,
-      event: { ...event, payload: { ...event?.payload, content } },
-    });
+      event,
+      quoteable: true,
+      sourceIds: [event?.id],
+      updatedIndex: index,
+    };
+    entries.push(entry);
+    if (streaming) streams.set(key, entry);
   }
   return entries;
 }
@@ -393,11 +424,13 @@ export function mergeProgressFragments(progressEvents) {
 /**
  * The newest public text a request has streamed, for the compact line a reader
  * sees without opening the work log. This is the tail, not the head: while a
- * message is being written, its newest words are the informative part. Hidden
- * reasoning cannot appear here because it is never published.
+ * message is being written, its newest words are the informative part.
+ * Tool details, plans, and exposed thinking have their own sections.
  */
 export function latestStreamedText(progressEvents, limit = 140) {
-  const streamed = mergeProgressFragments(progressEvents).findLast((entry) => entry.streamId !== undefined);
+  const streamed = mergeProgressFragments(progressEvents)
+    .filter((entry) => entry.streamId !== undefined && entry.streamKind === "answer")
+    .sort((left, right) => right.updatedIndex - left.updatedIndex)[0];
   if (!streamed) return "";
   const text = streamed.content.replace(/\s+/gu, " ").trim();
   return text.length > limit ? `…${text.slice(-limit)}` : text;

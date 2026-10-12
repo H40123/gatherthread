@@ -46,6 +46,43 @@ test("failed uploads are not acknowledged and the same revision is retried", asy
   await app.stream.finish();
 });
 
+test("an uncertain acknowledgment retries the identical payload before the newer snapshot", async () => {
+  const attempts: LiveOutputUpdate[] = [];
+  let accept = false;
+  const app = fixture((update) => { attempts.push(update); return accept; });
+  await app.stream.onDelta("a", "First ");
+  await app.stream.onDelta("a", "second ");
+  assert.deepEqual(attempts[0], attempts[1]);
+  accept = true; app.advance(); await app.stream.flush();
+  app.advance(); await app.stream.flush(); await app.stream.finish();
+  assert.equal(attempts.findLast((x) => x.streamState === "completed")?.content, "First second ");
+});
+
+test("updates received while publication is awaiting ACK are not lost", async () => {
+  const output: LiveOutputUpdate[] = [];
+  let acknowledge!: () => void;
+  let started!: () => void;
+  const publishing = new Promise<void>((resolve) => { started = resolve; });
+  const ack = new Promise<void>((resolve) => { acknowledge = resolve; });
+  const app = fixture(async (update) => { output.push(update); if (output.length === 1) { started(); await ack; } });
+  const first = app.stream.onDelta("a", "First ");
+  await publishing;
+  const second = app.stream.onDelta("a", "second ");
+  acknowledge(); await Promise.all([first, second]);
+  app.advance(); await app.stream.flush();
+  assert.equal(output.at(-1)?.content, "First second ");
+  await app.stream.finish();
+});
+
+test("quoted credential fields and Unicode truncation are safe", async () => {
+  const app = fixture();
+  await app.stream.onSnapshot("a", '{"access_token":"private-test-value","result":"ok"}', "tool", undefined, "completed");
+  await app.stream.onSnapshot("b", "文本🙂 ".repeat(30_000), "answer");
+  await app.stream.finish();
+  assert.ok(!JSON.stringify(app.output).includes("private-test-value"));
+  assert.ok(app.output.every((x) => !x.content.includes("\ufffd") && Buffer.byteLength(x.content) <= 24 * 1024));
+});
+
 test("one global throttle bounds many items, payload size and terminal drain", async () => {
   const app = fixture();
   for (let n = 0; n < 200; n++) await app.stream.onSnapshot(String(n), "item ".repeat(20_000), "tool");
@@ -64,4 +101,27 @@ test("plans replace previous state and completed publishers never accept late de
   const count = app.output.length;
   await app.stream.onDelta("late", "late output ");
   assert.equal(app.output.length, count);
+});
+
+test("Chinese output streams before completion without exposing a split ASCII credential", async () => {
+  const app = fixture();
+  await app.stream.onDelta("a", "正在检查项目，先查看配置。");
+  assert.equal(app.output.at(-1)?.content, "正在检查项目，先查看配置。");
+  const fake = "sk-" + "b".repeat(24);
+  app.advance(); await app.stream.onDelta("a", "接下来检查：" + fake.slice(0, 12));
+  assert.ok(!JSON.stringify(app.output).includes(fake.slice(0, 12)));
+  app.advance(); await app.stream.onDelta("a", fake.slice(12) + "，已经完成。");
+  assert.match(app.output.at(-1)?.content ?? "", /已经完成/);
+  assert.ok(!JSON.stringify(app.output).includes(fake));
+  await app.stream.finish();
+});
+
+test("empty plans clear previous steps and interrupted work is not marked completed", async () => {
+  const app = fixture();
+  await app.stream.onPlan("plan", [{ step: "Review files", status: "in_progress" }]);
+  app.advance(); await app.stream.onPlan("plan", []);
+  assert.deepEqual(app.output.at(-1)?.plan, []);
+  app.advance(); await app.stream.onDelta("a", "Reviewing ");
+  await app.stream.finish(false);
+  assert.ok(app.output.filter(x => x.streamState !== "running").every(x => x.streamState === "failed"));
 });

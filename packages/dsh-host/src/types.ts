@@ -112,6 +112,22 @@ export interface DshSessionEventRecord {
   readonly sourceSessionId?: string;
 }
 
+/** Public process-local DSH assistant frames, never provider request input.
+ * Revisions increase for every frame across one Agent lifecycle; attemptId
+ * groups a start, dense zero-based chunk indexes, and one terminal end.
+ */
+export type DshAssistantStreamFrame =
+  | { readonly type: "start"; readonly attemptId: string; readonly revision: number; readonly turn: number; readonly step: number }
+  | { readonly type: "chunk"; readonly attemptId: string; readonly revision: number; readonly index: number; readonly time: number; readonly chunk: unknown }
+  | { readonly type: "end"; readonly attemptId: string; readonly revision: number; readonly index: number;
+      readonly outcome: { readonly kind: "committed"; readonly eventType: "assistant/message" | "assistant/attempt"; readonly seq: number }
+        | { readonly kind: "abandoned" } };
+
+/** Admitted only while this facade's GatherThread prompt owns its first turn. */
+export type DshLiveOutputEvent =
+  | { readonly kind: "assistant-stream"; readonly sourceSessionId: string; readonly frame: DshAssistantStreamFrame }
+  | { readonly kind: "session-event"; readonly sourceSessionId: string; readonly event: DshSessionEventRecord };
+
 export type DshAgentStatus = "running" | "idle";
 
 export type DshConnectorLifecycleState =
@@ -171,6 +187,7 @@ export interface DshHostFacade {
   flush(): Promise<void>;
   prompt(text: string, selection?: DshExecutionSelection, executionSessionId?: string): Promise<DshPromptResult>;
   onSessionEvent(listener: (event: DshSessionEventRecord) => void): () => void;
+  onLiveOutput?(listener: (event: DshLiveOutputEvent) => void): () => void;
   onStatus(listener: (status: DshAgentStatus, sourceSessionId?: string) => void): () => void;
   dispose(): Promise<void>;
 }

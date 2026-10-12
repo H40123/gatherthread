@@ -214,7 +214,7 @@ test("legacy single-mode Solo owner uses /me and unload cleanly supports a secon
 
   await apply(fixture.context, rawConfig);
   assert.equal(fixture.activeHandles, 1);
-  assert.equal(fixture.listenerCount(), 2);
+  assert.equal(fixture.listenerCount(), 4);
   await waitFor(() => eventReads === 2);
   await bounded(fixture.effects[0]?.(), 500);
   assert.equal(abortedReads, 1);
@@ -225,7 +225,7 @@ test("legacy single-mode Solo owner uses /me and unload cleanly supports a secon
   assert.equal(fixture.createCount, 1);
   assert.equal(fixture.resumeCount, 1);
   assert.equal(fixture.activeHandles, 1);
-  assert.equal(fixture.listenerCount(), 2);
+  assert.equal(fixture.listenerCount(), 4);
   await waitFor(() => eventReads === 4);
   await bounded(fixture.effects[1]?.(), 500);
   await bounded(fixture.effects[1]?.(), 500);
@@ -357,7 +357,7 @@ test("explicit project mode loads independent Sessions and releases every Host o
 
   await apply(fixture.context, rawConfig);
   assert.equal(fixture.activeHandles, 2);
-  assert.equal(fixture.listenerCount(), 4);
+  assert.equal(fixture.listenerCount(), 8);
   assert.equal(fixture.createCount, 2);
   await bounded(fixture.effects[0]?.(), 500);
   assert.equal(fixture.activeHandles, 0);

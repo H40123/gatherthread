@@ -589,14 +589,14 @@ test("streamed fragments of one message merge into a single entry", () => {
   assert.equal(merged[0].createdAt, "2026-10-12T00:00:01.000Z");
 });
 
-test("a second message is never folded into the first", () => {
+test("interleaved fragments keep each message in its first position", () => {
   const merged = mergeProgressFragments([
     streamed("a", "s1", "first"),
     streamed("b", "s2", "second"),
     streamed("c", "s2", " message"),
     streamed("d", "s1", "first again"),
   ]);
-  assert.deepEqual(merged.map((entry) => entry.content), ["first", "second message", "first again"]);
+  assert.deepEqual(merged.map((entry) => entry.content), ["firstfirst again", "second message"]);
 });
 
 test("ordinary progress stays its own entry and is never merged", () => {

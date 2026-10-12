@@ -226,9 +226,10 @@ test("the shell exposes landmarks, labelled forms, status regions, and separate 
   assert.match(main, /installComposerLayoutResizer\(composerLayoutResizer\)/);
   assert.match(main, /renderMarkdown\(failedResponse \? localizer\.t\(content\) : content\)/);
   assert.match(main, /renderProgressDisclosure\(progressByRequest\.get\(event\.replyTo\), false\)/);
-  assert.match(main, /details\.open = live/);
+  assert.match(main, /details\.open = !collapsedWorklogs\.has\(worklogId\)/);
   assert.match(main, /expandedWorklogs\.has\(worklogId\)/);
   assert.match(main, /details\.addEventListener\("toggle"/);
+  assert.match(main, /details\.setAttribute\("aria-live", "off"\)/);
 });
 
 test("entry navigation, empty-account project actions, and invited-member exit remain accessible", async () => {

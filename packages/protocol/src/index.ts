@@ -1,4 +1,5 @@
 import { z } from "zod";
+export * from "./live-output.js";
 import { codeSyncRequestKinds } from "./code-sync.js";
 import { githubCodeSyncRequestKinds } from "./github-sync.js";
 import { RegistrationEmailSchema } from "./registration.js";

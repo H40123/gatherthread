@@ -3946,7 +3946,7 @@ for await (const line of lines) {
       params: {
         threadId: message.params.threadId,
         turnId,
-        item: { id: "reasoning-" + turn, type: "reasoning", summary: ["private reasoning"] },
+        item: { id: "reasoning-" + turn, type: "reasoning", content: ["private reasoning"], summary: ["Visible reasoning summary"] },
       },
     }) + "\\n");
     process.stdout.write(JSON.stringify({
@@ -4048,17 +4048,20 @@ function fail(id, message) {
   assert.equal(first.observedModel, "gpt-5.6-terra");
   assert.equal(first.observedReasoningEffort, "high");
   const fragments = progress.filter((update) => update.phase === "stream");
-  assert.deepEqual(fragments.map((update) => update.content), ["Checking ", "turn 1"],
-    "public agent-message slices are published as they arrive");
-  assert.equal(new Set(fragments.map((update) => update.streamId)).size, 1,
-    "fragments of one native message share the identity a reader merges them under");
+  const commentary = fragments.filter(update => update.streamKind === "answer" && update.content.startsWith("Checking"));
+  assert.equal(commentary.at(-1)?.content, "Checking turn 1",
+    "the completed commentary is one authoritative growing snapshot");
+  assert.equal(new Set(commentary.map(update => update.streamId)).size, 1,
+    "snapshots of one native message share one opaque identity");
   assert.ok(fragments.every((update) => typeof update.streamId === "string" && update.streamId.length > 0));
   assert.equal(progress.filter((update) => update.phase === "activity").length, 0,
     "streamed output replaces the generic busy placeholder rather than joining it");
-  assert.ok(!progress.some((update) => update.content === "Checking turn 1"),
-    "an item the stream carried in full is not published a second time under its own identity");
+  assert.ok(progress.filter(update => update.content === "Checking turn 1").every(update => update.streamMode === "snapshot"),
+    "completed text reconciles the existing snapshot instead of a second commentary identity");
   assert.ok(!progress.some((update) => update.content.includes("private reasoning")),
-    "a reasoning slice must never reach published progress");
+    "raw native reasoning content and textDelta must never reach published progress");
+  assert.ok(progress.some(update => update.streamKind === "reasoning" && update.content.includes("Visible reasoning summary")),
+    "native public reasoning summaries are displayable, unlike raw model reasoning");
   assert.deepEqual(revealedThreads, [], "background execution tasks must never be opened in Desktop");
 
   const secondRequest = canonical(5, "agent_request", { content: "implement second" });

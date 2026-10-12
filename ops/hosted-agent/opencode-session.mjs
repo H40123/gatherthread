@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { publicSessionAnswer, sessionIsIdle } from "./public-answer.mjs";
+import { subscribeOpencodeLiveOutput } from "./live-output.mjs";
 
 const ORIGIN = "http://127.0.0.1:8790";
 const VERSION = "1.18.32";
@@ -18,9 +19,9 @@ async function readJson(response, limit) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-/** One isolated harness process; no SDK/SSE subscriber or second CLI process. */
+/** One isolated harness process, with optional bounded loopback telemetry. */
 export async function runOpencodeSession(workspace, prompt, outputLimit,
-  { spawnProcess = spawn, fetchResponse = globalThis.fetch } = {}) {
+  { spawnProcess = spawn, fetchResponse = globalThis.fetch, onProgress } = {}) {
   const controller = new AbortController();
   const child = spawnProcess("opencode", ["serve", "--hostname", "127.0.0.1", "--port", "8790", "--no-mdns"],
     { cwd: workspace, env: { ...process.env, PWD: workspace, BUN_OPTIONS: "--smol" }, stdio: ["ignore", "pipe", "pipe"] });
@@ -28,6 +29,7 @@ export async function runOpencodeSession(workspace, prompt, outputLimit,
   let failed = false, forcedKill = false, shutdownRequested = false, closeCode, closeSignal;
   let phase = "startup";
   let runFailure;
+  let live;
   const diagnostic = () => Object.assign(new Error("agent_failed"), { diagnosticCode: `agent_${phase}_failed` });
   const fail = () => {
     failed = true;
@@ -70,10 +72,16 @@ export async function runOpencodeSession(workspace, prompt, outputLimit,
       permission: ["question", "plan_enter", "plan_exit"].map(permission => ({ permission, action: "deny", pattern: "*" })),
     }, 5000);
     if (!/^ses_[A-Za-z0-9]+$/u.test(session.id ?? "")) throw new Error("agent_failed");
+    if (onProgress) {
+      try { live = await subscribeOpencodeLiveOutput({ fetchResponse, origin: ORIGIN, workspace,
+        sessionId: session.id, send: onProgress, signal: controller.signal, outputLimit }); }
+      catch { /* supplementary progress does not determine task completion */ }
+    }
     // This HTTP request awaits the final message, not the first text chunk.
     phase = "answer";
     const reply = await request(`/session/${session.id}/message`, { agent: "build", parts: [{ type: "text", text: prompt }] });
     const answer = publicSessionAnswer(reply, session.id);
+    live?.reconcile(reply);
     phase = "idle";
     // A constrained runtime may pause for GC or I/O after finishing its reply.
     // Retry only this read; never resubmit the prompt or accept an unconfirmed idle.
@@ -100,6 +108,7 @@ export async function runOpencodeSession(workspace, prompt, outputLimit,
     // or failure, and wait for process closure before snapshotting any files.
     stopping = true;
     controller.abort();
+    await live?.stop();
     if (!exited) { shutdownRequested = true; child.kill("SIGTERM"); }
     await Promise.race([closure, delay(1000)]);
     if (!closed) { forcedKill = true; child.kill("SIGKILL"); await Promise.race([closure, delay(1000)]); }

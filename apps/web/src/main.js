@@ -170,6 +170,9 @@ let dshRuntimeLoadInFlight = false;
 let selectedSessionGeneration = 0;
 let pendingDshPairingCode = dshPairingCodeFromHash(location.hash);
 const expandedWorklogs = new Set();
+const collapsedWorklogs = new Set();
+const progressSectionState = new Map();
+const revealedProgressEvents = new Set();
 const localSyncStatusRequestsInFlight = new Set();
 const localSyncActionsInFlight = new Set();
 const retryingAgentRequestIds = new Set();
@@ -479,7 +482,14 @@ const messageActions = mountMessageActions({ document, api, localizer, announce,
   revealEvent: (id, sequence) => {
     pendingHistoryTarget = { id, sequence, sessionId: state.session?.id };
     const progress = state.sync.events.find((event) => event.id === id && event.type === "agent_progress");
-    if (progress?.replyTo) expandedWorklogs.add(progress.replyTo);
+    if (progress?.replyTo) {
+      expandedWorklogs.add(progress.replyTo);
+      collapsedWorklogs.delete(progress.replyTo);
+      revealedProgressEvents.add(progress.id);
+      const entry = mergeProgressFragments(state.sync.events.filter((event) => event.type === "agent_progress" && event.replyTo === progress.replyTo))
+        .find((entry) => entry.sourceIds.includes(progress.id));
+      if (entry) progressSectionState.set(entry.key, true);
+    }
     historySummaryUi.revealOriginal(id); renderTimeline();
   },
 });
@@ -1329,6 +1339,9 @@ function resetWorkspaceToAuth() {
   accountDevices.clear();
   settingsDeviceLoadGeneration += 1;
   expandedWorklogs.clear();
+  collapsedWorklogs.clear();
+  progressSectionState.clear();
+  revealedProgressEvents.clear();
   clearCreatedInvitationSecret();
   clearSensitiveInputs();
   renderWorkspaceContext();
@@ -1495,7 +1508,12 @@ async function selectSession(sessionId) {
   historySummaryUi.reset();
   messageActions.reset();
   pendingHistoryTarget = null;
-  if (state.session?.id !== sessionId) expandedWorklogs.clear();
+  if (state.session?.id !== sessionId) {
+    expandedWorklogs.clear();
+    collapsedWorklogs.clear();
+    progressSectionState.clear();
+    revealedProgressEvents.clear();
+  }
   const generation = ++selectedSessionGeneration;
   const projectId = state.project.id;
   sync.disconnect();
@@ -2087,6 +2105,7 @@ function renderSyncState() {
 }
 
 function renderTimeline({ followNewEvents = false, preserveAnchor = false, focusSummaryId = null } = {}) {
+  const focusedProgressToggle = document.activeElement?.dataset.progressToggle;
   const scrollSnapshot = captureTimelineScroll(timelineRegion, {
     automatic: state.settings.composer.autoScroll,
     followNewEvents,
@@ -2098,12 +2117,14 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
   const summaryView = historySummaryUi.timeline();
   const progressByRequest = new Map();
   for (const event of events) {
-    if (event.type !== "agent_progress" || !event.replyTo || !eventContent(event).trim()) continue;
+    if (event.type !== "agent_progress" || !event.replyTo
+      || (!eventContent(event).trim() && event.payload?.phase !== "stream" && !event.payload?.plan?.length)) continue;
     const progress = progressByRequest.get(event.replyTo) ?? [];
     progress.push(event);
     progressByRequest.set(event.replyTo, progress);
   }
   const pendingRequestIds = new Set(pendingAgentRequests(state.sync.events).map((event) => event.id));
+  const answeredRequestIds = new Set(events.filter((event) => event.type === "agent_response").map((event) => event.replyTo));
   timelineEmpty.hidden = events.length > 0;
   const locale = state.settings.general.locale;
   const today = new Date();
@@ -2243,8 +2264,8 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     }
 
     item.append(article);
-    if (event.type === "agent_request" && pendingRequestIds.has(event.id) && progressByRequest.has(event.id)) {
-      item.append(renderProgressDisclosure(progressByRequest.get(event.id), true));
+    if (event.type === "agent_request" && !answeredRequestIds.has(event.id) && progressByRequest.has(event.id)) {
+      item.append(renderProgressDisclosure(progressByRequest.get(event.id), pendingRequestIds.has(event.id)));
     }
     if (pendingRequestIds.has(event.id)) {
       item.append(renderAgentPendingStatus(event, progressByRequest.get(event.id)));
@@ -2263,6 +2284,10 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     follow: scrollSnapshot.follow && events.length > 0,
   });
   renderTimelineBottomControl();
+  if (focusedProgressToggle) {
+    Array.from(timeline.querySelectorAll("[data-progress-toggle]"))
+      .find((toggle) => toggle.dataset.progressToggle === focusedProgressToggle)?.focus({ preventScroll: true });
+  }
   if (focusSummaryId) element(`message-${focusSummaryId}`)?.querySelector("[data-summary-view-toggle]")?.focus({ preventScroll: true });
   if (pendingHistoryTarget && state.session && pendingHistoryTarget.sessionId === state.session.id) {
     const target = element(`message-${pendingHistoryTarget.id}`);
@@ -2307,34 +2332,120 @@ function renderProgressDisclosure(progressEvents, live) {
   const summary = document.createElement("summary");
   const list = document.createElement("ol");
   const worklogId = progressEvents[0]?.replyTo;
-  // A streamed message arrives as many bounded fragments. Merging them shows one
-  // growing entry, which is what the reader is watching for, rather than a new
-  // line for every slice the connector published.
   const entries = mergeProgressFragments(progressEvents);
+  const referencedEvents = progressEvents.filter((event) => revealedProgressEvents.has(event.id));
+  const paused = progressEvents.some((event) => event.payload?.status === "paused");
   details.className = `agent-worklog${live ? " agent-worklog-live" : ""}`;
-  details.open = live || Boolean(worklogId && expandedWorklogs.has(worklogId));
-  details.setAttribute("aria-live", live ? "polite" : "off");
-  details.addEventListener("toggle", () => {
-    if (live || !worklogId) return;
-    if (details.open) expandedWorklogs.add(worklogId);
-    else expandedWorklogs.delete(worklogId);
+  details.dataset.requestId = worklogId ?? "";
+  details.open = !collapsedWorklogs.has(worklogId) && (live || expandedWorklogs.has(worklogId));
+  // Growing output stays readable without replaying the whole log to a screen reader.
+  details.setAttribute("aria-live", "off");
+  bindProgressDisclosure(details, summary, `worklog:${worklogId}`, (open) => {
+    if (!worklogId) return;
+    if (open) { expandedWorklogs.add(worklogId); collapsedWorklogs.delete(worklogId); }
+    else { expandedWorklogs.delete(worklogId); collapsedWorklogs.add(worklogId); }
   });
   summary.textContent = `${localizer.t(live ? "Working" : "Work log")} (${entries.length})`;
   list.className = "agent-worklog-list";
   for (const entry of entries) {
     const item = document.createElement("li");
-    item.id = `message-${entry.id}`; item.tabIndex = -1;
+    item.id = `${entry.quoteable ? "message" : "progress"}-${entry.event.id}`; item.tabIndex = -1;
+    item.dataset.historyAnchor = entry.id;
     if (entry.streamId !== undefined) item.classList.add("agent-worklog-streamed");
     const timestamp = document.createElement("time");
     timestamp.dateTime = entry.createdAt;
     timestamp.textContent = formatTimestamp(entry.createdAt);
-    const body = renderMarkdown(localizer.t(entry.content));
-    body.classList.add("event-content");
-    item.append(timestamp, body, messageActions.actions(entry.event));
+    item.append(timestamp);
+    const content = document.createElement("div");
+    content.className = "agent-worklog-content";
+    if (entry.streamId !== undefined) {
+      const section = document.createElement("details");
+      const heading = document.createElement("summary");
+      const kind = new Set(["answer", "reasoning", "tool", "plan"]).has(entry.streamKind) ? entry.streamKind : "answer";
+      const kindLabel = document.createElement("span");
+      kindLabel.className = "agent-worklog-kind";
+      kindLabel.textContent = localizer.t({ answer: "Answer", reasoning: "Thinking", tool: "Tool", plan: "Plan" }[kind]);
+      section.className = "agent-worklog-section";
+      section.dataset.streamId = entry.streamId;
+      section.dataset.streamKind = kind;
+      const streamState = entry.streamState === "failed" || entry.streamState === "completed" ? entry.streamState
+        : paused ? "paused" : live ? "running" : "completed";
+      section.dataset.streamState = streamState;
+      section.open = progressSectionState.get(entry.key) ?? (live || kind === "answer" || kind === "plan");
+      heading.append(kindLabel);
+      if (typeof entry.title === "string" && entry.title.trim()) {
+        const title = document.createElement("span"); title.className = "agent-worklog-title";
+        title.dataset.i18nSkip = "";
+        title.textContent = entry.title; heading.append(title);
+      }
+      const status = document.createElement("span");
+      status.className = "agent-worklog-state";
+      status.textContent = localizer.t({ completed: "Done", failed: "Failed", paused: "Paused", running: "Working" }[streamState]);
+      heading.append(status);
+      bindProgressDisclosure(section, heading, entry.key, (open) => progressSectionState.set(entry.key, open));
+      section.append(heading, renderProgressEntryContent(entry));
+      content.append(section);
+    } else content.append(renderProgressEntryContent(entry));
+    // A quote of an earlier revision still reveals that exact canonical message.
+    for (const source of referencedEvents.filter((event) => entry.sourceIds.includes(event.id)
+      && (event.id !== entry.event.id || !entry.quoteable))) {
+      const reference = document.createElement("div");
+      reference.id = `message-${source.id}`; reference.tabIndex = -1;
+      reference.className = "agent-worklog-reference";
+      const label = document.createElement("p"); label.className = "agent-worklog-reference-label";
+      label.textContent = localizer.t("Referenced message");
+      reference.append(label, renderProgressEntryContent(mergeProgressFragments([source])[0]));
+      content.append(reference);
+    }
+    item.append(content);
     list.append(item);
   }
   details.append(summary, list);
   return details;
+}
+
+function bindProgressDisclosure(details, summary, key, remember) {
+  summary.dataset.progressToggle = key;
+  summary.setAttribute("aria-expanded", String(details.open));
+  let observedOpen = details.open;
+  // Save the choice during the activation, before a queued stream render can replace this node.
+  summary.addEventListener("click", (event) => {
+    event.preventDefault(); details.open = !details.open;
+    observedOpen = details.open; summary.setAttribute("aria-expanded", String(details.open));
+    remember(details.open); renderTimelineBottomControl();
+  });
+  details.addEventListener("toggle", () => {
+    if (!details.isConnected || details.open === observedOpen) return;
+    observedOpen = details.open; summary.setAttribute("aria-expanded", String(details.open)); remember(details.open);
+  });
+}
+
+function renderProgressEntryContent(entry) {
+  const content = document.createElement("div"); content.className = "agent-worklog-body";
+  if (entry.content) {
+    const body = renderMarkdown(entry.streamId === undefined ? localizer.t(entry.content) : entry.content);
+    body.classList.add("event-content"); content.append(body);
+  }
+  if (entry.plan?.length) {
+    const plan = document.createElement("ol"); plan.className = "agent-plan";
+    for (const step of entry.plan) {
+      if (typeof step?.step !== "string" || !new Set(["pending", "in_progress", "completed"]).has(step.status)) continue;
+      const item = document.createElement("li"); item.className = "agent-plan-step"; item.dataset.status = step.status;
+      const marker = document.createElement("span"); marker.className = "agent-plan-status";
+      marker.textContent = step.status === "completed" ? "✓" : step.status === "in_progress" ? "›" : "○";
+      marker.setAttribute("role", "img");
+      marker.setAttribute("aria-label", localizer.t(step.status === "completed" ? "Done" : step.status === "in_progress" ? "Working" : "Pending"));
+      const text = document.createElement("span"); text.dataset.i18nSkip = ""; text.textContent = step.step;
+      item.append(marker, text); plan.append(item);
+    }
+    content.append(plan);
+  }
+  const actions = messageActions.actions(entry.copyEvent ?? entry.event);
+  if (!entry.quoteable) {
+    Array.from(actions.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === localizer.t("Quote message"))?.remove();
+  }
+  content.append(actions);
+  return content;
 }
 
 function renderAgentPendingStatus(request, progressEvents = []) {
@@ -2344,10 +2455,8 @@ function renderAgentPendingStatus(request, progressEvents = []) {
   const status = document.createElement("div");
   const dots = document.createElement("span");
   const label = document.createElement("span");
-  // What the agent is writing replaces the generic "is responding" wording,
-  // which is the whole point of streaming it. A line that rewrites itself every
-  // couple of seconds must not be a live region, so only the static wording is
-  // announced and the accessible name always states the state.
+  // Full output is readable in the work log. Keep this status concise and avoid
+  // announcing a growing answer repeatedly.
   const streamed = online ? latestStreamedText(progressEvents) : "";
   status.className = "agent-pending-status";
   status.dataset.state = online ? "answering" : "queued";
@@ -2361,7 +2470,7 @@ function renderAgentPendingStatus(request, progressEvents = []) {
   const runtime = member?.runtime;
   const agentName = runtime?.harness || "Agent";
   if (streamed) label.className = "agent-streamed-line";
-  label.textContent = streamed ? `${agentName}: ${streamed}` : cloud ? localizer.t("Cloud Agent is working…") : online
+  label.textContent = streamed ? `${agentName}: ${localizer.t("Working")}` : cloud ? localizer.t("Cloud Agent is working…") : online
     ? `${agentName} is responding…`
     : `${agentName} request is queued until the local runtime reconnects.`;
   status.append(dots, label);

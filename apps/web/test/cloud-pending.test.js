@@ -21,9 +21,9 @@ test("cloud pending messages never wait for a local connector", () => {
 
   const streamed = sandbox.renderAgentPendingStatus(cloudRequest, [{ payload: { content: "x" } }]);
   assert.equal(streamed.dataset.streamed, "true");
-  assert.equal(streamed.children[1].textContent, "Agent: Reading the parser");
-  assert.doesNotMatch(streamed.children[1].textContent, /Cloud Agent/,
-    "what the agent is writing stands in for the generic wording");
+  assert.equal(streamed.children[1].textContent, "Agent: Working");
+  assert.doesNotMatch(streamed.children[1].textContent, /Reading the parser/,
+    "the full answer is displayed in its section, not repeated in the compact status");
 });
 
 test("cloud progress uses cloud controls without exposing the local claim route", () => {

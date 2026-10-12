@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { redactText, redactValue } from "@gatherthread/adapters";
+import { createLiveOutputPublisher, liveOutputPayload, redactText, redactValue } from "@gatherthread/adapters";
 import { isSessionWritableBy, parseHistoryContext } from "@gatherthread/bridge";
 import { historySummaryMarker } from "@gatherthread/protocol";
 import {
@@ -13,6 +13,7 @@ import {
   finalVisibleAssistant,
   mapDshSessionEvents,
 } from "./event-mapper.js";
+import { createDshLiveEventMapper } from "./live-event-mapper.js";
 import type { EnabledDshHostConfig } from "./config.js";
 import type {
   ConnectorOutboxOperation,
@@ -99,6 +100,11 @@ export class DshHostConnector {
   #publicationPromise: Promise<void> | undefined;
   #heartbeatOffline = false;
   #liveProgressPromise: Promise<void> = Promise.resolve();
+  #activeLiveOutput: {
+    publisher: ReturnType<typeof createLiveOutputPublisher>;
+    mapper: ReturnType<typeof createDshLiveEventMapper>;
+    sourceSessionId: string;
+  } | undefined;
   #lastLiveProgressKey: string | undefined;
   #lastLiveProgressAt = 0;
   #stopPromise: Promise<void> | undefined;
@@ -293,6 +299,16 @@ export class DshHostConnector {
     this.#started = true;
     this.#automaticPolling = options.schedule !== false;
     this.#notifyLifecycle("connecting");
+    if (this.#host.onLiveOutput !== undefined) {
+      this.#listenerDisposers.push(this.#host.onLiveOutput((event) => {
+        const active = this.#state?.activeRequest;
+        const output = this.#activeLiveOutput;
+        if (this.#stopped || active === undefined || output === undefined
+          || event.sourceSessionId !== output.sourceSessionId
+          || event.sourceSessionId !== (active.contextExecution?.sessionId ?? this.#host.sessionId)) return;
+        output.mapper.onEvent(event);
+      }));
+    }
     this.#listenerDisposers.push(this.#host.onSessionEvent((event) => {
       const active = this.#state?.activeRequest;
       if (active?.contextExecution !== undefined && event.sourceSessionId !== active.contextExecution.sessionId) return;
@@ -422,6 +438,8 @@ export class DshHostConnector {
   stop(): Promise<void> {
     this.#stopPromise ??= (async () => {
       this.#stopped = true;
+      const liveOutput = this.#activeLiveOutput;
+      this.#activeLiveOutput = undefined;
       this.#notifyLifecycle("stopped");
       this.#lifecycleAbort.abort(new Error("DSH connector stopped"));
       if (this.#timer !== undefined) {
@@ -434,6 +452,7 @@ export class DshHostConnector {
       }
       for (const dispose of this.#listenerDisposers.splice(0)) dispose();
       await this.#host.dispose();
+      void liveOutput?.mapper.finish(false).catch(() => undefined);
       try {
         await this.#pollPromise;
       } catch {
@@ -573,7 +592,7 @@ export class DshHostConnector {
     this.#activeExecutionSelection = selection;
     this.#liveEventSequences.clear();
     await this.#stateStore.save(state);
-    const result = await this.#host.prompt(prompt, selection, prepared?.sessionId);
+    const result = await this.#promptWithLiveOutput(prompt, selection, prepared?.sessionId);
     if (result.fromSequence !== baseline || result.toSequence < result.fromSequence) {
       throw new Error("DSH Host prompt returned an inconsistent durable event range");
     }
@@ -789,7 +808,7 @@ export class DshHostConnector {
     this.#activeStatuses = [];
     this.#liveEventSequences.clear();
     await this.#stateStore.save(state);
-    const result = await this.#host.prompt(continuation, selection, execution?.sessionId);
+    const result = await this.#promptWithLiveOutput(continuation, selection, execution?.sessionId);
     if (result.fromSequence !== baseline || result.toSequence < result.fromSequence) {
       throw new Error("DSH Host recovery prompt returned an inconsistent durable event range");
     }
@@ -828,6 +847,53 @@ export class DshHostConnector {
     await this.#finalizeDeliveredRequest();
   }
 
+  async #promptWithLiveOutput(text: string, selection: DshExecutionSelection, executionSessionId?: string) {
+    const active = this.#requireState().activeRequest;
+    if (active === undefined) throw new Error("No claimed DSH request owns live output");
+    const requestId = active.requestId;
+    const claimAttempt = active.claimAttempt ?? 1;
+    const fromSequence = active.dshFromSequence;
+    const runtime = this.#requireRuntime();
+    const sourceSessionId = executionSessionId ?? this.#host.sessionId;
+    const publisher = createLiveOutputPublisher({
+      publish: async (update) => {
+        const publication = this.#liveProgressPromise.then(async () => {
+          const current = this.#state?.activeRequest;
+          if (this.#stopped || this.#activeLiveOutput?.publisher !== publisher
+            || current?.requestId !== requestId || (current.claimAttempt ?? 1) !== claimAttempt
+            || current.dshFromSequence !== fromSequence
+            || (current.contextExecution?.sessionId ?? this.#host.sessionId) !== sourceSessionId
+            || this.#runtime?.id !== runtime.id || this.#activeExecutionSelection !== selection) return false;
+          await this.#api.appendAgentProgress(this.#config.sessionId, requestId, {
+            runtimeId: runtime.id, claimAttempt,
+            idempotencyKey: `${this.#config.deviceId}:${digest(requestId).slice(0, 24)}:${claimAttempt}:live-${update.id}`,
+            payload: { ...liveOutputPayload(update), capture_fidelity: "harness_transcript", source_harness: "deepseek-harness" },
+            observedModel: selection.model,
+            ...(selection.reasoningEffort === undefined ? {} : { observedReasoningEffort: selection.reasoningEffort }),
+          });
+          return true;
+        });
+        this.#liveProgressPromise = publication.then(() => undefined).catch((error: unknown) => {
+          this.#onBackgroundError?.(publicError(error));
+        });
+        return publication.catch(() => false);
+      },
+    });
+    const output = { publisher, mapper: createDshLiveEventMapper(publisher), sourceSessionId };
+    this.#activeLiveOutput = output;
+    try {
+      const result = await this.#host.prompt(text, selection, executionSessionId);
+      await output.mapper.finish();
+      return result;
+    } finally {
+      // Retiring the scope first makes any queued/timer-driven callback refuse
+      // its ACK, including a prompt that throws or a Host disposed mid-stream.
+      if (this.#activeLiveOutput === output) this.#activeLiveOutput = undefined;
+      if (this.#stopped) void output.mapper.finish(false).catch(() => undefined);
+      else await output.mapper.finish(false);
+    }
+  }
+
   #queueLiveProgress(idSuffix: string, payload: Record<string, unknown>, throttle = true): void {
     const active = this.#state?.activeRequest;
     const runtime = this.#runtime;
@@ -836,6 +902,8 @@ export class DshHostConnector {
     const claimAttempt = active.claimAttempt ?? 1;
     const progressKey = `${requestId}:${String(claimAttempt)}`;
     const now = Date.now();
+    const streamedAt = this.#activeLiveOutput?.publisher.lastPublishedAt();
+    if (throttle && streamedAt !== undefined && now - streamedAt < LIVE_PROGRESS_MIN_INTERVAL_MS) return;
     if (throttle && this.#lastLiveProgressKey === progressKey
       && now - this.#lastLiveProgressAt < LIVE_PROGRESS_MIN_INTERVAL_MS) {
       return;
@@ -848,7 +916,8 @@ export class DshHostConnector {
     this.#liveProgressPromise = this.#liveProgressPromise
       .then(async () => {
         const current = this.#state?.activeRequest;
-        if (current?.requestId !== requestId || (current.claimAttempt ?? 1) !== claimAttempt) return;
+        if (this.#stopped || current?.requestId !== requestId || (current.claimAttempt ?? 1) !== claimAttempt
+          || this.#runtime?.id !== runtime.id) return;
         const selection = this.#activeExecutionSelection;
         if (selection === undefined) return;
         await this.#api.appendAgentProgress(this.#config.sessionId, requestId, {

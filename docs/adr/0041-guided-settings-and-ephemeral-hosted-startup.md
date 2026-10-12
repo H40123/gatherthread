@@ -33,4 +33,6 @@ An isolated host run observed the read-only idle-state request taking 3869 ms un
 
 ## Consequences
 
+The later [ADR-0045](0045-streamed-public-agent-output.md) extends presentation to bounded native-visible thinking, tools and plans through the same process's loopback SSE. It does not relax this ADR's completed-message, idle-session, confirmed cleanup, network or quota requirements; operational logs remain content-free.
+
 No account migration, npm publication or connector permission change is required. The matching immutable runner image must be rebuilt and validated with the application; updating Web assets alone does not update this execution path. A real provider/host result is needed before claiming the specific timeout solved; synthetic tests prove state, privacy, accounting and browser behavior, not live model speed.
