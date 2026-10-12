@@ -1,4 +1,4 @@
-# ADR-0045: Project invitation links with explicit authenticated confirmation
+# ADR-0046: Project invitation links with explicit authenticated confirmation
 
 **Date**: 2026-10-12
 **Status**: proposed / implementation review

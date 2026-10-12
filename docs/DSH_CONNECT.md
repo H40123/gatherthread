@@ -97,7 +97,7 @@ Only if the exact HMR error above occurs: stop DSH, back up `<DSH_HOME>/profiles
 
 The plugin initiates the network connection. Pairing uses a short-lived, single-use code bound to the current server and DSH device. The long-lived device credential stays in DSH's local credential store and never enters a command, URL, browser storage, log, or shared history.
 
-Only allowlisted assistant output and redacted public tool projections can leave DSH. Hidden reasoning, private streams, headers, and native metadata are not uploaded.
+Only allowlisted output and redacted public tool fields can leave DSH. During an exact GatherThread-claimed request, a matching plugin can stream the native interface's exposed answer, thinking, tool activity and plans. Unrelated local work, hidden/private streams, headers and native identifiers are excluded; native automatic completed-turn capture is unchanged. Older installed plugins need a matching update for the new live fields. See [ADR-0045](adr/0045-streamed-public-agent-output.md).
 
 ## Release checks
 

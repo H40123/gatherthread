@@ -27,6 +27,7 @@ import type {
   DshRegisteredRuntime,
   DshRuntimeRegistration,
   DshSessionEventRecord,
+  DshLiveOutputEvent,
 } from "../src/types.js";
 
 const now = "2026-09-05T00:00:00.000Z";
@@ -537,6 +538,25 @@ class FakeHost implements DshHostFacade {
 
 function freshPersistence(): FakeDshPersistence {
   return { exists: false, events: [], prompts: [] };
+}
+
+class LiveHost extends FakeHost {
+  readonly liveListeners = new Set<(event: DshLiveOutputEvent) => void>();
+  onLiveOutput(listener: (event: DshLiveOutputEvent) => void) {
+    this.liveListeners.add(listener);
+    return () => { this.liveListeners.delete(listener); };
+  }
+  emitLive(event: DshLiveOutputEvent) { this.liveListeners.forEach((listener) => listener(event)); }
+  emitLiveText(text: string, sourceSessionId = this.sessionId, revision = 1, kind = "text") {
+    this.emitLive({ kind: "assistant-stream", sourceSessionId,
+      frame: { type: "start", attemptId: `native-attempt-${revision}`, revision: revision * 10, turn: 1, step: 1 } });
+    this.emitLive({ kind: "assistant-stream", sourceSessionId,
+      frame: { type: "chunk", attemptId: `native-attempt-${revision}`, revision: revision * 10 + 1, index: 0, time: eventTime,
+        chunk: { type: "block-start", index: 0, blockType: kind } } });
+    this.emitLive({ kind: "assistant-stream", sourceSessionId,
+      frame: { type: "chunk", attemptId: `native-attempt-${revision}`, revision: revision * 10 + 2, index: 1, time: eventTime,
+        chunk: { type: kind === "reasoning" ? "reasoning-delta" : "text-delta", index: 0, text } } });
+  }
 }
 
 class ContextApi extends FakeApi {
@@ -1718,6 +1738,104 @@ test("live durable DSH events renew the claim before the prompt returns", async 
   releasePrompt?.();
   await started;
   await connector.stop();
+});
+
+test("DSH connector publishes native streamed work before completion under the exact selected claim", async () => {
+  const cfg = config({ shareToolEvents: false, executionProfiles: [{ provider: "deepseek-official", model: "deepseek-reasoner", reasoningEfforts: ["high"] }] });
+  class LiveApi extends FakeApi {
+    readonly routes: Array<[string, string]> = [];
+    override appendAgentProgress(sessionId: string, requestId: string, input: CompleteAgentRequestInput) {
+      this.routes.push([sessionId, requestId]);
+      return super.appendAgentProgress(sessionId, requestId, input);
+    }
+  }
+  const api = new LiveApi(); api.events.push(dynamicRequest(1));
+  const persistence = freshPersistence(); const host = new LiveHost(cfg.dshSessionId, persistence);
+  let releasePrompt!: () => void; host.promptGate = new Promise<void>((resolve) => { releasePrompt = resolve; });
+  const connector = new DshHostConnector({ config: cfg, api, host, stateStore: new MemoryConnectorStateStore() });
+  const started = connector.start({ schedule: false });
+  await waitFor(() => persistence.prompts.length === 1);
+  host.emitLiveText("PRIVATE_FOREIGN_SESSION ", "unrelated-native-session");
+  host.emitLiveText("writing answer now ");
+  await waitFor(() => api.progress.some((input) => (input.payload as { phase?: string }).phase === "stream"));
+  assert.equal(api.completions.length, 0, "tokens must be published before native completion");
+  host.emitLiveText("exposed native thinking ", host.sessionId, 2, "reasoning");
+  host.emitLive({ kind: "session-event", sourceSessionId: host.sessionId,
+    event: { type: "tool/call", seq: 1, time: eventTime,
+      data: { turn: 1, step: 1, callId: "live-call", name: "shell", arguments: '{"cmd":"echo safe","password":"PRIVATE_SECRET"}' } } });
+  host.emitLive({ kind: "session-event", sourceSessionId: host.sessionId,
+    event: { type: "tool/result", seq: 2, time: eventTime, data: { turn: 1, step: 1,
+      message: { content: [{ type: "tool-result", toolCallId: "live-call", content: [{ type: "text", text: "visible result" }] }] },
+      meta: "PRIVATE_TOOL_META" } } });
+  host.emitLive({ kind: "session-event", sourceSessionId: host.sessionId,
+    event: { type: "todo/write", seq: 3, time: eventTime, data: { todos: [{ content: "Check result", status: "in_progress" }] } } });
+  releasePrompt(); await started;
+  const stream = api.progress.filter((input) => (input.payload as { phase?: string }).phase === "stream");
+  assert.deepEqual([...new Set(stream.map((input) => (input.payload as { stream_kind: string }).stream_kind))].sort(),
+    ["answer", "plan", "reasoning", "tool"]);
+  assert.ok(stream.every((input) => input.runtimeId === "runtime-1" && input.claimAttempt === 2
+    && input.observedModel === "deepseek-reasoner" && input.observedReasoningEffort === "high"));
+  assert.ok(api.routes.every(([sessionId, requestId]) => sessionId === "session-1" && requestId === "event-1"));
+  assert.doesNotMatch(JSON.stringify(stream), /PRIVATE_|native-attempt|live-call|unrelated-native-session/);
+  assert.equal(api.appended.length, 0, "the separate native-local shareToolEvents preference is not broadened");
+  const count = api.progress.length;
+  host.emitLiveText("PRIVATE_AFTER_FINISH ", host.sessionId, 3);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(api.progress.length, count);
+  await connector.stop(); assert.equal(host.liveListeners.size, 0);
+});
+
+test("DSH connector refuses queued native stream callbacks after stopping their scope", async () => {
+  let releaseProgress!: () => void;
+  const progressGate = new Promise<void>((resolve) => { releaseProgress = resolve; });
+  class BlockedApi extends FakeApi {
+    override async appendAgentProgress(sessionId: string, requestId: string, input: CompleteAgentRequestInput) {
+      await progressGate;
+      return super.appendAgentProgress(sessionId, requestId, input);
+    }
+  }
+  const cfg = config(); const api = new BlockedApi(); api.events.push(request(1));
+  const persistence = freshPersistence(); const host = new LiveHost(cfg.dshSessionId, persistence);
+  host.promptGate = new Promise<void>(() => undefined);
+  const connector = new DshHostConnector({ config: cfg, api, host, stateStore: new MemoryConnectorStateStore() });
+  const started = connector.start({ schedule: false }).catch(() => undefined);
+  await waitFor(() => persistence.prompts.length === 1);
+  host.emitLiveText("PRIVATE_STALE_STREAM ");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await bounded(connector.stop(), 1000); await started;
+  releaseProgress();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(api.progress.filter((input) => (input.payload as { phase?: string }).phase === "stream").length, 0);
+  assert.equal(api.completions.length, 0);
+  assert.equal(host.liveListeners.size, 0);
+});
+
+test("DSH isolated context execution excludes live output from the parent native Session", async () => {
+  class LiveContextHost extends ContextHost {
+    readonly liveListeners = new Set<(event: DshLiveOutputEvent) => void>();
+    onLiveOutput(listener: (event: DshLiveOutputEvent) => void) {
+      this.liveListeners.add(listener); return () => { this.liveListeners.delete(listener); };
+    }
+    text(text: string, sourceSessionId: string, revision: number) {
+      const emitter = new LiveHost(sourceSessionId, freshPersistence());
+      emitter.onLiveOutput((event) => this.liveListeners.forEach((listener) => listener(event)));
+      emitter.emitLiveText(text, sourceSessionId, revision);
+    }
+  }
+  const cfg = config(); const api = new ContextApi(); api.events.push(summaryRequest(1));
+  const host = new LiveContextHost(cfg.dshSessionId, freshPersistence());
+  let releasePrompt!: () => void; host.execution.promptGate = new Promise<void>((resolve) => { releasePrompt = resolve; });
+  const connector = new DshHostConnector({ config: cfg, api, host, stateStore: new MemoryConnectorStateStore() });
+  const started = connector.start({ schedule: false });
+  await waitFor(() => host.execution.prompts.length === 1);
+  host.text("PRIVATE_PARENT_SESSION ", host.sessionId, 1);
+  host.text("selected context answer ", host.executionId, 1);
+  await waitFor(() => api.progress.some((input) => (input.payload as { phase?: string }).phase === "stream"));
+  releasePrompt(); await started;
+  const stream = api.progress.filter((input) => (input.payload as { phase?: string }).phase === "stream");
+  assert.ok(stream.some((input) => (input.payload as { content: string }).content.includes("selected context answer")));
+  assert.doesNotMatch(JSON.stringify(stream), /PRIVATE_PARENT_SESSION|gatherthread-execution-/);
+  await connector.stop(); assert.equal(host.liveListeners.size, 0);
 });
 
 test("terminal claim conflict advances safely without driving DSH", async () => {

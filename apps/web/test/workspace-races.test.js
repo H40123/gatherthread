@@ -373,7 +373,8 @@ test("pending avatar metadata cannot delay opening a session or connecting realt
   let connections = 0;
   const app = harness(["selectSession"], {
     mobileWorkspace: { close: noop }, codeSyncUi: { close: noop }, historySummaryUi: { reset: noop },
-    messageActions: { reset: noop, refresh: noop }, expandedWorklogs: new Map(),
+    messageActions: { reset: noop, refresh: noop }, expandedWorklogs: new Set(),
+    collapsedWorklogs: new Set(), progressSectionState: new Map(), revealedProgressEvents: new Set(),
     stopDshRuntimePolling: noop, renderProjectPermissions: noop, sendError: element(),
     clearCreatedInvitationSecret: noop, closeMembersPanelWithoutFocus: noop, renderSnapshotRequests: noop,
     downloadCodexButton: element(), importVisibleHistoryButton: element(), startMemberRefresh: noop,

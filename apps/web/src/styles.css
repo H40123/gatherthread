@@ -1736,7 +1736,7 @@ code {
   background: color-mix(in srgb, var(--response-surface) 74%, transparent);
 }
 
-.agent-worklog summary {
+.agent-worklog > summary {
   width: fit-content;
   padding-top: 10px;
   color: var(--ink-soft);
@@ -1746,7 +1746,7 @@ code {
   list-style-position: outside;
 }
 
-.agent-worklog-live summary {
+.agent-worklog-live > summary {
   padding-top: 0;
   color: var(--teal-dark);
 }
@@ -1774,6 +1774,88 @@ code {
 .agent-worklog-list .markdown-body {
   color: var(--ink);
   font-size: 0.84rem;
+}
+
+.agent-worklog-content, .agent-worklog-section, .agent-worklog-body {
+  min-width: 0;
+}
+
+.agent-worklog-section > summary {
+  padding: 0.12rem 0;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.agent-worklog-kind {
+  color: var(--ink);
+  font-weight: 720;
+}
+
+.agent-worklog-title {
+  margin-left: 0.5rem;
+}
+
+.agent-worklog-state {
+  margin-left: 0.6rem;
+  color: var(--ink-soft);
+  font-size: 0.66rem;
+}
+
+.agent-worklog-section[data-stream-state="running"] .agent-worklog-state,
+.agent-plan-step[data-status="in_progress"] .agent-plan-status {
+  color: var(--teal-dark);
+}
+
+.agent-worklog-section > .agent-worklog-body {
+  margin-top: 0.5rem;
+}
+
+.agent-plan {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink);
+  font-size: 0.8rem;
+}
+
+.agent-plan-step {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.agent-plan-status {
+  flex: 0 0 1rem;
+  text-align: center;
+  font-weight: 720;
+}
+
+.agent-plan-step[data-status="completed"] .agent-plan-status {
+  color: var(--teal-dark);
+}
+
+.agent-worklog-reference {
+  margin-top: 0.75rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--line);
+}
+
+.agent-worklog-reference-label {
+  margin: 0 0 0.35rem;
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+}
+
+.agent-worklog summary:focus-visible {
+  outline: 2px solid var(--teal-dark);
+  outline-offset: 4px;
+  border-radius: 2px;
 }
 
 .event-agent_request {
@@ -1865,6 +1947,45 @@ code {
   .agent-thinking-dots i {
     animation: none;
     opacity: 0.72;
+  }
+}
+
+.agent-pending-status[data-streamed="true"] {
+  max-width: min(100%, 620px);
+}
+
+.agent-streamed-line {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Each answer still being written carries a reduced-motion-aware caret. */
+.agent-worklog-live .agent-worklog-section[data-stream-kind="answer"][data-stream-state="running"] > .agent-worklog-body > .markdown-body::after {
+  content: "";
+  display: inline-block;
+  width: 0.42em;
+  height: 0.95em;
+  margin-left: 0.16em;
+  vertical-align: -0.14em;
+  background: currentColor;
+  animation: agent-stream-caret 1.1s steps(2, start) infinite;
+}
+
+@keyframes agent-stream-caret {
+  0%, 100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-worklog-live .agent-worklog-section[data-stream-kind="answer"][data-stream-state="running"] > .agent-worklog-body > .markdown-body::after {
+    animation: none;
+    opacity: 0.55;
   }
 }
 

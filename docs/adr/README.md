@@ -50,4 +50,5 @@ Current account guidance (2026-10-08): `main` uses verified-email registration a
 | [0042](0042-cloud-request-lifecycle-and-selected-summaries.md) | Cloud request lifecycle and selected-history summaries | proposed / implementation review | 2026-10-10 |
 | [0043](0043-explicit-shared-host-memory.md) | Explicit shared-host memory | proposed / implementation review | 2026-10-11 |
 | [0044](0044-email-password-codex-launchers.md) | Email/password Launchers with exact environment binding and native icons | accepted for implementation | 2026-10-12 |
-| [0045](0045-project-invitation-links.md) | Project invitation links with explicit authenticated confirmation | proposed / implementation review | 2026-10-12 |
+| [0045](0045-streamed-public-agent-output.md) | Live answers, visible thinking, tools and plans across Agents | proposed / implementation review | 2026-10-12 |
+| [0046](0046-project-invitation-links.md) | Project invitation links with explicit authenticated confirmation | proposed / implementation review | 2026-10-12 |

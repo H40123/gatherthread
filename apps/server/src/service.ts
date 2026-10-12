@@ -18,6 +18,8 @@ import type {
 import { CollaborationDatabase, type Actor, type BranchRemovalDecision, type RuntimeRecord, type SessionRecord } from "./database.js";
 import { agentRequestFailed, conflict, forbidden, notFound } from "./errors.js";
 import { redactJson } from "./redaction.js";
+import { liveOutputPayload, type LiveOutputUpdate } from "@gatherthread/adapters";
+import { LiveOutputPayloadSchema } from "@gatherthread/protocol";
 
 type EventListener = (event: CanonicalEvent) => void;
 
@@ -365,6 +367,27 @@ export class CollaborationService {
     return event;
   }
 
+  appendHostedAgentProgress(requestId: string, update: LiveOutputUpdate): boolean {
+    return this.appendHostedProgress(requestId, update);
+  }
+
+  appendHostedGithubProgress(taskId: string, update: LiveOutputUpdate): boolean {
+    const task = this.database.sqlite.prepare("SELECT request_event_id FROM hosted_github_tasks WHERE id=?")
+      .get(taskId) as { request_event_id: string } | undefined;
+    return task ? this.appendHostedProgress(task.request_event_id, update, taskId) : false;
+  }
+
+  private appendHostedProgress(requestId: string, update: LiveOutputUpdate, githubTaskId?: string): boolean {
+    try {
+      const payload = redactJson(liveOutputPayload(update));
+      const parsed = LiveOutputPayloadSchema.parse(payload);
+      const result = this.database.appendHostedProgress(requestId, `${parsed.stream_id}:${parsed.stream_revision}`, payload, githubTaskId);
+      if (!result) return false;
+      if (result.created) this.publish(result.event);
+      return true;
+    } catch { return false; /* Progress cannot replace or strand the canonical terminal. */ }
+  }
+
   pauseHostedAgentRequest(actor: Actor, sessionId: string, requestId: string) {
     const event = this.database.pauseHostedAgentRequest(actor, sessionId, requestId);
     if (event) this.publish(event);
@@ -431,6 +454,7 @@ export class CollaborationService {
     observedReasoningEffort?: string,
     claimAttempt?: number,
   ): CanonicalEvent {
+    if (payload !== null && typeof payload === "object" && !Array.isArray(payload) && "stream_mode" in payload) LiveOutputPayloadSchema.parse(payload);
     const { session } = this.requireWrite(actor, sessionId);
     if (session.state !== "active") throw conflict("Archived sessions do not accept agent progress");
     const event = this.database.appendAgentProgress(

@@ -3436,6 +3436,46 @@ export class CollaborationDatabase {
     return Boolean(this.sqlite.prepare("SELECT 1 FROM hosted_agent_pauses WHERE request_event_id=?").get(requestId));
   }
 
+  /** Trusted executor callback only; deliberately not exposed as an HTTP route.
+   * Recheck all access and repository fences inside the same append transaction.
+   */
+  appendHostedProgress(requestId: string, updateId: string, payload: JsonValue, githubTaskId?: string): { event: CanonicalEvent; created: boolean } | undefined {
+    return this.transaction(() => {
+      const job = this.sqlite.prepare("SELECT * FROM hosted_agent_runs WHERE request_event_id=? AND status='running'")
+        .get(requestId) as { session_id: string; user_id: string; device_id: string; provider: string; model: string } | undefined;
+      if (!job || this.isHostedAgentPaused(requestId)) return;
+      const actor: Actor = { user_id: job.user_id, device_id: job.device_id, display_name: this.actorDisplayName(job.user_id) };
+      this.assertActiveDevice(actor);
+      const session = this.requireWritableSessionInsideTransaction(actor, job.session_id);
+      if (session.state !== "active") return;
+      const request = this.getEvent(job.session_id, requestId);
+      const taskInRequest = request.payload !== null && typeof request.payload === "object" && !Array.isArray(request.payload)
+        ? request.payload.github_task_id : undefined;
+      if (request.type !== "agent_request" || request.actor_user_id !== job.user_id || request.visibility !== "session"
+        || (taskInRequest !== undefined && taskInRequest !== githubTaskId) || (githubTaskId !== undefined && taskInRequest !== githubTaskId)) return;
+      if (githubTaskId !== undefined) {
+        const authorized = this.sqlite.prepare(`SELECT 1 FROM hosted_github_tasks t
+          JOIN hosted_github_accounts a ON a.user_id=t.user_id
+          JOIN hosted_github_bindings b ON b.user_id=t.user_id AND b.project_id=t.project_id
+          WHERE t.id=? AND t.request_event_id=? AND t.user_id=? AND t.device_id=? AND t.session_id=?
+            AND t.project_id=? AND t.state='running' AND t.expires_at>?
+            AND b.revision=t.binding_revision AND b.repository_id=t.repository_id`)
+          .get(githubTaskId, requestId, job.user_id, job.device_id, job.session_id, session.project_id, Date.parse(this.now()));
+        if (!authorized) return;
+      }
+      // A public member cannot preempt a predictable next progress revision by
+      // squatting its idempotency key. Retry still maps to the same private key.
+      const key = `hosted-progress-${createHmac("sha256", this.authTokenPepper).update(`${requestId}\0${updateId}`).digest("hex")}`;
+      const existing = this.findByIdempotencyKey(job.session_id, key);
+      if (existing) return { event: this.requireIdempotencyMatch(existing, job.user_id, "agent_progress", payload, requestId, "session", null), created: false };
+      const event = this.appendInsideTransaction(job.user_id, job.session_id, {
+        idempotency_key: key, type: "agent_progress", visibility: "session", reply_to_event_id: requestId, payload,
+      }, { user_id: job.user_id, device_id: job.device_id, harness: "opencode", provider: job.provider,
+        model: job.model, local_session_id: "server-contained", capture_fidelity: "harness_transcript" });
+      return { event, created: true };
+    });
+  }
+
   finishHostedAgentRequest(requestId: string, outcome: { content?: string; errorCode?: string; providerAttempts?: number }): CanonicalEvent | undefined {
     return this.transaction(() => {
       this.sqlite.prepare("DELETE FROM hosted_agent_active_runs WHERE request_event_id=?").run(requestId);

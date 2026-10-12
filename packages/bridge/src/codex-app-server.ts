@@ -3,7 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir, open, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { redactText, type TranscriptEvent } from "@gatherthread/adapters";
+import { createLiveOutputPublisher, redactText, type TranscriptEvent } from "@gatherthread/adapters";
 import {
   CodexCliExecutor,
   parseCodexAppServerItems,
@@ -13,6 +13,7 @@ import {
 } from "./codex-executor.js";
 import { withoutGatherThreadCredentials } from "./executor.js";
 import { HarnessExecutionTerminatedError } from "./bridge.js";
+import { CODEX_PUBLIC_WORK_METHODS, createCodexLiveOutputMapper } from "./codex-live-output.js";
 import { updateCodexHookRegistry, type CodexHookEvent, type CodexHookRelayResult } from "./codex-hooks.js";
 import type {
   ProjectHarnessAdapter,
@@ -412,6 +413,13 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const MIN_CONTEXT_WINDOW_TOKENS = 4_096;
 const DEFAULT_CONTEXT_HIGH_WATERMARK = 0.8;
 const DEFAULT_DESKTOP_NATIVE_RESUME_TIMEOUT_MS = 3_000;
+/**
+ * How long after the last streamed fragment the generic busy/thinking
+ * placeholder stays suppressed. Streaming renews the claim lease on its own;
+ * once it goes quiet the placeholder returns and takes over that duty, well
+ * inside the five-minute lease window.
+ */
+const STREAM_QUIET_MS = 60_000;
 const ACTIVE_STATE_WRITERS = new Set<string>();
 const DEFAULT_MAX_TOOL_OUTPUT_BYTES = 32 * 1024;
 const MAX_LOCAL_TURN_UPLOAD_BYTES = 180 * 1024;
@@ -583,6 +591,9 @@ export class CodexAppServerClient {
     onStarted?: (turnId: string) => Promise<void> | void;
     onItemCompleted?: (item: unknown) => Promise<void> | void;
     onWorkActivity?: (status: "thinking" | "running") => Promise<void> | void;
+    /** Only native public agent-message text, scoped to this thread and turn. */
+    onItemDelta?: (itemId: string, delta: string) => Promise<void> | void;
+    onNativeWork?: (method: string, params: Record<string, unknown>) => Promise<void> | void;
   }): Promise<{ turnId: string; items: unknown[]; modelContextWindow?: number; totalTokens?: number }> {
     await this.start();
     this.#threadTokenUsage.delete(input.threadId);
@@ -605,9 +616,47 @@ export class CodexAppServerClient {
     let modelContextWindow: number | undefined;
     let totalTokens: number | undefined;
     let expectedTurnId: string | undefined;
+    let ready = false, settled = false, earlyBytes = 0;
+    const early: JsonRpcNotification[] = [];
+    const earlyCompletions = new Map<string, JsonRpcNotification>();
     let completedItems = Promise.resolve();
     const listener = (notification: JsonRpcNotification) => {
       if (!isObject(notification.params) || notification.params.threadId !== input.threadId) return;
+      if (!ready && notification.method !== "thread/tokenUsage/updated") {
+        // A fast native event can precede the RPC reply. Buffer it without
+        // publishing until turn/start supplies the authoritative native turn.
+        if (notification.method === "turn/completed") {
+          const id = objectString(objectValue(notification.params, "turn"), "id");
+          if (id && earlyCompletions.size < 8) earlyCompletions.set(id, notification);
+        } else if (typeof notification.params.turnId === "string") {
+          const bytes = Buffer.byteLength(JSON.stringify(notification));
+          if (early.length < 128 && earlyBytes + bytes <= 256 * 1024) { early.push(notification); earlyBytes += bytes; }
+        }
+        return;
+      }
+      if (notification.method !== "thread/tokenUsage/updated") {
+        const id = notification.method === "turn/completed" ? objectString(objectValue(notification.params, "turn"), "id") : notification.params.turnId;
+        if (id !== expectedTurnId || settled) return;
+      }
+      // Streamed text is handled before the coarse activity signal derived from
+      // the same notification, so a fragment can suppress the placeholder that
+      // would otherwise announce work the reader is already watching.
+      if (notification.method === "item/agentMessage/delta" && input.onItemDelta) {
+        const notificationTurnId = typeof notification.params.turnId === "string" ? notification.params.turnId : undefined;
+        if (notificationTurnId === expectedTurnId) {
+          const itemId = objectString(notification.params, "itemId");
+          const delta = objectString(notification.params, "delta");
+          // Without a native item identity there is nothing to merge fragments
+          // under, so the slice is dropped rather than published unattached.
+          if (itemId && delta) {
+            completedItems = completedItems.then(async () => input.onItemDelta?.(itemId, delta)).catch(() => undefined);
+          }
+        }
+      }
+      if (CODEX_PUBLIC_WORK_METHODS.has(notification.method) && input.onNativeWork) {
+        const params = notification.params;
+        completedItems = completedItems.then(async () => input.onNativeWork?.(notification.method, params)).catch(() => undefined);
+      }
       const activity = codexActivityStatus(notification.method, notification.params);
       const activityTurnId = notification.params.turnId;
       if (activity && input.onWorkActivity
@@ -630,6 +679,7 @@ export class CodexAppServerClient {
         return;
       }
       if (notification.method !== "turn/completed") return;
+      settled = true;
       resolveCompletion?.(notification.params);
     };
     const failureListener = (error: Error) => rejectCompletion?.(error);
@@ -646,6 +696,11 @@ export class CodexAppServerClient {
       expectedTurnId = objectString(objectValue(started, "turn"), "id");
       if (!expectedTurnId) throw new Error("Codex App Server turn/start omitted the turn id");
       await input.onStarted?.(expectedTurnId);
+      ready = true;
+      for (const notification of early) listener(notification);
+      const fastCompletion = earlyCompletions.get(expectedTurnId);
+      if (fastCompletion) listener(fastCompletion);
+      early.length = 0; earlyCompletions.clear();
       const completed = await completion;
       await completedItems;
       const completedTurn = objectValue(completed, "turn");
@@ -2169,6 +2224,10 @@ export class CodexAppServerExecutor implements HarnessExecutor {
       let lastActivityAt = 0;
       let activityIndex = 0;
       let lastActivityStatus = "";
+      const outputStream = input.publishProgress === undefined ? undefined : createLiveOutputPublisher({
+        publish: (update) => input.publishProgress?.(update),
+      });
+      const liveMapper = outputStream === undefined ? undefined : createCodexLiveOutputMapper(outputStream, { shareTools: this.#shareToolEvents });
       try {
         turn = await this.#client.runTurn({
           threadId: connectorState.threadId,
@@ -2187,30 +2246,37 @@ export class CodexAppServerExecutor implements HarnessExecutor {
             };
             await this.#saveState(connectorState);
           },
-          ...(input.publishProgress === undefined ? {} : {
+          ...(input.publishProgress === undefined || outputStream === undefined ? {} : {
+            onItemDelta: async (itemId: string, delta: string) => {
+              await outputStream.onDelta(itemId, delta);
+            },
+            onNativeWork: (method: string, params: Record<string, unknown>) => liveMapper?.accept(method, params),
             onWorkActivity: async (status: "thinking" | "running") => {
               const now = Date.now();
               if (now - lastActivityAt < (status === lastActivityStatus ? 30_000 : 2_000)) return;
+              // Streaming already tells the reader what the agent is writing;
+              // the generic placeholder is worth publishing only in the gaps,
+              // where it still renews the claim lease.
+              const streamedAt = outputStream.lastPublishedAt();
+              if (streamedAt !== undefined && now - streamedAt < STREAM_QUIET_MS) return;
               // No hidden reasoning, tool arguments or notification body is shared.
-              lastActivityAt = now; lastActivityStatus = status;
-              await input.publishProgress?.({ id: `activity-${++activityIndex}`, phase: "activity", status,
+              const acknowledged = await input.publishProgress?.({ id: `activity-${++activityIndex}`, phase: "activity", status,
                 content: status === "thinking" ? "Agent is thinking." : "Agent is working." });
-            },
-            onItemCompleted: async (item: unknown) => {
-              if (!isObject(item) || item.type !== "agentMessage" || item.phase !== "commentary") return;
-              if (typeof item.text !== "string" || !item.text.trim()) return;
-              await input.publishProgress?.({
-                id: typeof item.id === "string" && item.id ? item.id : `commentary-${randomUUID()}`,
-                content: item.text,
-              });
+              if (acknowledged !== false) { lastActivityAt = now; lastActivityStatus = status; }
             },
           }),
         });
+        // Authoritative completed items also reconcile an interrupted native
+        // delta sequence. They do not introduce another execution or identity.
+        for (const item of turn.items.slice(0, 128)) await liveMapper?.accept("item/completed", { item });
       } catch (error) {
         if (error instanceof CodexTurnTerminatedError) {
           await this.#recordTerminalExecution(connectorState, input.request.id, error.turnId, error.status, error.message);
         }
         throw error;
+      } finally {
+        // A finished turn leaves nothing buffered, including when it failed.
+        await outputStream?.finish(turn !== undefined);
       }
       state = connectorState;
       const executionEvents = boundExecutionEvents(parseCodexAppServerItems(turn.items, {

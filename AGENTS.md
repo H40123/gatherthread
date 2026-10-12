@@ -36,6 +36,7 @@ Do not duplicate a canonical rule into a new document. Link to its owner instead
 - A manual Codex history import creates and verifies a new local task. It does not overwrite or archive the previous task; the user archives the old task after checking the replacement. The retained task is `local_only` in the private Hook registry and must never re-enter local-task discovery or create cloud state.
 - `canonical_history`, `harness_transcript`, and `provider_request` are distinct fidelity claims. Reconstructed or model-generated content must never be labelled as an exact provider request.
 - Hidden reasoning, credentials, private instructions, unapproved local paths, and raw tool data are not shared by default.
+- Explicitly shared native-visible work on an exact claimed execution may include exposed thinking summaries, selected/redacted tool fields and actual plans under ADR-0045. Do not confuse this allowlist with permission to collect hidden Codex reasoning, raw provider requests, unrelated native streams or content-bearing logs.
 
 ## Working-tree and collaboration discipline
 

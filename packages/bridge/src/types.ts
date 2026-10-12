@@ -2,6 +2,9 @@ import type {
   CaptureFidelity,
   HarnessName,
   TranscriptEvent,
+  LiveOutputKind,
+  LiveOutputState,
+  LivePlanStep,
 } from "@gatherthread/adapters";
 import type { HistoryContext } from "@gatherthread/protocol";
 export type { HistoryContext, HistoryContextItem } from "@gatherthread/protocol";
@@ -198,8 +201,20 @@ export interface HarnessProgressUpdate {
   id: string;
   content: string;
   occurredAt?: string;
-  phase?: "commentary" | "activity";
+  phase?: "commentary" | "activity" | "stream";
   status?: "thinking" | "running";
+  /**
+   * An opaque, connector-generated identity for one run of streamed public
+   * output. Readers merge fragments that share it, so it must never be reused
+   * across two different native messages. It carries no harness metadata.
+   */
+  streamId?: string;
+  streamMode?: "snapshot";
+  streamKind?: LiveOutputKind;
+  streamRevision?: number;
+  streamState?: LiveOutputState;
+  title?: string;
+  plan?: LivePlanStep[];
 }
 
 export interface CollaborationApi {
@@ -246,7 +261,7 @@ export interface HarnessExecutionInput {
   /** Optional server-authorized derived context frozen before this request. Raw history remains available. */
   historyContext?: HistoryContext;
   runtime: RegisteredRuntime;
-  publishProgress?: (update: HarnessProgressUpdate) => Promise<void>;
+  publishProgress?: (update: HarnessProgressUpdate) => Promise<boolean | void>;
 }
 
 export interface HarnessExecutionResult {

@@ -3,6 +3,7 @@ import { chmodSync, copyFileSync, lstatSync, mkdirSync, readFileSync, readdirSyn
 import { dirname, join } from "node:path";
 import { runOpencodeSession } from "./opencode-session.mjs";
 import { prepareNpm } from "./npm-setup.mjs";
+import { createHostedProgressWriter } from "./live-output.mjs";
 
 const INPUT = "/input";
 const repository = process.env.GT_HOSTED_REPOSITORY === "1";
@@ -94,7 +95,8 @@ async function main() {
         "commit", "--quiet", "-m", "Cloud task starting snapshot"], 64000);
     }
     const prompt = readFileSync("/run/gatherthread/prompt.txt", "utf8");
-    const answer = await runOpencodeSession(WORKSPACE, prompt, repository ? 1024 * 1024 : 64_000);
+    const answer = await runOpencodeSession(WORKSPACE, prompt, repository ? 1024 * 1024 : 64_000,
+      { onProgress: createHostedProgressWriter({ maxBytes: repository ? 2 * 1024 * 1024 : 256_000 }) });
     let files = null;
     let save_error = null;
     try { files = outputFiles(); } catch { save_error = "workspace_limit_or_unsafe_file"; }

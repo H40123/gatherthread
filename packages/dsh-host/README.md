@@ -70,10 +70,13 @@ GitHub 接入仍为**未发布源码预览**，需使用匹配的服务端、网
 
 ## Security and recovery
 
-Only allowlisted public text/tool fields leave DSH. Reasoning blocks, raw model
-streams, request headers, replay state, tool-private metadata, and credentials
-are structurally unreachable from the upload mapper. Tool values are redacted
-and bounded. The connector holds one active request, persists a private atomic
+Only allowlisted public text/tool fields leave DSH. An exact GatherThread-claimed
+prompt can additionally stream native-exposed thinking and real plans. The live
+listener verifies owned Agent, Session and execution; the npm fallback requires
+DSH's genuine Agent-loop marker rather than a model-name match. Raw request
+bodies, headers, replay state, tool-private metadata and unrelated native streams
+stay outside the mapper. Tool arguments are parsed and redacted before upload;
+incomplete JSON emits only a preparation marker. The connector holds one active request, persists a private atomic
 cursor/outbox, reuses DSH's official Session resume/repair path, and releases its
 listeners, timer, HTTP abort signal, Agent handle, and write ownership on unload.
 
@@ -114,9 +117,10 @@ cancels its queued permit before it can claim a request. Existing single-Session
 valid when `bindingMode` is omitted; both modes resolve the real current actor
 before applying Solo permissions.
 
-During an active prompt, newly durable DSH Host events queue a rate-limited,
-generic progress marker; event bursts coalesce. The marker carries no event text,
-reasoning, headers, or private stream data, but renews the exact claim attempt. Progress, completion,
+During an active claimed prompt, selected native-visible answer, thinking, tool
+and plan updates coalesce into bounded redacted snapshots. Generic activity
+markers carry no native content and remain separate from presence. Accepted
+progress renews the exact claim attempt. Progress, completion,
 and request-linked tool outbox entries are rebound to the renewed attempt after a
 crash recovery, while stale attempts remain fenced by the server.
 

@@ -10,6 +10,7 @@ import type { HostedEndpoint } from "./hosted-agent-pool.js";
 import { redactJson } from "./redaction.js";
 import { hostedContainerCpuArguments, parseHostedCpuSet } from "./hosted-container-cpu.js";
 import { hostedContainerMemoryArguments, validateHostedMemoryPolicy } from "./hosted-container-memory.js";
+import { hostedContainerResult, type HostedProgressCallback } from "./hosted-live-output.js";
 
 export class HostedRepositoryRunner {
   constructor(private readonly options: HostedAgentOptions) {
@@ -20,7 +21,7 @@ export class HostedRepositoryRunner {
     }
   }
   async run(files: CodeFile[], prompt: string, endpoint: HostedEndpoint, onUnavailable: (ms: number) => void,
-    controlOptions?: { taskId: string; signal: AbortSignal; authorize: () => void }) {
+    controlOptions?: { taskId: string; signal: AbortSignal; authorize: () => void; onProgress?: HostedProgressCallback }) {
     CodeFilesSchema.parse(files);
     if (controlOptions && !/^gh-task-[a-f0-9]{32}$/u.test(controlOptions.taskId)) throw new Error("invalid_repository_task");
     const npm = new HostedNpmProxy(files, this.options.fetch ?? globalThis.fetch, controlOptions?.authorize);
@@ -62,7 +63,7 @@ export class HostedRepositoryRunner {
       chmodSync(join(control, "opencode.json"), 0o644);
       await model.listen(modelSocket); await npm.listen(npmSocket);
       const memoryMiB = hostedContainerMemoryMiB("repository", this.options.repositoryMemoryMiB);
-      const args = ["run", "--rm", "--name", name, "--network", "none", "--read-only", "--cap-drop", "ALL",
+      const args = ["run", "--rm", "--log-driver", "none", "--name", name, "--network", "none", "--read-only", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges", "--pids-limit", "256",
         ...hostedContainerMemoryArguments(memoryMiB, this.options.memoryPolicy),
         ...hostedContainerCpuArguments("repository", this.options.cpuSet, memoryMiB, this.options.memoryPolicy),
@@ -76,8 +77,10 @@ export class HostedRepositoryRunner {
         "-e", "HOME=/home/agent", "-e", "OPENCODE_CONFIG=/run/gatherthread/opencode.json",
         "-e", "OPENCODE_DISABLE_MODELS_FETCH=true", "-e", "OPENCODE_DISABLE_DEFAULT_PLUGINS=true",
         "-e", "GT_HOSTED_REPOSITORY=1", "-e", "NO_COLOR=1", "-e", "CI=1", this.options.image];
-      const output = await (this.options.runContainer ?? ((a, t) => runDocker(a, t, 12 * 1024 * 1024, controlOptions?.signal)))(args, 900_000);
-      const result = JSON.parse(output);
+      const output = this.options.runContainer
+        ? await this.options.runContainer(args, 900_000, controlOptions?.signal, controlOptions?.onProgress)
+        : await runDocker(args, 900_000, 12 * 1024 * 1024, controlOptions?.signal, controlOptions?.onProgress);
+      const result = JSON.parse(hostedContainerResult(output, controlOptions?.onProgress, 2 * 1024 * 1024));
       if (!result.answer || result.save_error || !Array.isArray(result.files)) throw new Error("repository_result_invalid");
       const changed = CodeFilesSchema.parse(result.files);
       if (changed.some((f) => containsCodeSyncSecret(Buffer.from(f.content_base64, "base64").toString("utf8")))) {

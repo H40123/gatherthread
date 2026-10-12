@@ -25,6 +25,7 @@ import {
   splitUtf8,
   type CanonicalEvent,
   type CollaborationApi,
+  type HarnessProgressUpdate,
   type RegisteredRuntime,
 } from "../src/index.js";
 
@@ -3917,6 +3918,21 @@ for await (const line of lines) {
     const turn = JSON.stringify(message.params.input).includes("implement second") ? 2 : 1;
     const turnId = "turn-" + turn;
     respond(message.id, { turn: { id: turnId } });
+    if (turn === 1) {
+      // Turn 1 streams its public commentary as native slices and also emits a
+      // private reasoning slice. Turn 2 emits no slices at all, so this one
+      // fixture covers streaming and the older fully-buffered fallback.
+      for (const delta of ["Checking ", "turn 1"]) {
+        process.stdout.write(JSON.stringify({
+          method: "item/agentMessage/delta",
+          params: { threadId: message.params.threadId, turnId, itemId: "commentary-1", delta },
+        }) + "\\n");
+      }
+      process.stdout.write(JSON.stringify({
+        method: "item/reasoning/textDelta",
+        params: { threadId: message.params.threadId, turnId, itemId: "reasoning-1", delta: "private reasoning must never reach progress" },
+      }) + "\\n");
+    }
     process.stdout.write(JSON.stringify({
       method: "item/completed",
       params: {
@@ -3930,7 +3946,7 @@ for await (const line of lines) {
       params: {
         threadId: message.params.threadId,
         turnId,
-        item: { id: "reasoning-" + turn, type: "reasoning", summary: ["private reasoning"] },
+        item: { id: "reasoning-" + turn, type: "reasoning", content: ["private reasoning"], summary: ["Visible reasoning summary"] },
       },
     }) + "\\n");
     process.stdout.write(JSON.stringify({
@@ -4019,7 +4035,7 @@ function fail(id, message) {
     content: "implement first",
     execution_profile: { harness: "codex", model: "gpt-5.6-terra", reasoning_effort: "high" },
   });
-  const progress: Array<{ id: string; content: string }> = [];
+  const progress: HarnessProgressUpdate[] = [];
   const first = await binding.executor.execute({
     request: firstRequest,
     canonicalHistory: [canonical(1, "human_chat", { content: "shared constraint" }, "user-2"), firstRequest],
@@ -4031,7 +4047,21 @@ function fail(id, message) {
   assert.equal(first.events.at(-1)?.content, "first app answer");
   assert.equal(first.observedModel, "gpt-5.6-terra");
   assert.equal(first.observedReasoningEffort, "high");
-  assert.deepEqual(progress, [{ id: "activity-1", phase: "activity", status: "running", content: "Agent is working." }, { id: "commentary-1", content: "Checking turn 1" }]);
+  const fragments = progress.filter((update) => update.phase === "stream");
+  const commentary = fragments.filter(update => update.streamKind === "answer" && update.content.startsWith("Checking"));
+  assert.equal(commentary.at(-1)?.content, "Checking turn 1",
+    "the completed commentary is one authoritative growing snapshot");
+  assert.equal(new Set(commentary.map(update => update.streamId)).size, 1,
+    "snapshots of one native message share one opaque identity");
+  assert.ok(fragments.every((update) => typeof update.streamId === "string" && update.streamId.length > 0));
+  assert.equal(progress.filter((update) => update.phase === "activity").length, 0,
+    "streamed output replaces the generic busy placeholder rather than joining it");
+  assert.ok(progress.filter(update => update.content === "Checking turn 1").every(update => update.streamMode === "snapshot"),
+    "completed text reconciles the existing snapshot instead of a second commentary identity");
+  assert.ok(!progress.some((update) => update.content.includes("private reasoning")),
+    "raw native reasoning content and textDelta must never reach published progress");
+  assert.ok(progress.some(update => update.streamKind === "reasoning" && update.content.includes("Visible reasoning summary")),
+    "native public reasoning summaries are displayable, unlike raw model reasoning");
   assert.deepEqual(revealedThreads, [], "background execution tasks must never be opened in Desktop");
 
   const secondRequest = canonical(5, "agent_request", { content: "implement second" });
