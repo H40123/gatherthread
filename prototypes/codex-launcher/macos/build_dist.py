@@ -254,6 +254,45 @@ def verify_dmg(image: Path, provenance: dict) -> None:
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def publish_archive(candidate: Path, output: Path, provenance: dict) -> None:
+    """Promote a privately built archive with no-clobber checksum/source sidecars."""
+    checksum = candidate.with_name(candidate.name + ".sha256")
+    checksum.write_text(hashlib.sha256(candidate.read_bytes()).hexdigest() + "\n", encoding="ascii")
+    manifest = candidate.with_name(candidate.name + ".provenance.json")
+    manifest.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # Prepare every byte privately. Metadata precedes the archive, so a complete
+    # image/ZIP is the publication commit marker. No check-then-write race.
+    files = ((checksum, output.parent / (output.name + ".sha256")),
+             (manifest, output.parent / (output.name + ".provenance.json")),
+             (candidate, output))
+    published = []
+    try:
+        for source, destination in files:
+            os.link(source, destination, follow_symlinks=False)
+            published.append((destination, source.stat()))
+    except BaseException as error:
+        for destination, owned in reversed(published):
+            try:
+                current = destination.lstat()
+                if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
+                    destination.unlink()
+            except FileNotFoundError:
+                pass
+        if isinstance(error, FileExistsError):
+            raise SystemExit("Refusing to replace an existing archive or sidecar; choose a fresh output directory") from None
+        raise
+
+
+def create_zip(app: Path, output: Path, provenance: dict) -> None:
+    validate_bundle(app)
+    validate_provenance(provenance, app)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="gatherthread-zip-build-", dir=output.parent) as directory:
+        candidate = Path(directory) / "candidate.zip"
+        subprocess.run(["ditto", "-c", "-k", "--keepParent", str(app), str(candidate)], check=True)
+        publish_archive(candidate, output, provenance)
+
+
 def create_dmg(app: Path, output: Path, provenance: dict) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="gatherthread-dmg-build-", dir=output.parent) as directory:
@@ -265,33 +304,7 @@ def create_dmg(app: Path, output: Path, provenance: dict) -> None:
                         "-format", "UDZO", "-srcfolder", str(stage), str(candidate)],
                        check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         verify_dmg(candidate, provenance)
-        # Prepare every byte privately before creating any final artifact. Sidecars
-        # precede the DMG, so a complete image is the publication commit marker.
-        checksum = temporary / "candidate.dmg.sha256"
-        checksum.write_text(hashlib.sha256(candidate.read_bytes()).hexdigest() + "\n", encoding="ascii")
-        manifest = temporary / "candidate.dmg.provenance.json"
-        manifest.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        files = ((checksum, output.parent / (output.name + ".sha256")),
-                 (manifest, output.parent / (output.name + ".provenance.json")),
-                 (candidate, output))
-        published = []
-        try:
-            for source, destination in files:
-                # The syscall, not an earlier exists() check, refuses pre-existing
-                # files, symlinks and collisions arriving during verification.
-                os.link(source, destination, follow_symlinks=False)
-                published.append((destination, source.stat()))
-        except BaseException as error:
-            for destination, owned in reversed(published):
-                try:
-                    current = destination.lstat()
-                    if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
-                        destination.unlink()
-                except FileNotFoundError:
-                    pass
-            if isinstance(error, FileExistsError):
-                raise SystemExit("Refusing to replace an existing DMG or sidecar; choose a fresh output directory") from None
-            raise
+        publish_archive(candidate, output, provenance)
 
 
 def source_commit() -> str:
@@ -365,14 +378,13 @@ def main() -> None:
     validate_bundle(APP)
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(APP)], check=True)
     DIST.mkdir(exist_ok=True)
-    archive = DIST / f"GatherThreadLauncher-macOS-{platform.machine()}.zip"
-    subprocess.run(["ditto", "-c", "-k", "--keepParent", str(APP), str(archive)], check=True)
-    (DIST / f"{archive.name}.sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + "\n", encoding="ascii")
     provenance = {"schema_version": 1, "source_commit": commit, "version": version,
                   "architecture": platform.machine(), "node_version": node_version,
                   "minimum_macos": MINIMUM_MACOS_VERSION,
                   "signing": "ad-hoc; not Developer ID signed or notarized",
                   "app_files": app_file_hashes(APP)}
+    archive = DIST / f"GatherThreadLauncher-macOS-{platform.machine()}.zip"
+    create_zip(APP, archive, provenance)
     image = DIST / f"GatherThreadLauncher-macOS-{platform.machine()}.dmg"
     create_dmg(APP, image, provenance)
     print(image)
