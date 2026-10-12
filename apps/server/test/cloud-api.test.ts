@@ -45,10 +45,24 @@ test("configuration updates are exact-revision CAS, retain omitted keys and fenc
     assert.equal(f.store.resolve(f.actor, updated.profile_id, updated.revision).apiToken, f.input.api_key);
     assert.throws(() => f.store.resolve(f.actor, first.profile_id, first.revision), /changed/);
     assert.throws(() => f.store.put(f.actor, id, { ...f.input, expected_revision: first.revision }), /changed/);
+    assert.throws(() => f.store.put(f.actor, id, { ...metadata, expected_revision: randomUUID(), model: "deepseek-reasoner" }), /changed/);
     assert.throws(() => f.store.remove(f.actor, id, first.revision), /changed/);
     f.store.remove(f.actor, id, updated.revision);
     assert.equal(f.store.status(f.actor).configurations.length, 0);
     assert.throws(() => f.store.resolve(f.actor, updated.profile_id, updated.revision), /unavailable/);
+  } finally { f.close(); }
+});
+
+test("public configuration metadata refuses accidentally pasted keys, including retained keys", () => {
+  const f = fixture();
+  try {
+    for (const metadata of [{ label: f.input.api_key }, { model: f.input.api_key }, { label: "sk-ant-fixture-key-value-123456789" },
+      { model: "sk-or-v1-fixture-secret-value" }]) {
+      assert.throws(() => f.store.put(f.actor, randomUUID(), { ...f.input, ...metadata }), /not credentials/);
+    }
+    const saved = f.store.put(f.actor, randomUUID(), f.input), { api_key: _key, ...metadata } = f.input;
+    assert.throws(() => f.store.put(f.actor, saved.id, { ...metadata, expected_revision: saved.revision, label: f.input.api_key }), /not credentials/);
+    assert.doesNotMatch(JSON.stringify(f.store.status(f.actor)), /synthetic-private/);
   } finally { f.close(); }
 });
 
