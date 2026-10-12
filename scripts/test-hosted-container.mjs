@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostedAgent, HOSTED_MODEL, hostedContainerMemoryMiB, runDocker } from "../apps/server/dist/src/hosted-agent.js";
-import { runHostedDockerCommand, stopHostedContainer } from "../apps/server/dist/src/hosted-agent-recovery.js";
+import { createHostedDockerClient, runHostedDockerCommand, stopHostedContainer } from "../apps/server/dist/src/hosted-agent-recovery.js";
+import { reportTrialFixtureFailure } from "./hosted-repository-fixture-diagnostics.mjs";
 import { CollaborationDatabase } from "../apps/server/dist/src/database.js";
 import { CollaborationService } from "../apps/server/dist/src/service.js";
 import { CodeRepository } from "../apps/server/dist/src/code-repository.js";
@@ -135,6 +136,8 @@ const fetcher = async (url, init) => {
 const database = new CollaborationDatabase(join(directory, "db.sqlite"), { authTokenPepper: "hosted-smoke-only-pepper" });
 async function runFixtureDocker(args) {
   const name = args[args.indexOf("--name") + 1];
+  assert.ok(typeof name === "string" && /^gt-hosted-[a-f0-9]{16}$/u.exec(name)?.[0] === name);
+  assert.equal(args.filter(argument => argument === "--rm").length, 1);
   assert.equal(args[args.indexOf("--user") + 1], "10001:10001");
   assert.equal(args[args.indexOf("--network") + 1], "none");
   assert.equal(args[args.indexOf("--cap-drop") + 1], "ALL");
@@ -165,13 +168,15 @@ async function runFixtureDocker(args) {
   assert.equal(readFileSync(join(control, "opencode.json"), "utf8").includes(endpoint.apiToken), false);
   const config = JSON.parse(readFileSync(join(control, "opencode.json"), "utf8"));
   assert.equal(config.provider.hosted.npm, endpoint.transport === "anthropic-messages" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible");
+  const fixtureArgs = args.filter(argument => argument !== "--rm");
   try {
-    return await runDocker([...args.slice(0, -1), "-e", "GT_HOSTED_SMOKE_DEBUG=1", args.at(-1)], 90_000);
+    return await runDocker([...fixtureArgs.slice(0, -1), "-e", "GT_HOSTED_SMOKE_DEBUG=1", fixtureArgs.at(-1)], 90_000);
   } catch (error) {
     // Fixture-only allowlisted categories/booleans, never raw stderr, request,
     // tools, headers or exception text. Keep the failure meaningful in CI.
     process.stderr.write(`Hosted smoke runner failure: ${JSON.stringify({ code: hostedFailureCode(error),
       provider_attempts: calls, tool_issued: toolIssued, observed_checks: observedChecks })}\n`);
+    reportTrialFixtureFailure(name, { createClient: createHostedDockerClient });
     throw error;
   } finally { stopHostedContainer(name); }
 }
