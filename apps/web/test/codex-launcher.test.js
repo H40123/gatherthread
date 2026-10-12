@@ -47,6 +47,7 @@ function fixture(create, options = {}) {
   const nodes = new Map(), revoked = [], opened = [];
   const get = key => {
     if (!nodes.has(key)) nodes.set(key, { value: "", textContent: "", hidden: false, disabled: false,
+      ...(key === "download-codex-launcher-button" ? { href: "https://github.com/TH060419/gatherthread/releases" } : {}),
       listeners: {}, addEventListener(event, fn) { this.listeners[event] = fn; } });
     return nodes.get(key);
   };

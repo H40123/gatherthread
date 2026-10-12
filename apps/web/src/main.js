@@ -2,7 +2,7 @@ import { renderAvatar, isAgentReply, eventAuthorLabel } from "./avatars.js";
 import { mountAvatarSettings } from "./avatar-settings.js";
 import { mountCloudGithub } from "./cloud-github-view.js?v=20261012-github-3";
 import { mountDeviceAuthorization } from "./device-authorization.js";
-import { createAccountEmailHint, mountCodexLauncher } from "./codex-launcher.js";
+import { createAccountEmailHint, mountCodexLauncher } from "./codex-launcher.js?v=20261012-dmg-2";
 import { mountAccountDevices } from "./account-devices.js";
 import { cloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js";
 import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261006-mobile-2";

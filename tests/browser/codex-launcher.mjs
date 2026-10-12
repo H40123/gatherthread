@@ -12,6 +12,7 @@ await mkdir(artifacts, { recursive: true });
 const name = process.env.LAUNCHER_UI_BROWSER ?? "chrome";
 const browser = name === "webkit" ? await webkit.launch() : await chromium.launch({ channel: name, headless: true });
 const errors = [];
+const downloadSource = "a".repeat(40), downloadIndex = `/downloads/${downloadSource}/index.html`;
 const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
 async function fixture(origin, locale, platform, width = 1440, touch = 0) {
   const userAgent = platform === "iPhone" ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1" : undefined;
@@ -20,6 +21,10 @@ async function fixture(origin, locale, platform, width = 1440, touch = 0) {
   await context.route("**/*", async route => {
     const url = new URL(route.request().url());
     if (url.origin !== origin) return route.abort();
+    if (url.pathname === "/downloads/launcher.json") return route.fulfill({ status: 200,
+      contentType: "application/json", body: JSON.stringify({ source_commit: downloadSource, index_path: downloadIndex }) });
+    if (url.pathname === downloadIndex) return route.fulfill({ status: 200,
+      contentType: "text/html", body: "<!doctype html><title>Verified Launcher downloads</title><p>Controlled public installer index</p>" });
     if (url.pathname.startsWith("/v1/")) {
       return route.fulfill({ status: 401, contentType: "application/json", body: '{"error":{"code":"unauthorized"}}' });
     }
@@ -99,6 +104,11 @@ try {
       const description = await page.locator("#codex-launcher-title + p").boundingBox();
       const download = await page.locator("#download-codex-launcher-button").boundingBox();
       assert.ok(download.y >= description.y + description.height + 4, "download button does not overlap its instructions");
+      await page.waitForFunction(path => new URL(document.getElementById("download-codex-launcher-button").href).pathname === path, downloadIndex);
+      const [downloads] = await Promise.all([page.waitForEvent("popup"), page.locator("#download-codex-launcher-button").click()]);
+      await downloads.waitForLoadState("domcontentloaded");
+      assert.equal(downloads.url(), `${origin}${downloadIndex}`, "ordinary download click uses this server's same-source installer index");
+      await downloads.close();
       await page.locator("#open-codex-launcher-button").click();
       const opened = await page.evaluate(() => window.launcherOpened);
       assert.equal(opened.length, 1); assert.equal(opened[0].active, true, "native opening keeps the actual user gesture");

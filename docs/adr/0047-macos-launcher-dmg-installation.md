@@ -48,7 +48,14 @@ Email/password authorization, URI v1/v2, independent devices, exact production/
 test origins, icons, Windows ZIP and Linux/self-hosted terminal fallback are
 unchanged. Installed/downloaded older Launchers are not upgraded by a source
 merge. Root release delivery must publish a separately reviewed matching DMG
-and point the website at that release without replacing old tags/assets.
+and point the website at that version without replacing old tags/assets. A
+deployment may provide `/downloads/launcher.json` with exactly `source_commit`
+(40 lowercase hexadecimal characters) and `index_path`
+(`/downloads/<source_commit>/index.html`). The existing download button discovers
+this bounded, same-origin index when its dialog opens; absent or invalid metadata
+retains the GitHub Releases fallback. A test deployment retains its admission
+gate for downloads. The index and immutable version directory must list only
+verified public installers, matching hashes and public provenance, never secrets.
 
 Tests cover package completeness, source/version/hash checks, link/path/private
 file refusal, failed-image nonpublication, detachment, bilingual bold guidance,
