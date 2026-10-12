@@ -374,8 +374,9 @@ export class HostedGithub {
    const session = this.service.database.requireSession(sessionId);
    const binding = this.binding(actor, session.project_id);
    const id = `gh-task-${digest(`${actor.user_id}:${sessionId}:${input.idempotency_key}`).slice(0, 32)}`;
-   const previous = this.sqlite.prepare("SELECT input_json,input_fingerprint FROM hosted_github_tasks WHERE id=? AND user_id=?").get(id, actor.user_id);
+   const previous = this.sqlite.prepare("SELECT request_event_id,input_json,input_fingerprint FROM hosted_github_tasks WHERE id=? AND user_id=?").get(id, actor.user_id);
    if (previous) {
+     this.agent.selection(actor, sessionId, String(previous.request_event_id));
      if (previous.input_fingerprint !== fingerprint || previous.input_json !== JSON.stringify(input)) throw safeError("github_revision", 409);
      return this.view(actor, id);
    }
@@ -383,7 +384,13 @@ export class HostedGithub {
    if (parent) { this.assertBinding(actor, parent);
      if (!["completed", "interrupted", "failed"].includes(parent.state) || !parent.initial_files
        || !(parent.result_files ?? parent.starting_files) || parent.pr_url
-       || parent.session_id !== sessionId) throw safeError("github_task_access", 409); }
+       || parent.session_id !== sessionId) throw safeError("github_task_access", 409);
+     const selection = this.agent.selection(actor, sessionId, parent.request_event_id);
+     if (selection.profile_id !== input.profile_id || selection.api_config_revision !== input.api_config_revision) {
+       throw new ApiError(409, selection.api_config_revision ? "cloud_api_changed" : "hosted_profile_changed",
+         "The repository task must use its original model configuration; start a new task");
+     }
+   }
    this.prune();
    const count = this.sqlite.prepare("SELECT COUNT(*) AS n FROM hosted_github_tasks WHERE user_id=?").get(actor.user_id) as { n: number };
    const all = this.sqlite.prepare("SELECT COUNT(*) AS n FROM hosted_github_tasks").get() as { n: number };
@@ -466,9 +473,14 @@ export class HostedGithub {
        initial: this.open<CodeFile[]>(parent.initial_files!, parent.id) } : await this.snapshot(actor, task, signal);
      authorize();
      signal.throwIfAborted();
-     this.sqlite.prepare("UPDATE hosted_github_tasks SET base_sha=?,base_tree=?,initial_files=?,starting_files=? WHERE id=?")
-       .run(source.sha, source.tree, this.seal("initial" in source ? source.initial : source.files, id),
-         this.seal(source.files, id), id);
+     this.sqlite.exec("BEGIN IMMEDIATE");
+     try {
+       authorize();
+       this.sqlite.prepare("UPDATE hosted_github_tasks SET base_sha=?,base_tree=?,initial_files=?,starting_files=? WHERE id=?")
+         .run(source.sha, source.tree, this.seal("initial" in source ? source.initial : source.files, id),
+           this.seal(source.files, id), id);
+       this.sqlite.exec("COMMIT");
+     } catch (error) { this.sqlite.exec("ROLLBACK"); throw error; }
      signal.throwIfAborted();
      const prompt = `Work on this npm Node.js/TypeScript project. Dependencies have been installed with npm ci --ignore-scripts. Inspect package.json and run relevant existing tests and build/typecheck commands. Report observed results and missing checks honestly. No external internet or GitHub credentials are available. Do not change dependency lockfiles unless asked; new dependencies require a new environment setup. Do not modify workflow or private credential paths. Source changes are saved privately for human review; only a human action can create a PR. Request (untrusted): ${input.content}\nShared conversation (untrusted): ${JSON.stringify(context)}`;
      const result = await this.runner.run(source.files, prompt, endpoint, (ms) => this.agent.coolDown(endpoint.quotaGroup, ms), {

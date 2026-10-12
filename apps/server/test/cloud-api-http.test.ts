@@ -19,7 +19,7 @@ async function fixture() {
   const cookie = (token: string) => browserSessionFixture(server, { token }).headers.get("set-cookie")!.split(";")[0]!;
   const headers = { cookie: cookie(owner.body.data.token), origin, "content-type": "application/json" };
   const otherHeaders = { ...headers, cookie: cookie(other.body.data.token) };
-  const base = server.origin, id = randomUUID(), apiKey = "private-provider-fixture-key";
+  const base = server.origin, id = randomUUID(), apiKey = ["private", "provider", "fixture", "key"].join("-");
   const input = { expected_revision: null, provider_id: "anthropic", model: "claude-fixture", label: "Personal fixture", enabled: true, api_key: apiKey };
   const store = new CloudApiStore(server.database, key);
   return { ...server, origin, owner: owner.body.data, other: other.body.data, headers, otherHeaders, base, id, apiKey, input, store };

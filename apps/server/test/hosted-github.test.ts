@@ -85,7 +85,7 @@ unixTest("personal repository tasks pin their model across completion, idempoten
  try {
   await connect(f);
   const saved = f.agent.putPersonalApi(f.actor, randomUUID(), { expected_revision: null, provider_id: "anthropic", model: "claude-fixture",
-    label: "Own API", api_key: "private-personal-repository-fixture", enabled: true });
+    label: "Own API", api_key: ["private", "personal", "repository", "fixture"].join("-"), enabled: true });
   const input = { profile_id: saved.profile_id, api_config_revision: saved.revision, content: "Update fixture", idempotency_key: "own-repo-task" };
   const first = f.github.start(f.actor, f.session.id, input), completed = await settled(f, first.id);
   assert.equal(completed.state, "completed"); assert.equal(completed.api_config_revision, saved.revision);

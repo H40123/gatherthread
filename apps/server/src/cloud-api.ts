@@ -84,18 +84,25 @@ export class CloudApiStore {
       this.database.assertActiveDevice(actor);
       const old = this.database.sqlite.prepare("SELECT * FROM cloud_api_configs WHERE id=?").get(id) as unknown as Row | undefined;
       if (old && old.user_id !== actor.user_id) throw unavailable();
-      const apiKey = input.api_key ?? (old ? this.open(old) : undefined);
+      if (old && old.provider_id !== input.provider_id && input.api_key === undefined) {
+        throw new ApiError(400, "cloud_api_invalid", "Changing provider requires a new API key");
+      }
+      const oldKey = old ? this.open(old) : undefined;
+      const apiKey = input.api_key ?? oldKey;
       if (!apiKey) throw new ApiError(400, "cloud_api_invalid", "A new personal API configuration requires an API key");
       // Labels/model IDs are returned to the browser and may appear in shared
       // provenance. Catch accidental key pastes without ever reflecting them.
       const visible = `${input.label}\n${input.model}`;
-      if (visible.includes(apiKey) || /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|AIza[A-Za-z0-9_-]{20,}|Bearer\s+\S{8,})/iu.test(visible)) {
+      if (visible.includes(apiKey) || oldKey !== undefined && visible.includes(oldKey)
+        || /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|AIza[A-Za-z0-9_-]{20,}|Bearer\s+\S{8,})/iu.test(visible)) {
         throw new ApiError(400, "cloud_api_invalid", "Use a display label and model ID, not credentials");
       }
       const same = old && old.provider_id === input.provider_id && old.label === input.label && old.model === input.model
-        && Boolean(old.enabled) === input.enabled && (() => { const a = Buffer.from(this.open(old)), b = Buffer.from(apiKey);
+        && Boolean(old.enabled) === input.enabled && (() => { const a = Buffer.from(oldKey!), b = Buffer.from(apiKey);
           return a.length === b.length && timingSafeEqual(a, b); })();
-      if (same) { this.database.sqlite.exec("COMMIT"); return this.metadata(old); }
+      if (same && (input.expected_revision === old.revision || input.expected_revision === null)) {
+        this.database.sqlite.exec("COMMIT"); return this.metadata(old);
+      }
       if (old ? old.revision !== input.expected_revision : input.expected_revision !== null) throw changed();
       if (!old) {
         const count = this.database.sqlite.prepare("SELECT COUNT(*) AS count FROM cloud_api_configs WHERE user_id=?").get(actor.user_id)!;

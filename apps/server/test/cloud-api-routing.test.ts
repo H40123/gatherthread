@@ -9,6 +9,7 @@ import { CollaborationService } from "../src/service.js";
 import { CodeRepository } from "../src/code-repository.js";
 import { CloudApiStore } from "../src/cloud-api.js";
 import { HostedAgent, type HostedAgentOptions } from "../src/hosted-agent.js";
+import { ApiError } from "../src/errors.js";
 
 const socketTest = process.platform === "win32" ? test.skip : test;
 function fixture(runContainer: NonNullable<HostedAgentOptions["runContainer"]>) {
@@ -20,7 +21,7 @@ function fixture(runContainer: NonNullable<HostedAgentOptions["runContainer"]>) 
   const session = service.createSession(actor, { mode: "multi", title: "Cloud", idempotency_key: "personal-route-session" }).session;
   const key = randomBytes(32).toString("base64"), store = new CloudApiStore(database, key);
   const saved = store.put(actor, randomUUID(), { expected_revision: null, provider_id: "anthropic", label: "My Claude",
-    model: "claude-sonnet-fixture", enabled: true, api_key: "synthetic-personal-provider-secret" });
+    model: "claude-sonnet-fixture", enabled: true, api_key: ["synthetic", "personal", "provider", "secret"].join("-") });
   const agent = new HostedAgent(service, new CodeRepository(database, join(root, "code")), {
     personalApiEncryptionKey: key, image: `fixture/cloud@sha256:${"c".repeat(64)}`, endpoints: [{ id: "free", profileId: "free",
       provider: "deepseek", label: "Existing service model", model: "deepseek-chat", baseUrl: "https://api.deepseek.com/v1",
@@ -54,6 +55,48 @@ socketTest("personal selection freezes private run credentials and leaves free a
     assert.equal((await f.agent.request(f.actor, f.session.id, f.input)).replayed, true);
     assert.equal(executions, 1);
     assert.doesNotMatch(JSON.stringify(f.service.replay(f.actor, f.session.id, 0, 100)), /synthetic-personal-provider|key_ciphertext/);
+  } finally { f.close(); }
+});
+
+test("personal daily allowance spans configurations and never uses the unlimited free-model exception", () => {
+  const f = fixture(async () => JSON.stringify({ answer: "Fixture", files: [] }));
+  try {
+    const second = f.store.put(f.actor, randomUUID(), { expected_revision: null, provider_id: "siliconflow-cn", label: "Free model with own key",
+      model: "Qwen/Qwen3.5-4B", enabled: true, api_key: ["second", "personal", "fixture"].join("-") });
+    const endpoints = [f.store.resolve(f.actor, f.saved.profile_id, f.saved.revision), f.store.resolve(f.actor, second.profile_id, second.revision)];
+    assert.equal(endpoints[0]!.quotaGroup, endpoints[1]!.quotaGroup); assert.equal(endpoints[1]!.dailyRuns, 100);
+    f.database.setHostedAgentUserLimit(f.actor.user_id, 0);
+    const limits = { userDailyRuns: 100, globalDailyRuns: 1000, maxConcurrent: 1, billingSource: "personal" as const };
+    for (let n = 0; n < 100; n++) {
+      const endpoint = endpoints[n % 2]!;
+      const row = f.database.reserveHostedAgentRequest(f.actor, f.session.id, { ...f.input, profile_id: endpoint.profileId,
+        api_config_revision: endpoint.personal!.configRevision, idempotency_key: `personal-cap-${n}` }, [endpoint], limits);
+      f.database.finishHostedAgentRequest(row.event.id, {}); f.advance();
+    }
+    assert.equal(f.database.hostedAgentUsage(f.actor, 1, 4).user_used_runs, 0);
+    assert.equal(f.database.hostedAgentUsage(f.actor, 100, 1000, "personal").user_used_runs, 100);
+    assert.throws(() => f.database.reserveHostedAgentRequest(f.actor, f.session.id, { ...f.input, idempotency_key: "personal-cap-over" },
+      [endpoints[0]!], limits), e => e instanceof ApiError && e.code === "hosted_user_quota");
+    assert.equal(f.database.hostedActiveRuns(), 0);
+  } finally { f.close(); }
+});
+
+socketTest("personal requests and summaries keep exact pins; reused request keys cannot follow a rotated key", async () => {
+  const f = fixture(async () => JSON.stringify({ answer: "Summary fixture", files: [] }));
+  try {
+    const source = f.service.appendEvent(f.actor, f.session.id, { type: "human_chat", visibility: "session", idempotency_key: "own-api-summary-source",
+      payload: { content: "Selected history fixture" } });
+    const summarized = await f.agent.startSummary(f.actor, f.session.id, { profile_id: f.saved.profile_id, api_config_revision: f.saved.revision,
+      source_event_ids: [source.id], idempotency_key: "own-api-summary" });
+    for (let tries = 0; f.database.hostedActiveRuns() && tries < 100; tries++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.deepEqual(f.agent.selection(f.actor, f.session.id, summarized.request_event.id), { profile_id: f.saved.profile_id, api_config_revision: f.saved.revision });
+    f.advance();
+    const original = await f.agent.request(f.actor, f.session.id, f.input);
+    const changed = f.agent.putPersonalApi(f.actor, f.saved.id, { expected_revision: f.saved.revision, provider_id: "anthropic",
+      label: f.saved.label, model: f.saved.model, enabled: true, api_key: ["rotated", "fixture", "personal", "key"].join("-") });
+    await assert.rejects(f.agent.request(f.actor, f.session.id, { ...f.input, api_config_revision: changed.revision }),
+      e => e instanceof ApiError && e.code === "cloud_api_changed");
+    assert.throws(() => f.agent.selection(f.actor, f.session.id, original.request_event.id), e => e instanceof ApiError && e.code === "cloud_api_changed");
   } finally { f.close(); }
 });
 
