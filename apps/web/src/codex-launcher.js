@@ -80,7 +80,7 @@ export function mountCodexLauncher({ document, api, localizer, emailHint, contex
       text += decoder.decode();
       const manifest = JSON.parse(text);
       if (!manifest || Array.isArray(manifest) || Object.keys(manifest).sort().join(",") !== "index_path,source_commit"
-        || typeof manifest.source_commit !== "string" || !/^[a-f0-9]{40}$/u.test(manifest.source_commit)
+        || typeof manifest.source_commit !== "string" || manifest.source_commit.length !== 40 || !/^[a-f0-9]{40}$/u.test(manifest.source_commit)
         || manifest.index_path !== `/downloads/${manifest.source_commit}/index.html`) return;
       if (run === downloadGeneration) download.href = manifest.index_path;
     } catch { /* Unconfigured/self-hosted instances retain the official Release link. */ }

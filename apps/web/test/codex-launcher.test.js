@@ -87,6 +87,7 @@ test("missing, oversized or unsafe download metadata preserves the Release fallb
     new Response("", { status: 404 }), Response.json({ source_commit: source, index_path: "https://evil.invalid/file" }),
     Response.json({ source_commit: source, index_path: `/downloads/${"b".repeat(40)}/index.html` }),
     Response.json({ source_commit: source, index_path: `/downloads/${source}/../index.html` }),
+    Response.json({ source_commit: `${source}\n`, index_path: `/downloads/${source}\n/index.html` }),
     Response.json({ source_commit: source, index_path: `/downloads/${source}/index.html`, token: "never" }),
     Response.json({ source_commit: source, index_path: `/downloads/${source}/index.html`, extra: "x".repeat(4096) })]) {
     const f = fixture(undefined, { fetchResponse: async () => response });
