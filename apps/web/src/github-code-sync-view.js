@@ -133,6 +133,8 @@ export function mountGithubCodeSync({ document: doc, api, localizer, confirm, mo
     prefillRepository(input) {
       const state = controller.getState();
       if (state.github?.connection || state.github?.can_configure !== true || !input.repository) return;
+      if (el("github-code-owner").value.trim() || el("github-code-name").value.trim()
+        || !["", "main"].includes(el("github-code-base").value.trim())) return;
       fillRepositoryFields(el, "github-code", input.repository);
       el("github-code-base").value = input.base_branch || "main";
       stage = "repository";

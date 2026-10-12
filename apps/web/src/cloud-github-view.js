@@ -267,11 +267,16 @@ export function mountCloudGithub({ api: getApi, context, t, setText = (node, sou
         try {
           await getApi().completeHostedGithub(input);
           if (context().userId !== actorId) return { handled: false };
-          if (destination) history.replaceState(null, "", `${path}#${new URLSearchParams({ project: destination.projectId, session: destination.sessionId })}`);
           return { handled: true, error: "" };
         } catch {
           return context().userId === actorId
             ? { handled: true, error: "Could not finish GitHub sign-in. Connect again." } : { handled: false };
+        } finally {
+          if (context().userId === actorId && destination) {
+            const route = new URLSearchParams({ project: destination.projectId });
+            if (destination.sessionId) route.set("session", destination.sessionId);
+            history.replaceState(null, "", `${path}#${route}`);
+          }
         }
       })();
       try { return await authorizationCompletion; }

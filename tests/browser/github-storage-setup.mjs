@@ -101,6 +101,14 @@ try {
       assert.equal(await page.locator("#github-code-owner").inputValue(), "fixture-owner");
       assert.equal(await page.locator("#github-code-name").inputValue(), "team-project");
       assert.equal(state.writes, 1, "choosing computer sync does not rebind or upload");
+      await page.locator("#github-code-owner").fill("different-owner");
+      await page.locator("#github-code-name").fill("unsaved-computer-draft");
+      await page.locator("#github-code-base").fill("draft-base");
+      await page.locator("#github-mode-cloud").click();
+      await page.locator("#github-mode-local").click();
+      assert.equal(await page.locator("#github-code-owner").inputValue(), "different-owner");
+      assert.equal(await page.locator("#github-code-name").inputValue(), "unsaved-computer-draft");
+      assert.equal(await page.locator("#github-code-base").inputValue(), "draft-base");
       await page.locator("#github-mode-cloud").click();
       await page.locator("#cloud-github-edit").click();
       await page.locator("#cloud-github-name").fill("unfinished-edit");
