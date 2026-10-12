@@ -12,6 +12,14 @@ test("Agent connection shortcut and pause/resume guidance are bilingual", () => 
 
 import { memberRemovalAriaLabel, memberRoleAriaLabel, translateUiText } from "../src/i18n.js";
 
+test("live output kinds and plan states use concise bilingual labels", () => {
+  for (const [en, zh] of [["Answer", "回答"], ["Thinking", "思考"], ["Tool", "工具"], ["Plan", "计划"],
+    ["Done", "完成"], ["Working", "正在工作"], ["Pending", "待处理"], ["Failed", "失败"], ["Paused", "已暂停"], ["Referenced message", "引用原文"]]) {
+    assert.equal(translateUiText(en, "en"), en);
+    assert.equal(translateUiText(en, "zh-CN"), zh);
+  }
+});
+
 test("every public cloud GitHub failure has an English and Chinese explanation", () => {
   for (const [en, zh] of [
     ["GitHub access is unavailable. Reconnect and check repository permissions.", "GitHub 访问不可用，请重新连接并检查仓库权限。"],

@@ -22,6 +22,8 @@ The project lead and designated release maintainer is currently `@TH060419`.
 4. **Fail closed.** Ambiguous runtime selection, unsupported upstream versions, incomplete local turns, uncertain transcript provenance, and conflicting idempotency retries must stop safely.
 5. **Local autonomy.** Never delete or rewrite local files, workspaces, tasks, or conversations as a side effect of a cloud mutation.
 6. **Privacy by construction.** Share only allowlisted, redacted content. Never transmit hidden reasoning, credentials, private instructions, headers, raw tool payloads, or native identifiers by default.
+
+For live Agent work, [ADR-0045](docs/adr/0045-streamed-public-agent-output.md) allows native-exposed thinking summaries, selected tool fields and actual plans only for the exact claimed execution. This is not an expansion of automatic native-history capture. Preserve cumulative/structural redaction, acknowledged snapshot identity and current authorization; never forward whole native notifications or log their bodies.
 7. **Durable recovery.** Cursors, outboxes, snapshot jobs, and projected-event IDs must survive retries and must advance only after the authoritative operation succeeds.
 8. **Compatibility over convenience.** Preserve current clients when changing `/v1`, MCP, connector, DSH, persistent state, Hook, or UI contracts. Prerelease status permits change, not silent breakage.
 9. **Accessible and practical UI.** Preserve keyboard access, focus, reduced motion/transparency, high contrast, responsive layout, bilingual behavior, and Safari/Chromium parity.

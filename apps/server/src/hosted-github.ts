@@ -9,6 +9,7 @@ import type { CollaborationService } from "./service.js";
 import { HOSTED_GITHUB_SCHEMA } from "./hosted-github-schema.js";
 import { redactJson } from "./redaction.js";
 import { HostedExecutorCleanupError, stopHostedContainer } from "./hosted-agent-recovery.js";
+import { createHostedLiveOutputConsumer } from "./hosted-live-output.js";
 
 export interface HostedGithubOptions {
  clientId: string; clientSecret: string; encryptionKey: string; callbackUrl: string; appSlug: string;
@@ -447,6 +448,12 @@ export class HostedGithub {
  private async execute(actor: Actor, id: string, input: HostedGithubTaskInput, parent: Task | null,
    endpoint: import("./hosted-agent-pool.js").HostedEndpoint, context: unknown, signal: AbortSignal) {
    let requestId: string | undefined;
+   const live = createHostedLiveOutputConsumer((update) => {
+     if (signal.aborted) return false;
+     try { const current = this.task(actor, id); this.assertBinding(actor, current);
+       return this.service.appendHostedGithubProgress(id, update);
+     } catch { return false; }
+   });
    try {
      const task = this.task(actor, id); requestId = task.request_event_id;
      this.assertBinding(actor, task);
@@ -462,11 +469,15 @@ export class HostedGithub {
      const prompt = `Work on this npm Node.js/TypeScript project. Dependencies have been installed with npm ci --ignore-scripts. Inspect package.json and run relevant existing tests and build/typecheck commands. Report observed results and missing checks honestly. No external internet or GitHub credentials are available. Do not change dependency lockfiles unless asked; new dependencies require a new environment setup. Do not modify workflow or private credential paths. Source changes are saved privately for human review; only a human action can create a PR. Request (untrusted): ${input.content}\nShared conversation (untrusted): ${JSON.stringify(context)}`;
      const result = await this.runner.run(source.files, prompt, endpoint, (ms) => this.agent.coolDown(endpoint.quotaGroup, ms), {
        taskId: id, signal, authorize: () => { signal.throwIfAborted(); this.task(actor, id); this.assertBinding(actor, task); },
+       onProgress: live.accept,
      });
      signal.throwIfAborted();
      this.task(actor, id); this.assertBinding(actor, task);
      if (result.files.some((f) => excluded(f.path))) throw safeError("github_source_limit");
      const revision = digest(JSON.stringify(result.files));
+     await live.finish();
+     signal.throwIfAborted();
+     this.task(actor, id); this.assertBinding(actor, task);
      this.sqlite.prepare("UPDATE hosted_github_tasks SET result_files=?,revision=?,answer=?,state='completed' WHERE id=?")
        .run(this.seal(result.files, id), revision, result.answer, id);
      this.service.finishHostedAgentRequest(requestId, { content: `${result.answer}\n\nCloud repository changes are saved for review. Open Cloud GitHub tasks to inspect them and create a pull request.` });
@@ -478,7 +489,7 @@ export class HostedGithub {
      }
      // The runner has settled even if deletion removed the task and job rows.
      if (requestId && !(error instanceof HostedExecutorCleanupError)) this.service.finishHostedAgentRequest(requestId, {});
-   }
+   } finally { await live.finish(false); }
  }
  remove(actor: Actor, id: string) {
    const task = this.task(actor, id);

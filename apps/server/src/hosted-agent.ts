@@ -13,6 +13,7 @@ import type { CollaborationService } from "./service.js";
 import type { CodeRepository } from "./code-repository.js";
 import { hostedContainerCpuArguments, parseHostedCpuSet } from "./hosted-container-cpu.js";
 import { hostedContainerMemoryArguments, validateHostedMemoryPolicy, type HostedMemoryPolicy } from "./hosted-container-memory.js";
+import { createHostedContainerOutputDecoder, createHostedLiveOutputConsumer, hostedContainerResult, type HostedProgressCallback } from "./hosted-live-output.js";
 
 import { HOSTED_MODEL, validateHostedEndpoints, HOSTED_USER_MIN_INTERVAL_SECONDS, HOSTED_USER_MAX_CONCURRENT,
   isSiliconFlowFreeEndpoint,
@@ -36,7 +37,7 @@ export interface HostedAgentOptions extends HostedRunLimits {
   memoryPolicy?: HostedMemoryPolicy;
   cpuSet?: string;
   fetch?: typeof globalThis.fetch;
-  runContainer?: (args: string[], timeoutMs: number, signal?: AbortSignal) => Promise<string>;
+  runContainer?: (args: string[], timeoutMs: number, signal?: AbortSignal, onProgress?: HostedProgressCallback) => Promise<string>;
 }
 
 /** Operators may tighten existing container limits, never silently expand them. */
@@ -65,13 +66,15 @@ async function readBody(request: IncomingMessage, limit: number): Promise<Buffer
   return Buffer.concat(chunks);
 }
 
-export function runDocker(args: string[], timeoutMs: number, outputLimit = 1_000_000, signal?: AbortSignal): Promise<string> {
+export function runDocker(args: string[], timeoutMs: number, outputLimit = 1_000_000, signal?: AbortSignal,
+  onProgress?: HostedProgressCallback): Promise<string> {
   return new Promise((resolve, reject) => {
     const client = createHostedDockerClient();
     let child: ReturnType<typeof spawn>;
     try { child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"], env: client.environment }); }
     catch (error) { client.close(); reject(error); return; }
-    let output = "";
+    const progressLimit = args.includes("GT_HOSTED_REPOSITORY=1") ? 2 * 1024 * 1024 : 256_000;
+    const output = createHostedContainerOutputDecoder(onProgress, progressLimit);
     let size = 0;
     let settled = false;
     const fail = (error: Error) => { if (!settled) { settled = true; reject(error); } child.kill("SIGKILL"); };
@@ -81,8 +84,8 @@ export function runDocker(args: string[], timeoutMs: number, outputLimit = 1_000
     const timer = setTimeout(() => fail(new Error("container_timeout")), timeoutMs);
     child.stdout!.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size > outputLimit) fail(new Error("container_output_too_large"));
-      else output += chunk.toString("utf8");
+      if (size > outputLimit + progressLimit) fail(new Error("container_output_too_large"));
+      else { output.write(chunk); if (output.resultBytes() > outputLimit) fail(new Error("container_output_too_large")); }
     });
     let stderrSize = 0, stderrTail = "";
     child.stderr!.on("data", (chunk: Buffer) => {
@@ -98,7 +101,11 @@ export function runDocker(args: string[], timeoutMs: number, outputLimit = 1_000
       catch { fail(new Error("container_client_cleanup_failed")); return; }
       if (settled) return;
       settled = true;
-      if (code === 0) resolve(output);
+      if (code === 0) {
+        const result = output.finish();
+        if (output.resultBytes() > outputLimit) reject(new Error("container_output_too_large"));
+        else resolve(result);
+      }
       else reject(new Error(stderrTail.match(/(?:^|\n)GT_HOSTED_FAILURE:(agent_(?:startup|session|answer|idle|shutdown)_failed)\r?\n$/u)?.[1] ?? "container_failed"));
     });
   });
@@ -370,6 +377,8 @@ export class HostedAgent {
     const control = join(root, "control");
     const socket = join(root, "model.sock");
     const name = `gt-hosted-${randomBytes(8).toString("hex")}`;
+    const live = createHostedLiveOutputConsumer((update) => controller.signal.aborted ? false
+      : this.service.appendHostedAgentProgress(reserved.event.id, update));
     const proxy = new HostedModelProxy({ endpoint, signal: controller.signal, ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
       authorize: () => {
         this.service.database.assertActiveDevice(actor);
@@ -407,7 +416,7 @@ export class HostedAgent {
       writeFileSync(join(control, "prompt.txt"), prompt, { mode: 0o644 });
       chmodSync(join(control, "prompt.txt"), 0o644);
       const memoryMiB = hostedContainerMemoryMiB("trial", this.options.memoryMiB);
-      const args = ["run", "--rm", "--name", name, "--network", "none", "--read-only", "--cap-drop", "ALL",
+      const args = ["run", "--rm", "--log-driver", "none", "--name", name, "--network", "none", "--read-only", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges", "--pids-limit", "128",
         ...hostedContainerMemoryArguments(memoryMiB, this.options.memoryPolicy),
         ...hostedContainerCpuArguments("trial", this.options.cpuSet, memoryMiB, this.options.memoryPolicy),
@@ -420,10 +429,10 @@ export class HostedAgent {
         "-e", "OPENCODE_DISABLE_MODELS_FETCH=true", "-e", "OPENCODE_DISABLE_DEFAULT_PLUGINS=true",
         "-e", "NO_COLOR=1", "-e", "CI=1", this.options.image];
       controller.signal.throwIfAborted();
-      const output = this.options.runContainer ? await this.options.runContainer(args, RUN_TIMEOUT_MS, controller.signal)
-        : await runDocker(args, RUN_TIMEOUT_MS, 1_000_000, controller.signal);
+      const output = this.options.runContainer ? await this.options.runContainer(args, RUN_TIMEOUT_MS, controller.signal, live.accept)
+        : await runDocker(args, RUN_TIMEOUT_MS, 1_000_000, controller.signal, live.accept);
       controller.signal.throwIfAborted();
-      const run = JSON.parse(output) as { answer?: unknown; files?: unknown; save_error?: unknown };
+      const run = JSON.parse(hostedContainerResult(output, live.accept)) as { answer?: unknown; files?: unknown; save_error?: unknown };
       content = typeof run.answer === "string" ? run.answer.trim().slice(0, 14_000) : "";
       if (!content) throw new Error("empty_agent_result");
       if (branch) {
@@ -451,7 +460,8 @@ export class HostedAgent {
         await cleanupHostedExecution(() => { if (!this.options.runContainer) stopHostedContainer(name); }, [
           () => proxy.close().catch(() => undefined), () => rmSync(root, { recursive: true, force: true }),
         ]);
-      } finally { this.controllers.delete(reserved.event.id); }
+        await live.finish(Boolean(content));
+      } finally { await live.finish(false); this.controllers.delete(reserved.event.id); }
     }
     const result = this.service.finishHostedAgentRequest(reserved.event.id, {
       content, ...(errorCode ? { errorCode } : {}), providerAttempts: proxy.diagnostics().providerAttempts,

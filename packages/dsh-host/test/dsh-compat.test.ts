@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { createLiveOutputPublisher, type LiveOutputUpdate } from "@gatherthread/adapters";
 import {
   DSH_COMPATIBILITY,
   DSH_COMPATIBILITY_MATRIX,
@@ -8,8 +12,10 @@ import {
   registerDshNativeWorkspace,
   registerDshPluginDisposer,
 } from "../src/dsh-compat.js";
+import type { DshLiveOutputEvent } from "../src/types.js";
+import { createDshLiveEventMapper } from "../src/live-event-mapper.js";
 
-type Listener = (...args: unknown[]) => void;
+type Listener = (...args: unknown[]) => unknown;
 
 function fixture(
   stored: boolean,
@@ -341,6 +347,18 @@ function fixture(
   };
   return {
     context,
+    agent,
+    session,
+    emit,
+    async stream(request: unknown, chunks: readonly unknown[]) {
+      const callbacks = [...listeners.get("llm/stream") ?? []];
+      const source = async function* () { yield* chunks; };
+      const next = (index: number): AsyncIterable<unknown> => index === callbacks.length ? source()
+        : callbacks[index]!(request, () => next(index + 1)) as AsyncIterable<unknown>;
+      const output: unknown[] = [];
+      for await (const chunk of next(0)) output.push(chunk);
+      return output;
+    },
     calls,
     events,
     workspaceSessionIds,
@@ -1358,6 +1376,136 @@ async function assertPending(value: Promise<unknown>, message: string): Promise<
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(settled, false, message);
 }
+
+test("alpha assistant frames are scoped to the exact prompted Agent and its first turn", async () => {
+  const f = fixture(true, { exposeLiveAgent: true });
+  const facade = createDshHostFacade({ context: f.context, sessionId: f.session.id, workspacePath: "/readonly/workspace",
+    provider: "deepseek-official", model: "deepseek-v4-flash", messageFactory: (text) => ({ text }),
+    moduleImporter: async () => ({ expandAssistantStream() {} }) });
+  const captured: DshLiveOutputEvent[] = [];
+  facade.onLiveOutput!((event) => captured.push(event));
+  await facade.open();
+  f.emit("agent/assistant-stream", { agent: f.agent, frame: { type: "start", attemptId: "outside", revision: 1, turn: 1, step: 1 } });
+  assert.equal(captured.length, 0, "no native-local work is captured while idle");
+  f.holdIdle();
+  const prompted = facade.prompt("current GatherThread request");
+  while (f.calls.followup === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+  f.appendEvent("turn/start", { turn: 7 }); f.appendEvent("step/start", { turn: 7, step: 1 });
+  const start = { type: "start", attemptId: "exact-attempt", revision: 1, turn: 7, step: 1 };
+  f.emit("agent/assistant-stream", { agent: { ...f.agent }, frame: start });
+  f.emit("agent/assistant-stream", { agent: f.agent, frame: { ...start, turn: 99 } });
+  f.emit("agent/assistant-stream", { agent: f.agent, frame: start });
+  f.emit("agent/assistant-stream", { agent: f.agent, frame: { type: "chunk", attemptId: "exact-attempt", revision: 2,
+    index: 0, time: 1700000000000, chunk: { type: "text-delta", index: 0, text: "public native token" } } });
+  f.appendEvent("request/header", { system: "PRIVATE_SYSTEM" });
+  f.appendEvent("system/message", { message: { content: "PRIVATE_SYSTEM" } });
+  f.appendEvent("tool/call", { turn: 99, step: 1, callId: "unrelated", name: "shell", arguments: "PRIVATE_OTHER_TURN" });
+  f.appendEvent("todo/write", { todos: [{ content: "Current todo", status: "in_progress" }] });
+  f.appendEvent("turn/end", { turn: 7, reason: { kind: "completed" } });
+  f.appendEvent("turn/start", { turn: 8 });
+  f.emit("agent/assistant-stream", { agent: f.agent, frame: { ...start, revision: 2, turn: 8 } });
+  f.appendEvent("todo/write", { todos: [{ content: "PRIVATE_LATER_TODO", status: "pending" }] });
+  assert.equal(captured.filter((event) => event.kind === "assistant-stream").length, 2);
+  assert.equal(captured.filter((event) => event.kind === "session-event").length, 1);
+  assert.ok(captured.every((event) => event.sourceSessionId === f.session.id));
+  assert.doesNotMatch(JSON.stringify(captured), /PRIVATE_/);
+  f.releaseIdle(); await prompted;
+  await facade.dispose();
+  assert.equal(f.listenerCount(), 0);
+});
+
+test("npm public waterfall streams only branded requests of the exact live Agent and leaves provider chunks unchanged", async () => {
+  const f = fixture(true, { exposeLiveAgent: true });
+  const branded = new WeakSet<object>();
+  const facade = createDshHostFacade({ context: f.context, sessionId: f.session.id, workspacePath: "/readonly/workspace",
+    provider: "deepseek-official", model: "deepseek-v4-flash", messageFactory: (text) => ({ text }),
+    moduleImporter: async () => ({ isAgentLoopRequest(request: object) { return branded.has(request); } }) });
+  const captured: DshLiveOutputEvent[] = [];
+  facade.onLiveOutput!((event) => captured.push(event));
+  await facade.open(); f.holdIdle();
+  const prompted = facade.prompt("current request");
+  while (f.calls.followup === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+  f.appendEvent("turn/start", { turn: 7 }); f.appendEvent("step/start", { turn: 7, step: 1 });
+  const request = Object.freeze({ sessionId: f.session.id, provider: "deepseek-official", model: "deepseek-v4-flash",
+    system: "PRIVATE_SYSTEM", messages: ["PRIVATE_HISTORY"], tools: ["PRIVATE_SCHEMA"] });
+  const chunks = [ { type: "block-start", index: 0, blockType: "text" }, { type: "text-delta", index: 0, text: "live " },
+    { type: "block-end", index: 0, block: { type: "text", text: "live text" } }, { type: "finish", reason: { kind: "stop" } } ];
+  assert.deepEqual(await f.stream(request, chunks), chunks);
+  assert.equal(captured.length, 0, "same-session auxiliary LLM calls are not conversation work");
+  const unrelated = Object.freeze({ ...request, sessionId: "other-session" }); branded.add(unrelated);
+  const wrongModel = Object.freeze({ ...request, model: "other-model" }); branded.add(wrongModel);
+  await f.stream(unrelated, chunks); await f.stream(wrongModel, chunks);
+  assert.equal(captured.length, 0);
+  branded.add(request);
+  assert.deepEqual(await f.stream(request, chunks), chunks);
+  assert.equal(captured.filter((event) => event.kind === "assistant-stream").length, 5);
+  assert.doesNotMatch(JSON.stringify(captured), /PRIVATE_|other-session|other-model/);
+  f.appendEvent("turn/end", { turn: 7, reason: { kind: "completed" } });
+  await f.stream(request, [{ type: "text-delta", index: 0, text: "PRIVATE_LATE_TOKEN" }]);
+  assert.doesNotMatch(JSON.stringify(captured), /PRIVATE_LATE_TOKEN/);
+  f.releaseIdle(); await prompted; await facade.dispose();
+});
+
+test("npm streaming refuses a branded call when the exact live Agent registry owner is unavailable", async () => {
+  const f = fixture(true);
+  const facade = createDshHostFacade({ context: f.context, sessionId: f.session.id, workspacePath: "/readonly/workspace",
+    provider: "deepseek-official", model: "deepseek-v4-flash", messageFactory: (text) => ({ text }),
+    moduleImporter: async () => ({ isAgentLoopRequest() { return true; } }) });
+  const captured: DshLiveOutputEvent[] = [];
+  facade.onLiveOutput!((event) => captured.push(event));
+  await facade.open(); f.holdIdle(); const prompted = facade.prompt("current request");
+  while (f.calls.followup === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+  f.appendEvent("turn/start", { turn: 1 }); f.appendEvent("step/start", { turn: 1, step: 1 });
+  await f.stream(Object.freeze({ sessionId: f.session.id, provider: "deepseek-official", model: "deepseek-v4-flash" }),
+    [{ type: "text-delta", index: 0, text: "PRIVATE_AMBIGUOUS_TOKEN" }]);
+  assert.equal(captured.length, 0);
+  f.releaseIdle(); await prompted; await facade.dispose();
+});
+
+test("pinned npm Cordis waterfall and process-local loop marker publish actual transient output without a model", {
+  skip: !process.env.GATHERTHREAD_DSH_NPM_ROOT,
+}, async () => {
+  const require = createRequire(path.join(process.env.GATHERTHREAD_DSH_NPM_ROOT!, "package.json"));
+  const manifest = require("./package.json") as { name: string; version: string };
+  assert.equal(manifest.name, DSH_NPM_COMPATIBILITY.package);
+  assert.equal(manifest.version, DSH_NPM_COMPATIBILITY.version);
+  const cordis = await import(pathToFileURL(require.resolve("@deepseek-ai/cordis")).href);
+  const llm = await import(pathToFileURL(require.resolve("@deepseek-ai/dsh-llm")).href);
+  assert.equal(typeof llm.isAgentLoopRequest, "function");
+  assert.equal(typeof llm.markAgentLoopRequest, "function");
+  assert.equal(llm.expandAssistantStream, undefined, "the pinned npm version needs the public waterfall fallback");
+  const real = new cordis.Context();
+  const f = fixture(true, { exposeLiveAgent: true });
+  const facade = createDshHostFacade({ context: {
+    get: f.context.get, on: real.on.bind(real), effect: f.context.effect,
+  }, sessionId: f.session.id, workspacePath: "/readonly/workspace", provider: "deepseek-official", model: "deepseek-v4-flash",
+    messageFactory: (text) => ({ text }), moduleImporter: async () => llm });
+  const updates: LiveOutputUpdate[] = [];
+  const mapper = createDshLiveEventMapper(createLiveOutputPublisher({ schedule: false, intervalMs: 0,
+    publish(update) { updates.push(structuredClone(update)); } }));
+  facade.onLiveOutput!((event) => mapper.onEvent(event));
+  await facade.open(); f.holdIdle(); const prompted = facade.prompt("fixture request, no model");
+  while (f.calls.followup === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+  for (const [type, data] of [["turn/start", { turn: 1 }], ["step/start", { turn: 1, step: 1 }]] as const) {
+    const event = { type, data, seq: f.events.length, time: 1700000000000 };
+    f.events.push(event); real.emit("session/event", f.session, event);
+  }
+  const chunks = [ { type: "block-start", index: 0, blockType: "text" },
+    { type: "text-delta", index: 0, text: "Actual npm transient text " },
+    { type: "block-end", index: 0, block: { type: "text", text: "Actual npm transient text" } },
+    { type: "finish", reason: { kind: "stop" } } ];
+  const branded = llm.markAgentLoopRequest(Object.freeze({ sessionId: f.session.id, provider: "deepseek-official",
+    model: "deepseek-v4-flash", system: "PRIVATE_SYSTEM", messages: ["PRIVATE_HISTORY"] }));
+  const collected: unknown[] = [];
+  for await (const chunk of real.waterfall({}, "llm/stream", { ...branded }, async function* () { yield* chunks; })) collected.push(chunk);
+  assert.equal(updates.length, 0, "copying a request must not copy its process-local identity");
+  for await (const chunk of real.waterfall({}, "llm/stream", branded, async function* () { yield* chunks; })) collected.push(chunk);
+  await mapper.finish();
+  assert.deepEqual(collected, [...chunks, ...chunks], "wrapping must preserve every original chunk");
+  assert.equal(updates.at(-1)?.content, "Actual npm transient text");
+  assert.doesNotMatch(JSON.stringify(updates), /PRIVATE_|dsh-session-1/);
+  f.releaseIdle(); await prompted; await facade.dispose();
+});
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

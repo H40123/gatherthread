@@ -355,14 +355,25 @@ export class LocalBridge {
         runtime,
         ...(this.#api.appendAgentProgress === undefined ? {} : {
           publishProgress: async (update) => {
-            const content = redactText(update.content).trim();
-            if (!content) return;
-            await this.#appendProgressFailSoft(request, runtime, claimAttempt, {
+            const redacted = redactText(update.content);
+            if (!redacted.trim() && update.plan === undefined) return false;
+            // A streamed fragment is one slice of a longer message. Trimming it
+            // would delete the whitespace that joins it to its neighbours and
+            // silently corrupt the reader's merged view, so it travels verbatim.
+            const content = update.phase === "stream" ? redacted : redacted.trim();
+            return this.#appendProgressFailSoft(request, runtime, claimAttempt, {
               idempotencyKey: `${runtime.deviceId}:${hash(request.id)}:${claimAttempt}:progress:${hash(update.id)}`,
               payload: redactValue({
                 content,
                 phase: update.phase ?? "commentary",
                 ...(update.status === undefined ? {} : { status: update.status }),
+                ...(update.streamId === undefined ? {} : { stream_id: update.streamId }),
+                ...(update.streamMode === undefined ? {} : { stream_mode: update.streamMode }),
+                ...(update.streamKind === undefined ? {} : { stream_kind: update.streamKind }),
+                ...(update.streamRevision === undefined ? {} : { stream_revision: update.streamRevision }),
+                ...(update.streamState === undefined ? {} : { stream_state: update.streamState }),
+                ...(update.title === undefined ? {} : { title: update.title }),
+                ...(update.plan === undefined ? {} : { plan: update.plan }),
                 ...(update.occurredAt === undefined ? {} : { occurred_at: update.occurredAt }),
                 capture_fidelity: "harness_transcript",
                 source_harness: runtime.harness,
@@ -424,8 +435,8 @@ export class LocalBridge {
     runtime: RegisteredRuntime,
     claimAttempt: number,
     input: { idempotencyKey: string; payload: unknown },
-  ): Promise<void> {
-    if (this.#api.appendAgentProgress === undefined) return;
+  ): Promise<boolean> {
+    if (this.#api.appendAgentProgress === undefined) return false;
     try {
       await this.#api.appendAgentProgress(request.sessionId, request.id, {
         runtimeId: runtime.id,
@@ -433,9 +444,11 @@ export class LocalBridge {
         idempotencyKey: input.idempotencyKey,
         payload: input.payload,
       });
+      return true;
     } catch {
       // Progress is supplementary. A transient progress upload failure must not
       // strand an already-claimed request before its canonical final response.
+      return false;
     }
   }
 

@@ -4,6 +4,10 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 ## [Unreleased]
 
+### Added
+
+- Stream live answers, native-visible thinking summaries, tool activity and plans across Codex, DeepSeek Harness and Cloud Agent. Keep independent collapsible sections, paused partial output, exact quoted revisions and stable history position. Bounded cumulative snapshots preserve interleaving/replay, redact split credentials and retry identical updates until acknowledgement; Codex hidden reasoning and unrelated local conversations remain excluded. Matching native connector/plugin builds and a matching hosted image are required. See [ADR-0045](docs/adr/0045-streamed-public-agent-output.md).
+
 ### Fixed
 
 - Accept cloud trial requests immediately and deliver terminal replies through canonical replay. Restore author-only Pause/Resume on the existing composer button, exact-model retries without a local runtime, and shared selected-history summaries through the chosen cloud model. Allow settings to be saved before connecting a local Agent; empty selections explain missing sources instead of leaving an inert summary button. Keep local-file transfer authorization and Codex/DSH routing unchanged.
