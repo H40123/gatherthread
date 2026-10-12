@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import struct
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.request import urlopen
 
 
@@ -156,6 +156,28 @@ def validate_bundle(app: Path) -> None:
 def app_file_hashes(app: Path) -> dict[str, str]:
     return {path.relative_to(app).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(app.rglob("*")) if path.is_file()}
+
+
+def copy_reviewed_plugin(destination: Path) -> None:
+    """Use Git's reviewed inventory, not arbitrary untracked/ignored worktree files."""
+    try:
+        raw = subprocess.check_output(["git", "ls-files", "-z", "--", "plugins/gatherthread"], cwd=ROOT)
+        selected = [PurePosixPath(name) for name in raw.decode("utf-8").split("\0") if name]
+        if not selected or len(selected) > 256 or len(set(selected)) != len(selected):
+            raise ValueError("Missing or ambiguous reviewed plugin inventory")
+        source_root = ROOT / "plugins/gatherthread"
+        for relative in selected:
+            if relative.parts[:2] != ("plugins", "gatherthread") or any(part in {".", ".."} for part in relative.parts):
+                raise ValueError("Reviewed plugin path escaped its source directory")
+            source = ROOT / relative
+            if (source.is_symlink() or not source.is_file() or source.stat().st_nlink != 1
+                    or not source.resolve().is_relative_to(source_root.resolve())
+                    or any(parent.is_symlink() for parent in source.parents if parent != ROOT and ROOT in parent.parents)):
+                raise ValueError("Reviewed plugin contains linked or non-regular source")
+        for relative in selected:
+            copy(ROOT / relative, destination / relative.relative_to("plugins/gatherthread"))
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        raise SystemExit("macOS reviewed plugin packaging failed") from error
 
 
 def validate_provenance(provenance: dict, app: Path) -> None:
@@ -312,7 +334,7 @@ def main() -> None:
     shutil.copytree(connector, RESOURCES / "connector")
     for name in ("package.json", "LICENSE", "NOTICE"):
         copy(ROOT / "packages/codex-connect" / name, RESOURCES / "connector" / name)
-    shutil.copytree(ROOT / "plugins/gatherthread", RESOURCES / "plugins/gatherthread")
+    copy_reviewed_plugin(RESOURCES / "plugins/gatherthread")
     copy(ROOT / ".agents/plugins/marketplace.json", RESOURCES / "marketplace.json")
     binary = APP / "Contents/MacOS/GatherThreadLauncher"
     validate_binary_minimum(binary)
