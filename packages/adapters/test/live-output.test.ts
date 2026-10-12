@@ -150,3 +150,21 @@ test("continuous first-stream updates cannot starve live plans or tools", async 
   assert.ok(app.output.length <= 7, "fairness must preserve the shared cadence");
   await app.stream.finish();
 });
+
+test("encrypted private PEM blocks stay masked when complete, abandoned or split", async () => {
+  const header = ["-----BEGIN", "ENCRYPTED", "PRIVATE KEY-----"].join(" ");
+  const footer = ["-----END", "ENCRYPTED", "PRIVATE KEY-----"].join(" ");
+  const privateValue = ["SYNTHETIC", "PEM", "BODY"].join("_");
+  for (const mode of ["complete", "abandoned", "split"] as const) {
+    const app = fixture();
+    const body = `${header}\n${privateValue}\n${mode === "abandoned" ? "" : footer + "\n"}`;
+    if (mode === "split") {
+      for (let index = 0; index < body.length; index += 9) {
+        app.advance(); await app.stream.onDelta("a", body.slice(index, index + 9));
+      }
+    } else await app.stream.onDelta("a", body);
+    await app.stream.finish(mode !== "abandoned");
+    assert.doesNotMatch(JSON.stringify(app.output), /SYNTHETIC_PEM_BODY|SYNTHETIC_PEM/, mode);
+    assert.match(app.output.at(-1)?.content ?? "", /REDACTED/, mode);
+  }
+});

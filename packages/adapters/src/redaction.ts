@@ -3,7 +3,7 @@ import type { TranscriptEvent } from "./types.js";
 const REDACTED = "[REDACTED]";
 
 const DEFAULT_SECRET_PATTERNS: readonly RegExp[] = [
-  /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|$)/g,
+  /-----BEGIN (?:ENCRYPTED |RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:ENCRYPTED |RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|$)/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\b(?:ghp|github_pat|glpat|sk|xox[baprs])[-_][A-Za-z0-9_-]{16,}\b/g,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi,
