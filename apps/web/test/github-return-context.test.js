@@ -10,7 +10,7 @@ const context = { userId: "user-fixture", projectId: "project-fixture", sessionI
 
 test("GitHub return hints contain only bounded navigation data and are consumed once", () => {
   const saved = storage();
-  rememberGithubReturn(saved, { ...context, password: "must-not-copy", token: "must-not-copy" }, 1000);
+  rememberGithubReturn(saved, { ...context, password: "fixture", token: "fixture" }, 1000);
   assert.deepEqual(JSON.parse([...saved.entries.values()][0]), {
     user_id: context.userId, project_id: context.projectId, session_id: context.sessionId, created_at: 1000,
   });
