@@ -53,3 +53,4 @@ Current account guidance (2026-10-08): `main` uses verified-email registration a
 | [0045](0045-streamed-public-agent-output.md) | Live answers, visible thinking, tools and plans across Agents | proposed / implementation review | 2026-10-12 |
 | [0046](0046-project-invitation-links.md) | Project invitation links with explicit authenticated confirmation | proposed / implementation review | 2026-10-12 |
 | [0048](0048-storage-first-github-setup.md) | Storage-first GitHub setup and same-project authorization return | proposed / implementation review | 2026-10-12 |
+| [0049](0049-account-owned-cloud-api-configuration.md) | Private account-owned Cloud Agent API configuration | proposed / implementation review | 2026-10-12 |

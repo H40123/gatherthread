@@ -15,7 +15,7 @@
       content="GatherThread, a lightweight multi-harness collaboration client."
     />
     <title>GatherThread</title>
-    <link rel="stylesheet" href="./src/styles.css?v=20261012-github-3" />
+    <link rel="stylesheet" href="./src/styles.css?v=20261012-personal-1" />
   </head>
   <body>
     <div id="boot-screen" class="boot-screen" role="status" aria-live="polite"><img src="./favicon-32x32.png" alt="" width="32" height="32"><span>GatherThread</span></div>
@@ -1201,6 +1201,7 @@ codex plugin add gatherthread@gatherthread</code>
         <div class="settings-layout">
           <nav class="settings-navigation" aria-label="Settings sections">
             <a href="#settings-general">General</a>
+            <a href="#settings-personal-api">Personal API</a>
             <a href="#settings-profile">Profile</a>
             <a href="#settings-device">This device</a>
             <a href="#settings-account">Account &amp; privacy</a>
@@ -1237,6 +1238,34 @@ codex plugin add gatherthread@gatherthread</code>
                   <button class="button button-secondary" type="button" data-onboarding-topic="browse">Browse example project</button>
                 </div>
               </div>
+            </section>
+
+            <section id="settings-personal-api" class="settings-section" aria-labelledby="settings-personal-api-title">
+              <div class="settings-section-heading">
+                <div><p class="eyebrow">Personal API</p><h3 id="settings-personal-api-title">Use your own cloud model</h3></div>
+                <p>Your provider bills your own usage. GatherThread still applies shared-server safety limits.</p>
+              </div>
+              <p class="field-help">Only your account can use these connections. Saved keys are encrypted on the server and never shown again. Choose one under Cloud Agent when sending a request.</p>
+              <div class="avatar-settings-actions">
+                <button id="cloud-api-new" class="button button-secondary" type="button">Add API connection</button>
+                <button id="cloud-api-refresh" class="text-button" type="button">Refresh connections</button>
+              </div>
+              <ul id="cloud-api-list" class="account-device-list" aria-label="My API connections"></ul>
+              <fieldset id="cloud-api-editor" class="personal-api-editor" hidden>
+                <legend>API connection</legend>
+                <label class="settings-row" for="cloud-api-provider"><span><strong>Provider</strong><small>Choose the service that issued your key.</small></span><select id="cloud-api-provider"></select></label>
+                <p class="field-help"><code id="cloud-api-endpoint" data-i18n-skip></code> · <a id="cloud-api-docs" target="_blank" rel="noopener noreferrer">Provider instructions</a></p>
+                <label class="settings-row" for="cloud-api-label"><span><strong>Connection name</strong><small>A short name to recognize this model.</small></span><input id="cloud-api-label" type="text" autocomplete="off" maxlength="80" /></label>
+                <label class="settings-row" for="cloud-api-model"><span><strong>Model ID</strong><small>Copy the exact model ID from your provider.</small></span><input id="cloud-api-model" type="text" autocomplete="off" spellcheck="false" maxlength="160" /></label>
+                <label class="settings-row" for="cloud-api-key"><span><strong>API key</strong><small>Submitted securely once. Leave blank when editing to keep the saved key.</small></span><input id="cloud-api-key" type="password" autocomplete="off" maxlength="4096" spellcheck="false" /></label>
+                <label class="settings-row settings-toggle" for="cloud-api-enabled"><span><strong>Enable this connection</strong><small>Pausing stops new requests and any active task using it.</small></span><input id="cloud-api-enabled" type="checkbox" role="switch" checked /><span class="settings-switch-visual" aria-hidden="true"></span></label>
+                <div class="avatar-settings-actions">
+                  <button id="cloud-api-cancel" class="button button-secondary" type="button">Cancel</button>
+                  <button id="cloud-api-save" class="button button-primary" type="button">Save API connection</button>
+                  <button id="cloud-api-delete" class="text-button danger-text-button" type="button" hidden>Delete API connection</button>
+                </div>
+              </fieldset>
+              <p id="cloud-api-status" class="field-help" role="status" aria-live="polite" data-i18n-skip></p>
             </section>
 
             <section id="settings-profile" class="settings-section" aria-labelledby="settings-profile-title">
@@ -1453,6 +1482,6 @@ codex plugin add gatherthread@gatherthread</code>
       <button id="dismiss-attention-notice" class="attention-notice-dismiss" type="button" aria-label="Dismiss notification">×</button>
     </div>
     <div id="announcement" class="sr-only" aria-live="polite" aria-atomic="true"></div>
-    <script type="module" src="./src/bootstrap.js?v=20261012-github-3"></script>
+    <script type="module" src="./src/bootstrap.js?v=20261012-personal-1"></script>
   </body>
 </html>

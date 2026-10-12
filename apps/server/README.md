@@ -40,6 +40,9 @@ Successful JSON responses use `{ "data": ... }`; failures use `{ "error": { "cod
 | `POST` | `/v1/device-authorizations/claim` | Claim a delegated authorization on a new device |
 | `DELETE` | `/v1/devices/:device_id` | Revoke an owned device token and runtimes |
 | `GET` | `/v1/me` | Return the authenticated user and device identity |
+| `GET` | `/v1/cloud-api` | Read only the signed-in account's personal API metadata and fixed provider presets; browser session required |
+| `PUT/DELETE` | `/v1/cloud-api/:uuid` | Save or delete an owned API configuration with exact revision; keys are write-only |
+| `GET` | `/v1/sessions/:session_id/hosted-agent-requests/:request_id/selection` | Read the requester's immutable model selection for retry/resume; current write access required |
 | `POST/GET` | `/v1/projects` | Create an empty project or list projects visible to the actor |
 | `GET` | `/v1/projects/:project_id` | Read one visible project and the actor's role |
 | `PATCH` | `/v1/projects/:project_id` | Owner-only idempotent project title update |
@@ -66,6 +69,8 @@ Successful JSON responses use `{ "data": ... }`; failures use `{ "error": { "cod
 | `POST` | `/v1/realtime-ticket` | Issue a short-lived, one-use browser WebSocket ticket |
 
 The server derives actor identity from the credential and always assigns event ID (unless the client supplies a stable one), sequence, and canonical server timestamp. A local capture time is retained only as payload metadata and cannot change project ordering. An idempotency key is scoped to one session and is bound to the actor, event type, visibility, reply target, payload, and runtime; only an identical retry receives the original event, while a different operation returns `409 idempotency_conflict`. `agent_progress` requires the exact owned runtime and an active matching request claim; the generic event route cannot forge it. `agent_response`, `tool_call`, and `tool_result` appends require an owned execution `runtime_id`. A runtime may hold only one active request claim. `human_chat` is only an event append and has no execution side effect.
+
+Personal Cloud Agent configurations additionally require an independent operator-managed encryption key. Existing free Cloud Agent and local Codex/DSH choices are unchanged when it is absent. Reads never return saved API keys; model requests pin the private configuration revision and cannot follow changed settings. See [personal API setup](../../docs/HOSTED_AGENT.md#personal-api-storage) and [the strict contract](../../docs/INTERFACE_CONTRACTS.md#personal-cloud-api-configuration) for supported transports, quotas and safe failures.
 
 `GET /v1/projects/:project_id/sessions` returns integration-friendly summaries with their project ID:
 

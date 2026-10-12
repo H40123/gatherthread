@@ -75,6 +75,10 @@ The beginner example has a separate opaque-origin sandbox, fresh mock API state 
 
 ## Threat model
 
+Personal Cloud API keys are account-private, write-only and encrypted at rest with an independent operator key and AES-GCM AAD over account/configuration/revision/routing metadata. Keys, digests, ciphertext, suffixes and provider error bodies never enter browser reads, canonical events, executor controls or logs. Known/exact key-paste forms in public labels/model IDs fail before persistence. Eight own configurations and bounded inputs prevent unbounded key storage. Only fixed public HTTPS presets and host-created standard headers are supported; arbitrary URLs/headers and redirects are unavailable. Changing provider requires a freshly submitted key and cannot forward the previous vendor key implicitly.
+
+Private run pins commit with reservations. Changes/disable/delete, account/device revocation, role changes and pauses fence dispatch, every response chunk, progress and checkpoints; slots remain held until exit. Requester-only selection validates current write access and exact request/user/binding. Retry/continuation fail after changes, never fall back. Personal billing is separate but common cooldown/concurrency/resource caps remain. Account deletion cascades keys; backups follow the existing 14-day policy. The trusted server can decrypt keys for authorized work; at-rest encryption does not protect from a compromised host. See [ADR-0049](adr/0049-account-owned-cloud-api-configuration.md).
+
 | ID | Threat | Required mitigation | Verification gate |
 |---|---|---|---|
 | T1 | Forged actor or runtime provenance | derive identity from credential; bind device and runtime server-side; reject client actor overrides | authorization and runtime-claim E2E |
