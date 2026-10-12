@@ -11,6 +11,7 @@
     || hash.has("project")
     || hash.has("session")
     || hash.has("dsh-pair")
+    || hash.has("invite")
     || fragment === "main-content"
     || fragment.indexOf("settings-") === 0;
 

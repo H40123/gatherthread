@@ -1,6 +1,7 @@
 import { avatarImage } from "./avatars.js";
 import { HostedGithubStatusSchema, HostedGithubAuthorizationSchema, HostedGithubConnectionSchema, HostedGithubDisconnectionSchema,
-  HostedGithubTaskSchema, HostedGithubTaskListSchema, HostedAgentAcceptedSchema, HostedAgentPausedSchema } from "@gatherthread/protocol";
+  HostedGithubTaskSchema, HostedGithubTaskListSchema, HostedAgentAcceptedSchema, HostedAgentPausedSchema,
+  ProjectInvitationPreviewSchema } from "@gatherthread/protocol";
 import {
   createIdempotencyKey,
   isExecutionRuntime,
@@ -494,9 +495,19 @@ export class HttpCollaborationApi {
     return { actor };
   }
 
-  async acceptInvitation(inviteToken) {
+  async previewInvitation(inviteToken, { signal } = {}) {
+    const response = await this.request("/v1/invitations/preview", {
+      method: "POST", signal, body: JSON.stringify({ invite_token: inviteToken }),
+    });
+    const parsed = ProjectInvitationPreviewSchema.safeParse(response);
+    if (!parsed.success) throw new ApiError("Invitation response is invalid. Try again.", { code: "invalid_response" });
+    return parsed.data;
+  }
+
+  async acceptInvitation(inviteToken, { signal } = {}) {
     const result = await this.request("/v1/invitations/accept", {
       method: "POST",
+      signal,
       body: JSON.stringify({ invite_token: inviteToken }),
     });
     return { ...result, invitation: normalizeInvitation(result.invitation) };
@@ -1425,7 +1436,7 @@ export class MockCollaborationApi {
       throw new ApiError("Choose a valid role and expiry.", { status: 422, code: "invalid_invitation" });
     }
     const id = `invite-${createIdempotencyKey("mock").split(":").at(-1)}`;
-    const inviteToken = `mock-invite-${createIdempotencyKey("secret")}`;
+    const inviteToken = `gti_mock_${createIdempotencyKey("secret").split(":").at(-1)}`;
     const invitation = normalizeInvitation({
       id,
       project_id: projectId,
@@ -1438,7 +1449,7 @@ export class MockCollaborationApi {
       claimed_at: null,
       claimed_by_user_id: null,
     });
-    this.invitations.set(id, { ...invitation, inviteToken });
+    this.invitations.set(id, { ...invitation, inviteToken, inviterDisplayName: this.currentUser.username });
     return { invitation: structuredClone(invitation), inviteToken };
   }
 
@@ -1446,7 +1457,7 @@ export class MockCollaborationApi {
     await this.#wait();
     return [...this.invitations.values()]
       .filter((invitation) => invitation.projectId === projectId)
-      .map(({ inviteToken: _inviteToken, ...invitation }) => structuredClone(normalizeInvitation(invitation)));
+      .map(({ inviteToken: _inviteToken, inviterDisplayName: _inviterName, ...invitation }) => structuredClone(normalizeInvitation(invitation)));
   }
 
   async revokeInvitation(projectId, invitationId) {
@@ -1458,6 +1469,23 @@ export class MockCollaborationApi {
     return structuredClone(normalizeInvitation(invitation));
   }
 
+  async previewInvitation(inviteToken) {
+    await this.#wait();
+    const invitation = [...this.invitations.values()].find(item => item.inviteToken === inviteToken);
+    const project = this.projects.find(item => item.id === invitation?.projectId);
+    const status = invitation && normalizeInvitation(invitation).status;
+    const member = Boolean(project?.role);
+    if (!project || project.state !== "active" || !invitation || invitation.expiresAt <= new Date().toISOString()
+      || !["pending", "claimed"].includes(status)
+      || (status === "claimed" && !(member && invitation.claimedByUserId === this.currentUser.id))) {
+      throw new ApiError("Invitation is invalid or unavailable.", { status: 410, code: "invitation_unavailable" });
+    }
+    return ProjectInvitationPreviewSchema.parse({
+      project: { id: project.id, title: project.name }, inviter_display_name: invitation.inviterDisplayName ?? "Project owner",
+      role: invitation.role, created_at: invitation.createdAt, expires_at: invitation.expiresAt, already_member: member,
+    });
+  }
+
   async acceptInvitation(inviteToken) {
     await this.#wait();
     const invitation = [...this.invitations.values()].find((item) => item.inviteToken === inviteToken);
@@ -1465,7 +1493,9 @@ export class MockCollaborationApi {
       throw new ApiError("Invitation is invalid or unavailable.", { status: 401, code: "unauthorized" });
     }
     const projectSessions = this.sessions.filter((item) => item.projectId === invitation.projectId);
-    if (projectSessions.some((session) => session.members.some((member) => member.userId === this.currentUser.id))) {
+    const project = this.projects.find(item => item.id === invitation.projectId);
+    if (!project || project.state !== "active") throw new ApiError("Invitation is invalid or unavailable.", { status: 401, code: "unauthorized" });
+    if (project.role || projectSessions.some((session) => session.members.some((member) => member.userId === this.currentUser.id))) {
       throw new ApiError("You are already a member of this project.", { status: 409, code: "conflict" });
     }
     for (const session of projectSessions) {
@@ -1473,6 +1503,7 @@ export class MockCollaborationApi {
     }
     invitation.claimedAt = new Date().toISOString();
     invitation.claimedByUserId = this.currentUser.id;
+    project.role = invitation.role;
     return { actor: structuredClone(this.currentUser), invitation: structuredClone(normalizeInvitation(invitation)) };
   }
 

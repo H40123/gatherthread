@@ -84,7 +84,7 @@ test("product home enters the same-origin app and preserves operational deep lin
     assert.ok(link.href.startsWith("./"), `Stay on the selected server: ${link.href}`);
   }
 
-  for (const deepLink of ["project", "session", "dsh-pair"]) {
+  for (const deepLink of ["project", "session", "dsh-pair", "invite"]) {
     assert.match(boot, new RegExp(`hash\\.has\\("${deepLink}"\\)`));
   }
   assert.match(boot, /current\.searchParams\.get\("mock"\) === "1"/u);
