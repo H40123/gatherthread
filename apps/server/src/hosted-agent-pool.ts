@@ -30,9 +30,11 @@ const endpointSchema = z.object({
 
 export interface HostedEndpoint {
   id: string; profileId: string; label: string;
-  provider: "cloudflare-workers-ai" | "deepseek" | "openai-compatible";
+  provider: "cloudflare-workers-ai" | "deepseek" | "openai-compatible" | "anthropic";
   model: string; baseUrl: string; apiToken: string; quotaGroup: string;
   dailyRuns: number | null; maxConcurrent: number;
+  transport?: "openai-chat" | "anthropic-messages";
+  personal?: { configId: string; configRevision: string; userId: string };
 }
 
 export function isSiliconFlowFreeEndpoint(endpoint: Pick<HostedEndpoint, "provider" | "baseUrl" | "model">): boolean {

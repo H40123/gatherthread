@@ -55,6 +55,7 @@ import { CODE_REPOSITORY_SCHEMA } from "./code-repository-schema.js";
 import type { HostedAllocation, HostedRunLimits } from "./hosted-agent-pool.js";
 import { HOSTED_USER_MIN_INTERVAL_SECONDS, HOSTED_USER_MAX_CONCURRENT } from "./hosted-agent-pool.js";
 import { HOSTED_AGENT_SCHEMA } from "./hosted-agent-schema.js";
+import { CLOUD_API_SCHEMA } from "./cloud-api-schema.js";
 import { ApiError, agentRequestAlreadyClaimed, agentRequestAlreadyCompleted, agentRequestFailed, conflict, forbidden, idempotencyConflict, notFound, runtimeBusy, sessionQuotaExceeded, snapshotStorageQuotaExceeded, storageQuotaExceeded, unauthorized } from "./errors.js";
 import { redactJson } from "./redaction.js";
 import { hostedFailureCode, hostedFailureContent } from "./hosted-agent-errors.js";
@@ -980,6 +981,7 @@ export class CollaborationDatabase {
     this.sqlite.exec(CODE_REPOSITORY_SCHEMA);
     this.transaction(() => {
       this.sqlite.exec(HOSTED_AGENT_SCHEMA);
+      this.sqlite.exec(CLOUD_API_SCHEMA);
       // Earlier previews cascaded executor slots on account deletion. Rebuild
       // atomically, preserving reservations while dropping only the user link.
       const activeUser = this.sqlite.prepare("PRAGMA foreign_key_list(hosted_agent_active_runs)")
