@@ -228,6 +228,122 @@ class DmgPackagingTests(unittest.TestCase):
                              hashlib.sha256(output.read_bytes()).hexdigest())
             self.assertEqual(json.loads((root / "release.dmg.provenance.json").read_text()), provenance)
 
+    def create_fixture(self, command, **_kwargs):
+        if command[:2] == ["hdiutil", "create"]:
+            Path(command[-1]).write_bytes(b"candidate fixture")
+
+    def test_existing_checksum_and_provenance_are_never_overwritten(self):
+        for suffix in (".sha256", ".provenance.json"):
+            for kind in ("file", "symlink", "dangling-symlink"):
+                with self.subTest(suffix=suffix, kind=kind), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    app = self.bundle(root / "source")
+                    output = root / "release.dmg"
+                    sidecar = root / (output.name + suffix)
+                    unrelated = root / "unrelated.txt"
+                    unrelated.write_text("keep unrelated content")
+                    if kind == "file":
+                        sidecar.write_text("keep existing sidecar")
+                    else:
+                        sidecar.symlink_to(unrelated if kind == "symlink" else root / "missing.txt")
+                    with patch.object(BUILD.subprocess, "run", side_effect=self.create_fixture), \
+                            patch.object(BUILD, "verify_dmg"):
+                        with self.assertRaises((OSError, SystemExit)):
+                            BUILD.create_dmg(app, output, self.provenance(app))
+                    self.assertFalse(output.exists())
+                    self.assertEqual(unrelated.read_text(), "keep unrelated content")
+                    if kind == "file":
+                        self.assertEqual(sidecar.read_text(), "keep existing sidecar")
+                    else:
+                        self.assertTrue(sidecar.is_symlink())
+                        if kind == "symlink":
+                            self.assertEqual(sidecar.read_text(), "keep unrelated content")
+                    other = ".provenance.json" if suffix == ".sha256" else ".sha256"
+                    self.assertFalse((root / (output.name + other)).exists())
+                    self.assertFalse((root / "missing.txt").exists())
+
+    def test_sidecar_created_during_validation_is_preserved(self):
+        for suffix in (".sha256", ".provenance.json"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                app = self.bundle(root / "source")
+                output = root / "release.dmg"
+                sidecar = root / (output.name + suffix)
+                unrelated = root / "unrelated.txt"
+                unrelated.write_text("keep concurrent content")
+                def install_link(*_args):
+                    sidecar.symlink_to(unrelated)
+                with patch.object(BUILD.subprocess, "run", side_effect=self.create_fixture), \
+                        patch.object(BUILD, "verify_dmg", side_effect=install_link):
+                    with self.assertRaises((OSError, SystemExit)):
+                        BUILD.create_dmg(app, output, self.provenance(app))
+                self.assertFalse(output.exists())
+                self.assertTrue(sidecar.is_symlink())
+                self.assertEqual(unrelated.read_text(), "keep concurrent content")
+                other = ".provenance.json" if suffix == ".sha256" else ".sha256"
+                self.assertFalse((root / (output.name + other)).exists())
+
+    def test_sidecar_write_failure_never_leaves_a_partial_release(self):
+        original = Path.write_text
+        for suffix in (".sha256", ".provenance.json"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                app = self.bundle(root / "source")
+                output = root / "release.dmg"
+                def fail_sidecar(path, *args, **kwargs):
+                    if path.name.endswith(suffix):
+                        raise OSError("synthetic sidecar write failure")
+                    return original(path, *args, **kwargs)
+                with patch.object(BUILD.subprocess, "run", side_effect=self.create_fixture), \
+                        patch.object(BUILD, "verify_dmg"), patch.object(Path, "write_text", fail_sidecar):
+                    with self.assertRaises((OSError, SystemExit)):
+                        BUILD.create_dmg(app, output, self.provenance(app))
+                for suffix in ("", ".sha256", ".provenance.json"):
+                    self.assertFalse((root / (output.name + suffix)).exists())
+
+    def test_promotion_failure_rolls_back_only_owned_release_files(self):
+        original_link = os.link
+        for suffix in (".sha256", ".provenance.json", ""):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                app = self.bundle(root / "source")
+                output = root / "release.dmg"
+                unrelated = root / "unrelated.txt"
+                unrelated.write_text("keep unrelated file")
+                def fail_link(source, destination, **kwargs):
+                    if Path(destination).name == output.name + suffix:
+                        raise OSError("synthetic promotion failure")
+                    return original_link(source, destination, **kwargs)
+                with patch.object(BUILD.subprocess, "run", side_effect=self.create_fixture), \
+                        patch.object(BUILD, "verify_dmg"), patch.object(BUILD.os, "link", side_effect=fail_link):
+                    with self.assertRaises((OSError, SystemExit)):
+                        BUILD.create_dmg(app, output, self.provenance(app))
+                for suffix in ("", ".sha256", ".provenance.json"):
+                    self.assertFalse((root / (output.name + suffix)).exists())
+                self.assertEqual(unrelated.read_text(), "keep unrelated file")
+
+    def test_rollback_preserves_a_concurrently_replaced_checksum(self):
+        original_link = os.link
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = self.bundle(root / "source")
+            output = root / "release.dmg"
+            checksum = root / (output.name + ".sha256")
+            def replace_before_failure(source, destination, **kwargs):
+                if Path(destination).name == output.name + ".provenance.json":
+                    checksum.unlink()
+                    checksum.write_text("keep concurrent replacement")
+                    raise OSError("synthetic promotion failure after replacement")
+                return original_link(source, destination, **kwargs)
+            with patch.object(BUILD.subprocess, "run", side_effect=self.create_fixture), \
+                    patch.object(BUILD, "verify_dmg"), \
+                    patch.object(BUILD.os, "link", side_effect=replace_before_failure):
+                with self.assertRaises((OSError, SystemExit)):
+                    BUILD.create_dmg(app, output, self.provenance(app))
+            self.assertEqual(checksum.read_text(), "keep concurrent replacement")
+            self.assertFalse(output.exists())
+            self.assertFalse((root / (output.name + ".provenance.json")).exists())
+
     def test_native_guide_keeps_critical_security_and_hooks_copy_bold(self):
         source = (HERE / "Launcher.swift").read_text(encoding="utf-8")
         self.assertTrue("系统设置 → 隐私与安全性 → 仍要打开" in source, "Native Gatekeeper path is explicit")
