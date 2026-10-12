@@ -86,6 +86,16 @@ try {
       assert.equal(await page.locator("#codex-launcher-email-row").isVisible(), false);
       assert.equal(await page.locator("#connect-codex-posix-command").isVisible(), false);
       assert.equal(await page.locator("#codex-launcher-option input[type=password]").count(), 0);
+      const macGuide = page.locator("#codex-launcher-macos-install");
+      assert.equal(await macGuide.isVisible(), platform === "MacIntel", "Mac installation instructions do not clutter Windows");
+      if (platform === "MacIntel") {
+        assert.match(await macGuide.innerText(), /DMG/);
+        assert.match(await macGuide.innerText(), /系统设置 → 隐私与安全性 → 仍要打开/);
+        assert.ok(await macGuide.locator("strong").evaluate(node => Number(getComputedStyle(node).fontWeight) >= 600), "security path stays bold");
+      }
+      const hooksGuide = page.locator("#codex-launcher-option strong").filter({ hasText: /Hooks/ }).last();
+      assert.ok(await hooksGuide.isVisible());
+      assert.ok(await hooksGuide.evaluate(node => Number(getComputedStyle(node).fontWeight) >= 600), "Hook review/trust step stays bold");
       const description = await page.locator("#codex-launcher-title + p").boundingBox();
       const download = await page.locator("#download-codex-launcher-button").boundingBox();
       assert.ok(download.y >= description.y + description.height + 4, "download button does not overlap its instructions");

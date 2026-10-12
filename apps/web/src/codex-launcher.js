@@ -49,10 +49,13 @@ export function createAccountEmailHint({ sessionStorage = optionalStorage("sessi
 }
 
 export function mountCodexLauncher({ document, api, localizer, emailHint, context,
+  platform = globalThis.navigator?.userAgentData?.platform ?? globalThis.navigator?.platform ?? "",
   navigate = uri => { globalThis.location.href = uri; } }) {
   const get = id => document.getElementById(id);
   const button = get("open-codex-launcher-button"), prepareButton = get("prepare-codex-launcher-button");
   const email = get("codex-launcher-email"), status = get("codex-launcher-status");
+  const macInstall = get("codex-launcher-macos-install");
+  if (macInstall) macInstall.hidden = !/^mac/i.test(platform);
   const grants = new Map();
   let generation = 0, prepared = null;
   const tell = value => { status.textContent = localizer.t(value); };

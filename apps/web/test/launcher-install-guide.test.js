@@ -28,5 +28,5 @@ test("Installation/security/Hook guide text has matching concise Chinese copy", 
     "System Settings → Privacy & Security → Open Anyway",
     "Review, trust and allow GatherThread Hooks in Codex before using Desktop turn sync.",
     "Use Open Anyway only after checking the official download. This Launcher is not Apple-notarized.",
-  ]) assert.notEqual(translateUiText(source, "zh"), source);
+  ]) assert.notEqual(translateUiText(source, "zh-CN"), source);
 });
