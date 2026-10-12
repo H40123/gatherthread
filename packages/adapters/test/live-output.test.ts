@@ -157,7 +157,7 @@ test("encrypted private PEM blocks stay masked when complete, abandoned or split
   const privateValue = ["SYNTHETIC", "PEM", "BODY"].join("_");
   for (const mode of ["complete", "abandoned", "split"] as const) {
     const app = fixture();
-    const body = `${header}\n${privateValue}\n${mode === "abandoned" ? "" : footer + "\n"}`;
+    const body = `private_key: ${header}\n${privateValue}\n${mode === "abandoned" ? "" : footer + "\nPublic after.\n"}`;
     if (mode === "split") {
       for (let index = 0; index < body.length; index += 9) {
         app.advance(); await app.stream.onDelta("a", body.slice(index, index + 9));
@@ -166,5 +166,6 @@ test("encrypted private PEM blocks stay masked when complete, abandoned or split
     await app.stream.finish(mode !== "abandoned");
     assert.doesNotMatch(JSON.stringify(app.output), /SYNTHETIC_PEM_BODY|SYNTHETIC_PEM/, mode);
     assert.match(app.output.at(-1)?.content ?? "", /REDACTED/, mode);
+    if (mode !== "abandoned") assert.match(app.output.at(-1)?.content ?? "", /Public after/, mode);
   }
 });

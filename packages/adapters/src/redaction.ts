@@ -1,9 +1,9 @@
 import type { TranscriptEvent } from "./types.js";
 
 const REDACTED = "[REDACTED]";
+const PRIVATE_KEY_PATTERN = /-----BEGIN (?:ENCRYPTED |RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:ENCRYPTED |RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|$)/g;
 
 const DEFAULT_SECRET_PATTERNS: readonly RegExp[] = [
-  /-----BEGIN (?:ENCRYPTED |RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:ENCRYPTED |RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|$)/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\b(?:ghp|github_pat|glpat|sk|xox[baprs])[-_][A-Za-z0-9_-]{16,}\b/g,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi,
@@ -47,7 +47,9 @@ export function redactText(value: string, options: RedactionOptions = {}): strin
         ? `${prefix}${replacement}`
         : replacement,
     ),
-    redactSensitiveFields(value, replacement),
+    // Mask PEM first: scanning `private_key: -----BEGIN ...` as an ordinary
+    // assignment must not break its header and leave the following body public.
+    redactSensitiveFields(value.replace(cloneGlobal(PRIVATE_KEY_PATTERN), () => replacement), replacement),
   );
 }
 

@@ -30,6 +30,9 @@ test("headers, escaped keys, interrupted strings and private PEM blocks are mask
   const encryptedPem = ["-----BEGIN", "ENCRYPTED", "PRIVATE KEY-----"].join(" ") + `\n${privateValue}`;
   assert.equal(redactText(encryptedPem), "[REDACTED]");
   assert.equal(redactText(encryptedPem + "\n" + ["-----END", "ENCRYPTED", "PRIVATE KEY-----"].join(" ")), "[REDACTED]");
+  assert.equal(redactText(`private_key: ${encryptedPem}`), "private_key: [REDACTED]");
+  const complete = encryptedPem + "\n" + ["-----END", "ENCRYPTED", "PRIVATE KEY-----"].join(" ");
+  assert.equal(redactText(`private_key: ${complete}\npublic: kept`), "private_key: [REDACTED]\npublic: kept");
 });
 
 test("ordinary text, public serialized fields and custom replacements remain usable", () => {
