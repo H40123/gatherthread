@@ -5,6 +5,7 @@ import { mountDeviceAuthorization } from "./device-authorization.js";
 import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261012-content-1";
 import { mountAccountDevices } from "./account-devices.js";
 import { mountPersonalCloudApi } from "./personal-cloud-api.js?v=20261012-content-1";
+import { mountCloudCodeConsent } from "./cloud-code-consent.js?v=20261012-content-1";
 import { cloudRequestInput, continueCloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261012-content-1";
 import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261012-content-1";
 import { mountRegistration } from "./registration.js";
@@ -426,6 +427,16 @@ const codeSyncUi = mountCodeSync({
 const codeStorageSettings = mountCodeStorageSettings({
   document, api, localizer, getUserId: () => state.currentUser?.id ?? null,
 });
+const cloudCodeConsent = mountCloudCodeConsent({
+  checkbox: element("cloud-agent-include-code"), help: element("cloud-agent-code-scope"), api, localizer,
+  getContext: () => state.currentUser && state.project ? {
+    scope: `${authenticationGeneration}:${state.currentUser.id}:${state.project.id}`,
+    userId: state.currentUser.id, projectId: state.project.id, source: element("cloud-agent-source").value,
+    writable: ["owner", "participant"].includes(state.project.role)
+      && canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase, kind: "human_chat" }).allowed,
+  } : null,
+});
+element("project-code-dialog").addEventListener("close", () => void cloudCodeConsent.refresh());
 const onboarding = mountOnboarding({
   document,
   getContext: () => ({
@@ -600,6 +611,7 @@ element("claim-device-name").addEventListener("input", () => {
 
 clearSensitiveInputs();
 window.addEventListener("pagehide", () => {
+  cloudCodeConsent.suspend();
   invitationLink.reset();
   codeSyncUi.close();
   authenticationGeneration += 1;
@@ -615,6 +627,7 @@ window.addEventListener("pagehide", () => {
 });
 window.addEventListener("pageshow", (event) => {
   if (!event.persisted) return;
+  cloudCodeConsent.resume();
   document.documentElement.dataset.bootState = "loading";
   resetWorkspaceToAuth();
   void restoreBrowserSession();
@@ -1426,6 +1439,7 @@ function resetWorkspaceToAuth() {
   state.devices = [];
   messageInput.value = "";
   codeSyncUi.updateContext();
+  cloudCodeConsent.updateContext();
   cloudGithubUi.updateContext();
   selectedCodexLocalRuntimeId = "";
   localSyncStatusRequestsInFlight.clear();
@@ -3035,6 +3049,7 @@ function renderComposerPermissions() {
     pendingMessageSend = null;
   }
   codeSyncUi.updateContext();
+  cloudCodeConsent.updateContext();
   cloudGithubUi.updateContext();
   const common = { session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase };
   const chat = canAppend({ ...common, kind: "human_chat" });
@@ -3138,8 +3153,7 @@ async function sendMessage(kind) {
       mentions: metadata.mentions.map((mention) => ({ ...mention, start: mention.start - leading, end: mention.end - leading })) };
     if (kind === "human_chat") await api.appendHumanChat(sessionId, input);
     else if (kind === "hosted_agent") {
-      const includeCode = element("cloud-agent-include-code").checked;
-      element("cloud-agent-include-code").checked = false;
+      const includeCode = cloudCodeConsent.includeCode();
       if (element("cloud-agent-source").value === "github") {
         await cloudGithubUi.start(sessionId, { ...input, contentRevision, profileId: cloudProfile?.id, apiConfigRevision: cloudProfile?.api_config_revision });
       } else {
@@ -3640,6 +3654,7 @@ function applyVisualSettings(settings) {
   localizer.apply(normalized.general.locale);
   if (localeChanged) accountDevices.refreshLanguage();
   if (localeChanged) personalCloudApi.refreshLanguage();
+  if (localeChanged) cloudCodeConsent.refreshLanguage();
   onboarding.refreshLanguage();
   if (localeChanged) updateCreatedInvitationShareText(normalized.general.locale);
   element("auth-language-button").textContent = normalized.general.locale === "zh-CN" ? "EN" : "中";

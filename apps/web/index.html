@@ -526,7 +526,8 @@
                 <label for="cloud-agent-source">Cloud workspace</label>
                 <select id="cloud-agent-source"><option value="trial">GT Cloud trial</option><option value="github">GitHub repository</option></select>
                 <input id="cloud-github-parent" type="hidden"><span id="cloud-github-selected" role="status"></span>
-                <label for="cloud-agent-include-code"><input id="cloud-agent-include-code" type="checkbox"><span>Use GT Cloud code and save changes to my GT Cloud branch</span></label>
+                <label for="cloud-agent-include-code"><input id="cloud-agent-include-code" type="checkbox" checked aria-describedby="cloud-agent-code-scope"><span>Use GT Cloud code and save changes to my GT Cloud branch</span></label>
+                <p id="cloud-agent-code-scope" class="field-help" data-i18n-skip>Uses this project's GT Cloud files and saves edits to your own branch. Local and GitHub files are not included.</p>
               </div>
               <div class="composer-actions">
                 <button id="mobile-compose-tools-button" class="icon-button mobile-workspace-only" type="button" aria-label="Conversation tools" title="Conversation tools" aria-haspopup="dialog" aria-controls="mobile-tools-dialog"><span aria-hidden="true">＋</span></button>
@@ -1011,7 +1012,10 @@
           <ol class="connection-guide">
             <li>
               <div class="connection-step-heading"><span class="step-number" aria-hidden="true">1</span><div><h3 id="codex-launcher-title">Install the Launcher</h3><p>Download the current Windows or macOS Launcher once. Keep Codex Desktop signed in.</p></div></div>
-              <a id="download-codex-launcher-button" class="button button-secondary" href="https://github.com/TH060419/gatherthread/releases" target="_blank" rel="noopener noreferrer">Download Launcher</a>
+              <div class="launcher-download-actions">
+                <a id="download-codex-launcher-github-button" class="button button-secondary" href="https://github.com/TH060419/gatherthread/releases/tag/launcher-v0.1.1" target="_blank" rel="noopener noreferrer">Install from GitHub (recommended)</a>
+                <a id="download-codex-launcher-button" class="button button-secondary" href="https://github.com/TH060419/gatherthread/releases/tag/launcher-v0.1.1" target="_blank" rel="noopener noreferrer">Website download</a>
+              </div>
               <div id="codex-launcher-macos-install" class="field-help" hidden>
                 <p>On Mac, open the DMG and drag GatherThread Launcher to Applications. Open it from Applications once.</p>
                 <p><span>If macOS blocks it, go to</span> <strong>System Settings → Privacy &amp; Security → Open Anyway</strong>.</p>
@@ -1267,9 +1271,10 @@ codex plugin add gatherthread@gatherthread-source</code>
               <fieldset id="cloud-api-editor" class="personal-api-editor" hidden>
                 <legend>API connection</legend>
                 <label class="settings-row" for="cloud-api-provider"><span><strong>Provider</strong><small>Choose the service that issued your key.</small></span><select id="cloud-api-provider"></select></label>
+                <p class="field-help">Use a standard API key, not a coding-plan key. Your provider bills any usage.</p>
                 <p class="field-help"><code id="cloud-api-endpoint" data-i18n-skip></code> · <a id="cloud-api-docs" target="_blank" rel="noopener noreferrer">Provider instructions</a></p>
                 <label class="settings-row" for="cloud-api-label"><span><strong>Connection name</strong><small>A short name to recognize this model.</small></span><input id="cloud-api-label" type="text" autocomplete="off" maxlength="80" /></label>
-                <label class="settings-row" for="cloud-api-model"><span><strong>Model ID</strong><small>Copy the exact model ID from your provider.</small></span><input id="cloud-api-model" type="text" autocomplete="off" spellcheck="false" maxlength="160" /></label>
+                <label class="settings-row" for="cloud-api-model"><span><strong>Model ID</strong><small>You can replace the suggested ID with a model enabled in your provider account.</small></span><input id="cloud-api-model" type="text" autocomplete="off" spellcheck="false" maxlength="160" /></label>
                 <label class="settings-row" for="cloud-api-key"><span><strong>API key</strong><small>Submitted securely once. Leave blank when editing to keep the saved key.</small></span><input id="cloud-api-key" type="password" autocomplete="off" maxlength="4096" spellcheck="false" /></label>
                 <label class="settings-row settings-toggle" for="cloud-api-enabled"><span><strong>Enable this connection</strong><small>Pausing stops new requests and any active task using it.</small></span><input id="cloud-api-enabled" type="checkbox" role="switch" checked /><span class="settings-switch-visual" aria-hidden="true"></span></label>
                 <div class="avatar-settings-actions">

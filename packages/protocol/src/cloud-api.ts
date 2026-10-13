@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const CloudApiProviderIdSchema = z.enum(["openai", "anthropic", "deepseek", "siliconflow-cn", "siliconflow-global", "openrouter"]);
+export const CloudApiProviderIdSchema = z.enum(["openai", "anthropic", "deepseek", "siliconflow-cn", "siliconflow-global", "openrouter", "qwen", "glm", "doubao"]);
 export type CloudApiProviderId = z.infer<typeof CloudApiProviderIdSchema>;
 export const CloudApiModelSchema = z.string().trim().min(1).max(160).regex(/^[^\u0000-\u0020\u007f-\u009f]+$/u);
 const Label = z.string().trim().min(1).max(80).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/u);
@@ -19,6 +19,7 @@ export const CloudApiConfigurationSchema = z.object({
 export type CloudApiConfiguration = z.infer<typeof CloudApiConfigurationSchema>;
 export const CloudApiProviderSchema = z.object({ id: CloudApiProviderIdSchema, label: z.string().max(80),
   transport: z.enum(["openai-chat", "anthropic-messages"]), base_url: z.string().url().max(200), docs_url: z.string().url().max(300),
+  default_model: CloudApiModelSchema.optional(),
 }).strict();
 export const CloudApiStatusSchema = z.object({ enabled: z.boolean(), providers: z.array(CloudApiProviderSchema).max(16),
   configurations: z.array(CloudApiConfigurationSchema).max(8) }).strict();

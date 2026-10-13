@@ -6,7 +6,7 @@ import type { Actor, CollaborationDatabase } from "./database.js";
 import { ApiError } from "./errors.js";
 import type { HostedEndpoint } from "./hosted-agent-pool.js";
 
-// Official fixed credential-free HTTPS APIs, verified 2026-10-12. User input
+// Official fixed credential-free HTTPS APIs, verified 2026-10-13. User input
 // cannot supply a URL, port, header, redirect, proxy or cloud IAM credential.
 export const CLOUD_API_PROVIDERS = [
   { id: "openai", label: "OpenAI", transport: "openai-chat", base_url: "https://api.openai.com/v1", docs_url: "https://developers.openai.com/api/reference/resources/chat" },
@@ -15,6 +15,11 @@ export const CLOUD_API_PROVIDERS = [
   { id: "siliconflow-cn", label: "SiliconFlow CN", transport: "openai-chat", base_url: "https://api.siliconflow.cn/v1", docs_url: "https://docs.siliconflow.cn/docs/userguide/quickstart" },
   { id: "siliconflow-global", label: "SiliconFlow Global", transport: "openai-chat", base_url: "https://api.siliconflow.com/v1", docs_url: "https://docs.siliconflow.com/en/userguide/quickstart" },
   { id: "openrouter", label: "OpenRouter", transport: "openai-chat", base_url: "https://openrouter.ai/api/v1", docs_url: "https://openrouter.ai/docs/api_reference/overview" },
+  // Standard pay-as-you-go keys, not vendor coding-plan endpoints. Suggestions
+  // are official IDs, not a promise of free pricing or account availability.
+  { id: "qwen", label: "Qwen · Alibaba Cloud (Beijing)", transport: "openai-chat", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", docs_url: "https://help.aliyun.com/zh/model-studio/base-url", default_model: "qwen-plus" },
+  { id: "glm", label: "GLM · Zhipu", transport: "openai-chat", base_url: "https://open.bigmodel.cn/api/paas/v4", docs_url: "https://docs.bigmodel.cn/api-reference/模型-api/对话补全", default_model: "glm-5.3" },
+  { id: "doubao", label: "Doubao · Volcengine (Beijing)", transport: "openai-chat", base_url: "https://ark.cn-beijing.volces.com/api/v3", docs_url: "https://docs.volcengine.com/docs/ark/base-url-and-authentication?lang=en", default_model: "doubao-seed-2-1-pro-260915" },
 ] as const;
 export const PERSONAL_CLOUD_DAILY_RUNS = 100;
 export const PERSONAL_CLOUD_GLOBAL_DAILY_RUNS = 1000;

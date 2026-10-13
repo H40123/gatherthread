@@ -1,4 +1,5 @@
 import { normalizeLauncherEmail, projectCodexLauncherUrl } from "./domain.js?v=20261012-content-1";
+import { LAUNCHER_RELEASE_URL } from "./launcher-downloads.js?v=20261012-content-1";
 
 const EMAIL_HINT_KEY = "gt-account-email-hint";
 const optionalStorage = (name) => { try { return globalThis[name]; } catch { return null; } };
@@ -106,6 +107,8 @@ export function mountCodexLauncher({ document, api, localizer, emailHint, contex
   const grants = new Map();
   let generation = 0, downloadGeneration = 0, prepared = null;
   const download = get("download-codex-launcher-button"), releaseFallback = download?.href;
+  const githubDownload = get("download-codex-launcher-github-button");
+  if (githubDownload) githubDownload.href = LAUNCHER_RELEASE_URL;
   const readDownloads = async () => {
     const run = downloadGeneration;
     if (!download || typeof fetchResponse !== "function") return;

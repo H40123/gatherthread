@@ -13,6 +13,7 @@ const name = process.env.LAUNCHER_UI_BROWSER ?? "chrome";
 const browser = name === "webkit" ? await webkit.launch() : await chromium.launch({ channel: name, headless: true });
 const errors = [];
 const downloadSource = "a".repeat(40), downloadIndex = `/downloads/${downloadSource}/index.html`;
+const githubRelease = "https://github.com/TH060419/gatherthread/releases/tag/launcher-v0.1.1";
 const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
 async function fixture(origin, locale, platform, width = 1440, touch = 0) {
   const userAgent = platform === "iPhone" ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1" : undefined;
@@ -20,6 +21,7 @@ async function fixture(origin, locale, platform, width = 1440, touch = 0) {
   context.setDefaultTimeout(15000);
   await context.route("**/*", async route => {
     const url = new URL(route.request().url());
+    if (url.href === githubRelease) return route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>Controlled Launcher Release</title>" });
     if (url.origin !== origin) return route.abort();
     if (url.pathname === "/downloads/launcher.json") return route.fulfill({ status: 200,
       contentType: "application/json", body: JSON.stringify({ source_commit: downloadSource, index_path: downloadIndex }) });
@@ -104,8 +106,15 @@ try {
       const description = await page.locator("#codex-launcher-title + p").boundingBox();
       const download = await page.locator("#download-codex-launcher-button").boundingBox();
       assert.ok(download.y >= description.y + description.height + 4, "download button does not overlap its instructions");
+      const recommendation = page.locator("#download-codex-launcher-github-button");
+      assert.equal(await recommendation.getAttribute("class"), await page.locator("#download-codex-launcher-button").getAttribute("class"), "both download paths use the same button style");
+      assert.match(await recommendation.innerText(), /GitHub.*推荐|GitHub.*recommended/);
+      const [releasePage] = await Promise.all([page.waitForEvent("popup"), recommendation.click()]);
+      await releasePage.waitForURL(githubRelease);
+      await releasePage.waitForLoadState("domcontentloaded"); assert.equal(releasePage.url(), githubRelease); await releasePage.close();
       await page.waitForFunction(path => new URL(document.getElementById("download-codex-launcher-button").href).pathname === path, downloadIndex);
       const [downloads] = await Promise.all([page.waitForEvent("popup"), page.locator("#download-codex-launcher-button").click()]);
+      await downloads.waitForURL(`${origin}${downloadIndex}`);
       await downloads.waitForLoadState("domcontentloaded");
       assert.equal(downloads.url(), `${origin}${downloadIndex}`, "ordinary download click uses this server's same-source installer index");
       await downloads.close();
@@ -131,6 +140,7 @@ try {
       assert.doesNotMatch(await page.locator("#connect-codex-posix-command").innerText(), /@0\.1\.0-beta\.1/);
       await page.waitForFunction(path => new URL(document.getElementById("connect-codex-package-download").href).pathname === path, downloadIndex);
       const [terminalDownloads] = await Promise.all([page.waitForEvent("popup"), page.locator("#connect-codex-package-download").click()]);
+      await terminalDownloads.waitForURL(`${origin}${downloadIndex}`);
       await terminalDownloads.waitForLoadState("domcontentloaded");
       assert.equal(terminalDownloads.url(), `${origin}${downloadIndex}`);
       await terminalDownloads.close();
@@ -159,6 +169,7 @@ try {
       assert.doesNotMatch(await page.locator("#connect-dsh-install-command").innerText(), /@gatherthread\/dsh-host@/);
       await page.waitForFunction(path => new URL(document.getElementById("connect-dsh-package-download").href).pathname === path, downloadIndex);
       const [dshDownloads] = await Promise.all([page.waitForEvent("popup"), page.locator("#connect-dsh-package-download").click()]);
+      await dshDownloads.waitForURL(`${origin}${downloadIndex}`);
       await dshDownloads.waitForLoadState("domcontentloaded");
       assert.equal(dshDownloads.url(), `${origin}${downloadIndex}`);
       await dshDownloads.close();
