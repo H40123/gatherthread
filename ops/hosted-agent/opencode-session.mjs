@@ -1,3 +1,4 @@
+import { Agent, fetch as sessionFetch } from "undici";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { publicSessionAnswer, sessionIsIdle } from "./public-answer.mjs";
@@ -5,6 +6,18 @@ import { subscribeOpencodeLiveOutput } from "./live-output.mjs";
 
 const ORIGIN = "http://127.0.0.1:8790";
 const VERSION = "1.18.32";
+export const OPENCODE_ROUND_TIMEOUT_MS = 12 * 60 * 1000;
+
+export function createOpencodeDispatcher(factory) {
+  // SSE occupies one connection while the final JSON response uses the other.
+  return new Agent({ headersTimeout: OPENCODE_ROUND_TIMEOUT_MS, bodyTimeout: OPENCODE_ROUND_TIMEOUT_MS,
+    connectTimeout: 5000, connections: 2, maxOrigins: 1, ...(factory ? { factory } : {}) });
+}
+function transportTimedOut(error) {
+  if (!(error instanceof Error)) return false;
+  if (error.name === "TimeoutError" || ["UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_CONNECT_TIMEOUT"].includes(error.code)) return true;
+  return error.cause instanceof Error && transportTimedOut(error.cause);
+}
 
 async function readJson(response, limit) {
   if (!response.ok || response.headers.get("content-type")?.split(";")[0] !== "application/json"
@@ -21,15 +34,16 @@ async function readJson(response, limit) {
 
 /** One isolated harness process, with optional bounded loopback telemetry. */
 export async function runOpencodeSession(workspace, prompt, outputLimit,
-  { spawnProcess = spawn, fetchResponse = globalThis.fetch, onProgress } = {}) {
+  { spawnProcess = spawn, fetchResponse = sessionFetch, onProgress, createDispatcher = createOpencodeDispatcher } = {}) {
   const controller = new AbortController();
+  const roundSignal = AbortSignal.timeout(OPENCODE_ROUND_TIMEOUT_MS);
   const child = spawnProcess("opencode", ["serve", "--hostname", "127.0.0.1", "--port", "8790", "--no-mdns"],
     { cwd: workspace, env: { ...process.env, PWD: workspace, BUN_OPTIONS: "--smol" }, stdio: ["ignore", "pipe", "pipe"] });
   let stopping = false, exited = false, closed = false, outputBytes = 0;
   let failed = false, forcedKill = false, shutdownRequested = false, closeCode, closeSignal;
   let phase = "startup";
   let runFailure;
-  let live;
+  let live, dispatcher;
   const diagnostic = () => Object.assign(new Error("agent_failed"), { diagnosticCode: `agent_${phase}_failed` });
   const fail = () => {
     failed = true;
@@ -45,13 +59,15 @@ export async function runOpencodeSession(workspace, prompt, outputLimit,
     outputBytes += bytes.length;
     if (outputBytes > outputLimit) { fail(); forcedKill = true; child.kill("SIGKILL"); }
   });
-  const request = async (path, body, timeoutMs) => readJson(await fetchResponse(`${ORIGIN}${path}`, {
+  const fetchOwned = (url, init) => fetchResponse(url, { ...init, dispatcher });
+  const request = async (path, body, timeoutMs) => readJson(await fetchOwned(`${ORIGIN}${path}`, {
     method: body === undefined ? "GET" : "POST", redirect: "error",
     headers: { "content-type": "application/json", "x-opencode-directory": workspace },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    signal: timeoutMs ? AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]) : controller.signal,
+    signal: timeoutMs ? AbortSignal.any([controller.signal, roundSignal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.any([controller.signal, roundSignal]),
   }), outputLimit);
   try {
+    dispatcher = createDispatcher();
     let healthy = false;
     const startupDeadline = Date.now() + 15_000;
     while (Date.now() < startupDeadline && !healthy) {
@@ -73,7 +89,7 @@ export async function runOpencodeSession(workspace, prompt, outputLimit,
     }, 5000);
     if (!/^ses_[A-Za-z0-9]+$/u.test(session.id ?? "")) throw new Error("agent_failed");
     if (onProgress) {
-      try { live = await subscribeOpencodeLiveOutput({ fetchResponse, origin: ORIGIN, workspace,
+      try { live = await subscribeOpencodeLiveOutput({ fetchResponse: fetchOwned, origin: ORIGIN, workspace,
         sessionId: session.id, send: onProgress, signal: controller.signal, outputLimit }); }
       catch { /* supplementary progress does not determine task completion */ }
     }
@@ -100,15 +116,20 @@ export async function runOpencodeSession(workspace, prompt, outputLimit,
     }
     if (exited) throw new Error("agent_failed");
     return answer;
-  } catch {
-    runFailure = diagnostic();
+  } catch (error) {
+    // Short startup/session/idle probes remain phase failures. Only the overall
+    // round or final-response transport deadline means the task may Continue.
+    runFailure = !failed && (roundSignal.aborted || phase === "answer" && transportTimedOut(error))
+      ? Object.assign(new Error("agent_failed"), { diagnosticCode: "agent_timeout" }) : diagnostic();
     throw runFailure;
   } finally {
     // serve is intentionally persistent. Stop it only after final validation,
     // or failure, and wait for process closure before snapshotting any files.
     stopping = true;
     controller.abort();
-    await live?.stop();
+    try { await live?.stop(); }
+    catch { failed = true; }
+    finally { try { await dispatcher?.destroy(); } catch { failed = true; } }
     if (!exited) { shutdownRequested = true; child.kill("SIGTERM"); }
     await Promise.race([closure, delay(1000)]);
     if (!closed) { forcedKill = true; child.kill("SIGKILL"); await Promise.race([closure, delay(1000)]); }

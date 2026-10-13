@@ -57,6 +57,20 @@ INSERT OR IGNORE INTO hosted_agent_runs
     'cloudflare-workers-ai','@cf/qwen/qwen3-30b-a3b-fp8',status,created_at,finished_at
   FROM hosted_agent_jobs;
 
+-- Additive terminal classification; legacy running/completed/failed values stay intact.
+CREATE TABLE IF NOT EXISTS hosted_agent_outcomes (
+  request_event_id TEXT PRIMARY KEY REFERENCES hosted_agent_runs(request_event_id) ON DELETE CASCADE,
+  outcome TEXT NOT NULL CHECK(outcome IN ('timed_out','failed')),
+  error_code TEXT NOT NULL
+) STRICT;
+-- Classify old timeout markers without rewriting append-only history or usage.
+INSERT OR IGNORE INTO hosted_agent_outcomes
+  SELECT r.request_event_id, 'timed_out', json_extract(e.payload_json,'$.error.code')
+  FROM hosted_agent_runs r JOIN events e ON e.reply_to_event_id=r.request_event_id
+  WHERE r.status='failed' AND e.type='agent_response'
+    AND json_extract(e.payload_json,'$.status')='failed'
+    AND json_extract(e.payload_json,'$.error.code') IN ('container_timeout','provider_timeout','agent_timeout');
+
 -- Daily consumption is independent of conversation, project and account deletion.
 -- The request ID deduplicates backfill; no prompt, session, device or source is retained.
 -- Database startup and accepted reservations prune days older than the current UTC day.

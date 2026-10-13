@@ -517,6 +517,12 @@ export function isFailedAgentResponse(event) {
   return event?.type === "agent_response" && event?.payload?.status === "failed";
 }
 
+/** Legacy timeout codes remain readable without rewriting historical events. */
+export function isTimedOutAgentResponse(event) {
+  return isFailedAgentResponse(event) && (event.payload.outcome === "timed_out"
+    || ["container_timeout", "provider_timeout", "agent_timeout"].includes(event.payload.error?.code));
+}
+
 /** The original request a response points at, when it is still in the timeline. */
 export function failedRequestFor(events, responseEvent) {
   const requestId = responseEvent?.replyTo

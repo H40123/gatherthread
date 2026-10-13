@@ -110,7 +110,7 @@ async function main() {
 main().catch((error) => {
   // Only fixed phase categories leave the container. No exception, tool or
   // provider text can become a public diagnostic or a server log.
-  const code = /^agent_(?:startup|session|answer|idle|shutdown)_failed$/u.test(error.diagnosticCode)
+  const code = /^(?:agent_(?:startup|session|answer|idle|shutdown)_failed|agent_timeout)$/u.test(error.diagnosticCode)
     ? error.diagnosticCode : "container_failed";
   process.stderr.write(`GT_HOSTED_FAILURE:${code}\n`);
   process.exitCode = 1;

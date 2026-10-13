@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { cleanupHostedExecution, stopHostedContainer } from "./hosted-agent-recovery.js";
 import { CodeFilesSchema, containsCodeSyncSecret, type CodeFile } from "@gatherthread/protocol";
-import { HostedModelProxy, hostedContainerMemoryMiB, runDocker, type HostedAgentOptions } from "./hosted-agent.js";
+import { HostedModelProxy, hostedContainerMemoryMiB, HOSTED_AGENT_TIMEOUT_MS, runDocker, type HostedAgentOptions } from "./hosted-agent.js";
 import { HostedNpmProxy } from "./hosted-npm-proxy.js";
 import type { HostedEndpoint } from "./hosted-agent-pool.js";
 import { redactJson } from "./redaction.js";
@@ -22,6 +22,7 @@ export class HostedRepositoryRunner {
   }
   async run(files: CodeFile[], prompt: string, endpoint: HostedEndpoint, onUnavailable: (ms: number) => void,
     controlOptions?: { taskId: string; signal: AbortSignal; authorize: () => void; onProgress?: HostedProgressCallback }) {
+    const signal = AbortSignal.any([...(controlOptions ? [controlOptions.signal] : []), AbortSignal.timeout(HOSTED_AGENT_TIMEOUT_MS)]);
     CodeFilesSchema.parse(files);
     if (controlOptions && !/^gh-task-[a-f0-9]{32}$/u.test(controlOptions.taskId)) throw new Error("invalid_repository_task");
     const npm = new HostedNpmProxy(files, this.options.fetch ?? globalThis.fetch, controlOptions?.authorize);
@@ -31,8 +32,8 @@ export class HostedRepositoryRunner {
     const modelSocket = join(root, "model.sock");
     const npmSocket = join(root, "npm.sock");
     const name = `gt-repository-${controlOptions ? controlOptions.taskId.slice(8) : randomBytes(10).toString("hex")}`;
-    const model = new HostedModelProxy({ endpoint, repositoryRun: true, onUnavailable,
-      ...(controlOptions ? { authorize: controlOptions.authorize, signal: controlOptions.signal } : {}),
+    const model = new HostedModelProxy({ endpoint, repositoryRun: true, onUnavailable, signal,
+      ...(controlOptions ? { authorize: controlOptions.authorize } : {}),
       ...(this.options.fetch ? { fetch: this.options.fetch } : {}) });
     try {
       mkdirSync(workspace, { mode: 0o755 }); mkdirSync(control, { mode: 0o755 });
@@ -77,9 +78,11 @@ export class HostedRepositoryRunner {
         "-e", "HOME=/home/agent", "-e", "OPENCODE_CONFIG=/run/gatherthread/opencode.json",
         "-e", "OPENCODE_DISABLE_MODELS_FETCH=true", "-e", "OPENCODE_DISABLE_DEFAULT_PLUGINS=true",
         "-e", "GT_HOSTED_REPOSITORY=1", "-e", "NO_COLOR=1", "-e", "CI=1", this.options.image];
+      signal.throwIfAborted();
       const output = this.options.runContainer
-        ? await this.options.runContainer(args, 900_000, controlOptions?.signal, controlOptions?.onProgress)
-        : await runDocker(args, 900_000, 12 * 1024 * 1024, controlOptions?.signal, controlOptions?.onProgress);
+        ? await this.options.runContainer(args, HOSTED_AGENT_TIMEOUT_MS, signal, controlOptions?.onProgress)
+        : await runDocker(args, HOSTED_AGENT_TIMEOUT_MS, 12 * 1024 * 1024, signal, controlOptions?.onProgress);
+      signal.throwIfAborted();
       const result = JSON.parse(hostedContainerResult(output, controlOptions?.onProgress, 2 * 1024 * 1024));
       if (!result.answer || result.save_error || !Array.isArray(result.files)) throw new Error("repository_result_invalid");
       const changed = CodeFilesSchema.parse(result.files);
@@ -87,6 +90,12 @@ export class HostedRepositoryRunner {
         throw new Error("repository_secret_detected");
       }
       return { answer: String(redactJson(String(result.answer))).slice(0, 12000), files: changed };
+    } catch (error) {
+      if (signal.aborted && signal.reason instanceof Error && signal.reason.name === "TimeoutError") throw new Error("container_timeout");
+      if (error instanceof Error && ["container_timeout", "agent_timeout"].includes(error.message)) throw error;
+      const diagnosis = model.diagnostics().errorCode;
+      if (diagnosis) throw new Error(diagnosis);
+      throw error;
     } finally {
       await cleanupHostedExecution(() => { if (!this.options.runContainer) stopHostedContainer(name); }, [
         () => model.close().catch(() => undefined), () => npm.close().catch(() => undefined),

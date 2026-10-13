@@ -237,7 +237,7 @@ unixSocketTest("hosted run uses isolated Docker arguments, persists an event, an
     const argsSeen: string[][] = [];
     const agent = new HostedAgent(service, new CodeRepository(database, join(directory, "code")), {
       ...options, runContainer: async (args, timeoutMs) => { argsSeen.push(args);
-        assert.equal(timeoutMs, 300_000, "trial tasks have the authorized five-minute total deadline");
+        assert.equal(timeoutMs, 720_000, "trial tasks have the authorized twelve-minute total deadline");
         const mount = args.find(value => value.endsWith("dst=/run/gatherthread,readonly"))!;
         const control = mount.split("src=")[1]!.split(",dst=")[0]!;
         const config = JSON.parse(readFileSync(join(control, "opencode.json"), "utf8"));

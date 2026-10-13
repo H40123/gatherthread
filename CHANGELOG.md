@@ -12,6 +12,9 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 ### Fixed
 
+- Distinguish Cloud Agent timeouts from ordinary failure while retaining legacy `status:"failed"`; add strict `outcome:"timed_out"|"failed"` and an additive durable outcome table. Bound trial, selected-summary and repository rounds to twelve minutes across both provider inference and the independent container final-response HTTP transport. Continue starts a separately charged, author-authorized fresh round with the original exact task/profile and recoverable public context; normal failures retain Retry. Preserve history-erasure/API-revision fences and existing resource limits. Repository continuation retains canonical instruction references through private ancestor snapshot deletion, expiry and restart, without duplicating instruction text or retaining erased history. Upgrade server/Web with a rebuilt matching immutable runner image; published Beta 1 metadata and deployment remain unchanged. See [ADR-0052](docs/adr/0052-cloud-timeouts-and-explicit-continuation.md).
+
+
 - Run the heavyweight 1000-file real-Git snapshot regression on Linux and macOS, not Windows, where runner contention can repeatedly exhaust the bounded Git deadline. Keep Windows timeout-policy, failed-batch retry, permission and file-safety coverage unchanged; this changes test selection only, not file synchronization or production limits.
 
 - Accept cloud trial requests immediately and deliver terminal replies through canonical replay. Restore author-only Pause/Resume on the existing composer button, exact-model retries without a local runtime, and shared selected-history summaries through the chosen cloud model. Allow settings to be saved before connecting a local Agent; empty selections explain missing sources instead of leaving an inert summary button. Keep local-file transfer authorization and Codex/DSH routing unchanged.

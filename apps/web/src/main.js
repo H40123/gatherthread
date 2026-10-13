@@ -5,7 +5,7 @@ import { mountDeviceAuthorization } from "./device-authorization.js";
 import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261012-content-1";
 import { mountAccountDevices } from "./account-devices.js";
 import { mountPersonalCloudApi } from "./personal-cloud-api.js?v=20261012-content-1";
-import { cloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261012-content-1";
+import { cloudRequestInput, continueCloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261012-content-1";
 import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261012-content-1";
 import { mountRegistration } from "./registration.js";
 import { HttpCollaborationApi, MockCollaborationApi } from "./api.js?v=20261012-content-1";
@@ -33,6 +33,7 @@ import {
   hasOnlineSnapshotConnector,
   isExecutionRuntime,
   isFailedAgentResponse,
+  isTimedOutAgentResponse,
   isTimelineEventVisible,
   latestStreamedText,
   mergeProgressFragments,
@@ -458,6 +459,10 @@ const historySummaryUi = mountHistorySummaries({
     instructions: state.settings.historySummaries.instructions,
   }),
   onChange: (options) => renderTimeline(options),
+  onContinue: (requestId, button) => retryAgentRequest(requestId, button, true),
+  canContinue: (request) => !retryingAgentRequestIds.has(request.id) && retryAgentRequestPermission(request, {
+    session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase,
+  }).allowed,
 });
 function prepareExampleScenario(item) {
   if (!exampleMode || !state.project || !state.session) return;
@@ -1270,7 +1275,7 @@ snapshotRequestList.addEventListener("click", (event) => {
 });
 timeline.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-action='retry-agent-request']");
-  if (button && !button.disabled) void retryAgentRequest(button.dataset.requestId, button);
+  if (button && !button.disabled) void retryAgentRequest(button.dataset.requestId, button, button.dataset.continueCloud === "true");
 });
 element("retry-sync-button").addEventListener("click", () => sync.retry());
 
@@ -2291,6 +2296,8 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     if (bubbleRole === "agent") article.classList.add("event-bubble-agent");
     const failedResponse = isFailedAgentResponse(event);
     if (failedResponse) article.classList.add("event-agent_response-failed");
+    const timedOutResponse = isTimedOutAgentResponse(event);
+    if (timedOutResponse) article.classList.add("event-agent_response-timed-out");
     article.setAttribute("aria-labelledby", `event-${event.id}-actor`);
     renderEventAvatar(avatar, event);
     actor.id = `event-${event.id}-actor`;
@@ -2336,14 +2343,18 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
       // offer the only action that can help: run the same request again.
       const notice = document.createElement("p");
       notice.className = "agent-failure-notice";
-      notice.textContent = localizer.t("This Agent request failed before it produced an answer.");
+      notice.textContent = localizer.t(timedOutResponse
+        ? "This Cloud Agent request timed out. Continue starts a new round with the original task and saved context."
+        : "This Agent request failed before it produced an answer.");
       article.append(notice);
       const request = failedRequestFor(state.sync.events, event);
       if (request && canRetryFailedAgentRequest(request, state.currentUser)) {
         const retry = document.createElement("button");
         retry.className = "text-button agent-retry-button";
         retry.type = "button";
-        retry.textContent = localizer.t("Retry Agent request");
+        const continuing = timedOutResponse && request.payload?.execution_profile?.harness === "opencode";
+        retry.textContent = localizer.t(continuing ? "Continue" : "Retry Agent request");
+        retry.dataset.continueCloud = String(continuing);
         retry.setAttribute("data-action", "retry-agent-request");
         retry.setAttribute("data-request-id", request.id);
         // Mirror the composer's rule rather than letting a viewer press a button
@@ -2352,7 +2363,8 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
           session: state.session,
           currentUser: state.currentUser,
           connectionPhase: state.sync.phase,
-        }).allowed || retryingAgentRequestIds.has(request.id);
+        }).allowed || retryingAgentRequestIds.has(request.id) || continuing
+          && state.sync.events.some((candidate) => candidate.payload?.continue_from_event_id === request.id);
         article.append(retry);
       }
     }
@@ -3174,7 +3186,7 @@ async function sendMessage(kind) {
  * so the retry targets the same harness, provider, model, and runtime the user
  * originally chose; it never falls back to a different target.
  */
-async function retryAgentRequest(requestId, button) {
+async function retryAgentRequest(requestId, button, continuing = false) {
   if (retryingAgentRequestIds.has(requestId)) return;
   const request = state.session
     ? state.sync.events.find((event) => event.type === "agent_request" && event.id === requestId)
@@ -3201,8 +3213,9 @@ async function retryAgentRequest(requestId, button) {
   status.setAttribute("role", "alert");
   button.parentElement.querySelector(".agent-retry-status")?.remove();
   button.after(status);
-  button.textContent = localizer.t("Retrying…");
+  button.textContent = localizer.t(continuing ? "Continuing…" : "Retrying…");
   sendError.textContent = "";
+  let acceptedContinuation = false;
   try {
     if (request.payload?.github_task_id) {
       await cloudGithubUi.openTask(request.payload.github_task_id);
@@ -3214,11 +3227,16 @@ async function retryAgentRequest(requestId, button) {
         ? await api.getHostedAgentSelection(sessionId, request.id) : undefined;
       const authoritative = currentRequest();
       if (!authoritative) return;
-      const input = cloudRequestInput(authoritative, retryKey, hostedAgentStatus.profiles, selection, contentRevision);
+      const input = (continuing ? continueCloudRequestInput : cloudRequestInput)(authoritative, retryKey, hostedAgentStatus.profiles, selection, contentRevision);
       if (authoritative.payload.include_code && !window.confirm(localizer.t("Retry with current GT Cloud code and save changes to your branch?"))) return;
       if (!currentRequest()) return;
       retryAgentRequestKeys.set(retryScope, retryKey);
-      await api.appendHostedAgentRequest(sessionId, input);
+      if (continuing && authoritative.payload.history_summary) {
+        await api.createHistorySummary(sessionId, { sourceEventIds: authoritative.payload.history_summary.source_event_ids,
+          executionProfile: { harness: "opencode", cloudProfileId: input.profileId,
+            ...(input.apiConfigRevision ? { apiConfigRevision: input.apiConfigRevision } : {}) },
+          idempotencyKey: input.idempotencyKey, continueFromEventId: authoritative.id });
+      } else await api.appendHostedAgentRequest(sessionId, input);
       void refreshHostedAgentStatus();
     } else {
       const authoritative = currentRequest();
@@ -3226,7 +3244,8 @@ async function retryAgentRequest(requestId, button) {
       retryAgentRequestKeys.set(retryScope, retryKey);
       await api.appendAgentRequest(sessionId, { ...retryAgentRequestInput(authoritative, retryKey), contentRevision });
     }
-    retryAgentRequestKeys.delete(retryScope);
+    acceptedContinuation = continuing;
+    if (!continuing) retryAgentRequestKeys.delete(retryScope);
   } catch (error) {
     if (error.status > 0 && error.status < 500) retryAgentRequestKeys.delete(retryScope);
     if (isCurrent()) {
@@ -3239,9 +3258,9 @@ async function retryAgentRequest(requestId, button) {
   } finally {
     retryingAgentRequestIds.delete(requestId);
     if (button.isConnected && isCurrent()) {
-      button.disabled = !retryAgentRequestPermission(request, { session: state.session,
+      button.disabled = acceptedContinuation || !retryAgentRequestPermission(request, { session: state.session,
         currentUser: state.currentUser, connectionPhase: state.sync.phase }).allowed;
-      button.textContent = localizer.t("Retry Agent request");
+      button.textContent = localizer.t(continuing ? "Continue" : "Retry Agent request");
     }
   }
 }

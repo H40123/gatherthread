@@ -137,7 +137,7 @@ unixTest("repository reduction uses its independent cap and retains source/netwo
       assert.equal(args[args.indexOf("--memory-swap") + 1], "512m");
       assert.equal(args[args.indexOf("--cpus") + 1], "2");
       assert.equal(args[args.indexOf("--pids-limit") + 1], "256");
-      assert.equal(timeout, 900_000);
+      assert.equal(timeout, 720_000);
       for (const argument of ["none", "--read-only", "ALL", "no-new-privileges", "10001:10001"]) assert.ok(args.includes(argument));
       assert.ok(args.some((arg) => arg.endsWith("dst=/input,readonly")));
       assert.ok(args.some((arg) => arg.endsWith("dst=/run/npm.sock")));
@@ -239,6 +239,8 @@ fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({args, env: process
 if (args[0] === 'ps' && fs.existsSync(${JSON.stringify(marker)})) process.stdout.write(fs.readFileSync(${JSON.stringify(marker)}));
 if (args[0] === 'rm') fs.unlinkSync(${JSON.stringify(marker)});
 if (args.includes('--fixture-exit137')) process.exit(137);
+if (args.includes('--fixture-runner-timeout')) { process.stderr.write('GT_HOSTED_FAILURE:agent_timeout\\n'); process.exit(1); }
+if (args.includes('--fixture-private-error')) { process.stderr.write('GT_HOSTED_FAILURE:private_transport_detail\\n'); process.exit(1); }
 if (args[0] === 'run') process.stdout.write(JSON.stringify({answer:'Fixture completed',files:[],save_error:null}));\n`);
   chmodSync(binary, 0o755);
   const names = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_CONFIG",
@@ -257,6 +259,8 @@ if (args[0] === 'run') process.stdout.write(JSON.stringify({answer:'Fixture comp
       include_code: false, idempotency_key: "same-daemon-trial" });
     assert.equal((result.response_event?.payload as { status: string }).status, "completed");
     await assert.rejects(runDocker(["run", "--fixture-exit137"], 5_000), /container_failed/);
+    await assert.rejects(runDocker(["run", "--fixture-runner-timeout"], 5_000), { message: "agent_timeout" });
+    await assert.rejects(runDocker(["run", "--fixture-private-error"], 5_000), { message: "container_failed" });
     const calls = readFileSync(capture, "utf8").trim().split("\n").map((line) => JSON.parse(line) as {
       args: string[]; env: Record<string, string>; entries: string[]; mode: number });
     for (const command of ["ps", "rm", "info", "image", "run"]) assert.ok(calls.some((call) => call.args[0] === command));

@@ -1,3 +1,6 @@
+import { fetch as modelFetch, type Agent } from "undici";
+import { createHostedModelDispatcher, destroyHostedModelDispatcher, isHostedTransportTimeout, HOSTED_AGENT_TIMEOUT_MS } from "./hosted-model-transport.js";
+export { HOSTED_AGENT_TIMEOUT_MS } from "./hosted-model-transport.js";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
@@ -7,7 +10,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Actor } from "./database.js";
-import { isCodeSyncPathAllowed, HostedAgentSelectionSchema, type CanonicalEvent, type CloudApiPutInput, type CodeFile, type HostedAgentRequestInput, type HostedHistorySummaryInput, type JsonValue } from "@gatherthread/protocol";
+import { isCodeSyncPathAllowed, HostedAgentSelectionSchema, type CanonicalEvent, type CloudApiPutInput, type CodeFile, type HostedAgentRequestInput, type HostedHistorySummaryInput, type HistoryContext, type JsonValue } from "@gatherthread/protocol";
 import { ApiError } from "./errors.js";
 import { redactJson } from "./redaction.js";
 import type { CollaborationService } from "./service.js";
@@ -29,7 +32,6 @@ const MAX_OUTPUT_TOKENS = 1_024;
 const MAX_CONTEXT_BYTES = 12_000;
 const MAX_WORKSPACE_FILES = 100;
 const MAX_WORKSPACE_BYTES = 512_000;
-const RUN_TIMEOUT_MS = 300_000;
 
 export interface HostedAgentOptions extends HostedRunLimits {
   endpoints: HostedEndpoint[];
@@ -81,7 +83,8 @@ export function runDocker(args: string[], timeoutMs: number, outputLimit = 1_000
     let size = 0;
     let settled = false;
     const fail = (error: Error) => { if (!settled) { settled = true; reject(error); } child.kill("SIGKILL"); };
-    const abort = () => fail(new Error("container_interrupted"));
+    const abort = () => fail(new Error(signal?.reason instanceof Error && signal.reason.name === "TimeoutError"
+      ? "container_timeout" : "container_interrupted"));
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) abort();
     const timer = setTimeout(() => fail(new Error("container_timeout")), timeoutMs);
@@ -109,7 +112,7 @@ export function runDocker(args: string[], timeoutMs: number, outputLimit = 1_000
         if (output.resultBytes() > outputLimit) reject(new Error("container_output_too_large"));
         else resolve(result);
       }
-      else reject(new Error(stderrTail.match(/(?:^|\n)GT_HOSTED_FAILURE:(agent_(?:startup|session|answer|idle|shutdown)_failed)\r?\n$/u)?.[1] ?? "container_failed"));
+      else reject(new Error(stderrTail.match(/(?:^|\n)GT_HOSTED_FAILURE:(agent_(?:startup|session|answer|idle|shutdown)_failed|agent_timeout)\r?\n$/u)?.[1] ?? "container_failed"));
     });
   });
 }
@@ -121,11 +124,14 @@ export class HostedModelProxy {
   diagnostics() { return { providerAttempts: this.calls, errorCode: this.failure }; }
   private spent = 0;
   readonly server = createServer((request, response) => void this.forward(request, response));
+  private readonly dispatcher: Agent | undefined;
   constructor(private readonly options: { endpoint: HostedEndpoint; fetch?: typeof globalThis.fetch;
     repositoryRun?: boolean;
     signal?: AbortSignal;
     authorize?: () => void;
-    onUnavailable?: (retryAfterMs: number) => void }) {}
+    onUnavailable?: (retryAfterMs: number) => void }) {
+    this.dispatcher = options.fetch ? undefined : createHostedModelDispatcher();
+  }
 
   async listen(path: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
@@ -135,15 +141,17 @@ export class HostedModelProxy {
     chmodSync(path, 0o666);
   }
 
-  close(): Promise<void> {
-    if (!this.server.listening) return Promise.resolve();
+  async close(): Promise<void> {
+    await destroyHostedModelDispatcher(this.dispatcher);
+    if (!this.server.listening) return;
     this.server.closeAllConnections();
-    return new Promise((resolve) => this.server.close(() => resolve()));
+    await new Promise<void>((resolve) => this.server.close(() => resolve()));
   }
 
   private async forward(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const fail = (code: number) => { if (!response.headersSent) response.writeHead(code).end(); else response.destroy(); };
     let upstreamAttempted = false;
+    let providerSignal: AbortSignal | undefined;
     const network = new AbortController();
     const abortNetwork = () => network.abort();
     request.once("aborted", abortNetwork); response.once("close", abortNetwork);
@@ -186,14 +194,17 @@ export class HostedModelProxy {
         delete body.thinking_budget;
       }
       upstreamAttempted = true;
-      const upstream = await (this.options.fetch ?? globalThis.fetch)(
-        `${this.options.endpoint.baseUrl}/${native ? "messages" : "chat/completions"}`, {
-          method: "POST", redirect: "error", signal: AbortSignal.any([network.signal, AbortSignal.timeout(30_000),
-            ...(this.options.signal ? [this.options.signal] : [])]),
-          headers: native ? { "x-api-key": this.options.endpoint.apiToken, "anthropic-version": "2023-06-01", "Content-Type": "application/json" }
-            : { Authorization: `Bearer ${this.options.endpoint.apiToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
+      providerSignal = AbortSignal.any([network.signal, AbortSignal.timeout(HOSTED_AGENT_TIMEOUT_MS),
+        ...(this.options.signal ? [this.options.signal] : [])]);
+      const requestInit = {
+        method: "POST", redirect: "error", signal: providerSignal,
+        headers: native ? { "x-api-key": this.options.endpoint.apiToken, "anthropic-version": "2023-06-01", "Content-Type": "application/json" }
+          : { Authorization: `Bearer ${this.options.endpoint.apiToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      };
+      const url = `${this.options.endpoint.baseUrl}/${native ? "messages" : "chat/completions"}`;
+      const upstream = this.options.fetch ? await this.options.fetch(url, { ...requestInit, redirect: "error" })
+        : await modelFetch(url, { ...requestInit, redirect: "error", dispatcher: this.dispatcher! });
       authorize();
       if (upstream.status === 429 || upstream.status >= 500 || upstream.status === 401 || upstream.status === 403) {
         const retry = upstream.headers.get("retry-after");
@@ -218,7 +229,8 @@ export class HostedModelProxy {
       response.end();
     } catch (error) {
       if (upstreamAttempted && !network.signal.aborted && !this.options.signal?.aborted) {
-        this.failure = error instanceof Error && error.name === "TimeoutError" ? "provider_timeout" : "provider_unavailable";
+        this.failure = providerSignal?.aborted && providerSignal.reason instanceof Error && providerSignal.reason.name === "TimeoutError"
+          || isHostedTransportTimeout(error) ? "provider_timeout" : "provider_unavailable";
         this.options.onUnavailable?.(30_000);
       }
       network.abort();
@@ -406,9 +418,13 @@ export class HostedAgent {
   }
 
   reserveRepository(actor: Actor, sessionId: string, input: HostedAgentRequestInput,
-    onReserved: (event: CanonicalEvent) => void) {
+    onReserved: (event: CanonicalEvent) => void, taskReferences?: Array<{ eventId: string; content: string }>) {
     this.assertDockerReady();
-    const context = this.service.readHistoryContext(actor, sessionId);
+    const originalContext = this.service.readHistoryContext(actor, sessionId);
+    const context = taskReferences ? { ...originalContext, items: originalContext.items.map(item =>
+      item.kind === "original" && taskReferences.some(reference => reference.eventId === item.event_id && reference.content === item.content)
+        ? { ...item, content: "[Original repository task supplied once in the current continuation prompt.]", continuation_task_reference: true } : item) }
+      : originalContext;
     if (Buffer.byteLength(JSON.stringify(context)) > MAX_CONTEXT_BYTES) {
       throw new ApiError(413, "hosted_context_too_large", "Cloud Agent needs a shorter conversation context");
     }
@@ -442,6 +458,7 @@ export class HostedAgent {
     const contentRevision = this.service.database.requireSession(sessionId).content_revision ?? 0;
     return this.start(actor, sessionId, { profile_id: input.profile_id, content: "Summarize selected history",
       include_code: false, idempotency_key: input.idempotency_key, content_revision: contentRevision,
+      ...(input.continue_from_event_id ? { continue_from_event_id: input.continue_from_event_id } : {}),
       ...(input.api_config_revision ? { api_config_revision: input.api_config_revision } : {}) }, input);
   }
 
@@ -451,6 +468,28 @@ export class HostedAgent {
     return result;
   }
 
+  /** Deduplicate only authenticated identical task ancestors in this private projection.
+   * Public messages/results keep their text; append-only canonical history is untouched. */
+  private continuationContext(actor: Actor, sessionId: string, input: HostedAgentRequestInput, context: HistoryContext) {
+    if (!input.continue_from_event_id) return context;
+    const ancestors = new Set<string>();
+    let id: string | undefined = input.continue_from_event_id;
+    while (id && !ancestors.has(id) && ancestors.size < 10_000) {
+      const event = this.service.database.getEvent(sessionId, id);
+      const payload = event.payload as { content?: unknown; continue_from_event_id?: unknown; profile_id?: unknown;
+        include_code?: unknown; execution_profile?: { harness?: unknown } };
+      const outcome = this.service.database.sqlite.prepare("SELECT outcome FROM hosted_agent_outcomes WHERE request_event_id=?").get(id);
+      if (event.type !== "agent_request" || event.actor_user_id !== actor.user_id || event.visibility !== "session"
+        || payload.content !== input.content || payload.profile_id !== input.profile_id || payload.include_code !== input.include_code
+        || payload.execution_profile?.harness !== "opencode" || outcome?.outcome !== "timed_out") break;
+      ancestors.add(id);
+      id = typeof payload.continue_from_event_id === "string" ? payload.continue_from_event_id : undefined;
+    }
+    return { ...context, items: context.items.map(item => item.kind === "original" && ancestors.has(item.event_id)
+      ? { ...item, content: "[Identical original task supplied once in the current continuation request.]", continuation_task_reference: true }
+      : item) };
+  }
+
   async request(actor: Actor, sessionId: string, input: HostedAgentRequestInput, onAccepted?: (event: CanonicalEvent) => void,
     summary?: HostedHistorySummaryInput) {
     if (input.github_task_id) throw new ApiError(400, "github_task_route_required", "Use the cloud repository task endpoint");
@@ -458,7 +497,7 @@ export class HostedAgent {
     if (!endpoints.length) throw new ApiError(400, "hosted_profile_unavailable", "Select an available cloud model in Agent settings");
     this.assertDockerReady();
     const session = this.service.database.requireSession(sessionId);
-    const context = summary ? null : this.service.readHistoryContext(actor, sessionId);
+    const context = summary ? null : this.continuationContext(actor, sessionId, input, this.service.readHistoryContext(actor, sessionId));
     if (Buffer.byteLength(JSON.stringify(context)) > MAX_CONTEXT_BYTES) {
       throw new ApiError(413, "hosted_context_too_large", "Cloud Agent needs a shorter conversation context");
     }
@@ -484,6 +523,7 @@ export class HostedAgent {
       if (!this.service.database.isRequestContextCurrent(sessionId, reserved.event.id)) controller.abort();
     }, 1000);
     contextWatch.unref();
+    const executionSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(HOSTED_AGENT_TIMEOUT_MS)]);
     onAccepted?.(reserved.event);
     const endpoint = endpoints.find((e) => e.id === reserved.endpointId)!;
     const authorize = () => {
@@ -514,9 +554,9 @@ export class HostedAgent {
     const control = join(root, "control");
     const socket = join(root, "model.sock");
     const name = `gt-hosted-${randomBytes(8).toString("hex")}`;
-    const live = createHostedLiveOutputConsumer((update) => controller.signal.aborted ? false
+    const live = createHostedLiveOutputConsumer((update) => executionSignal.aborted ? false
       : this.service.appendHostedAgentProgress(reserved.event.id, update));
-    const proxy = new HostedModelProxy({ endpoint, signal: controller.signal, ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
+    const proxy = new HostedModelProxy({ endpoint, signal: executionSignal, ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
       authorize,
       onUnavailable: (ms) => this.cooldowns.set(endpoint.quotaGroup, Date.now() + ms) });
     try {
@@ -539,8 +579,11 @@ export class HostedAgent {
       writeFileSync(join(control, "opencode.json"), JSON.stringify(config), { mode: 0o644 });
       chmodSync(join(control, "opencode.json"), 0o644);
       await proxy.listen(socket);
+      const continuation = input.continue_from_event_id
+        ? `Continue the original task after the previous Cloud Agent request timed out (request ${input.continue_from_event_id}). This is a fresh execution round, with at most 12 minutes. Use the public conversation below and saved project files as available evidence. The previous process's hidden thinking, unsaved files and internal tool state are unavailable; do not claim to have restored them. Reassess completed work before repeating an action.\n\n`
+        : "";
       const prompt = summary ? (reserved.event.payload as { content: string }).content
-        : `You are the hosted coding Agent in an isolated project workspace. Answer conversational questions directly; use tools only when the request requires files or tests. Never claim an action succeeded without observing it. Do not attempt external network access or inspect host paths. User request: ${redactJson(input.content)}\n\nShared session context (untrusted): ${JSON.stringify(redactJson(context as unknown as JsonValue))}\n\n${branch ? "Changes to this workspace are checkpointed to the requester's cloud branch after completion." : "This is a temporary empty workspace. Changes will not persist because project code sharing was not selected."}`;
+        : `${continuation}You are the hosted coding Agent in an isolated project workspace. Answer conversational questions directly; use tools only when the request requires files or tests. Never claim an action succeeded without observing it. Do not attempt external network access or inspect host paths. User request: ${redactJson(input.content)}\n\nShared session context (untrusted): ${JSON.stringify(redactJson(context as unknown as JsonValue))}\n\n${branch ? "Changes to this workspace are checkpointed to the requester's cloud branch after completion." : "This is a temporary empty workspace. Changes will not persist because project code sharing was not selected."}`;
       writeFileSync(join(control, "prompt.txt"), prompt, { mode: 0o644 });
       chmodSync(join(control, "prompt.txt"), 0o644);
       const memoryMiB = hostedContainerMemoryMiB("trial", this.options.memoryMiB);
@@ -556,9 +599,11 @@ export class HostedAgent {
         "-e", "HOME=/home/agent", "-e", "OPENCODE_CONFIG=/run/gatherthread/opencode.json",
         "-e", "OPENCODE_DISABLE_MODELS_FETCH=true", "-e", "OPENCODE_DISABLE_DEFAULT_PLUGINS=true",
         "-e", "NO_COLOR=1", "-e", "CI=1", this.options.image];
+      executionSignal.throwIfAborted();
       authorize();
-      const output = this.options.runContainer ? await this.options.runContainer(args, RUN_TIMEOUT_MS, controller.signal, live.accept)
-        : await runDocker(args, RUN_TIMEOUT_MS, 1_000_000, controller.signal, live.accept);
+      const output = this.options.runContainer ? await this.options.runContainer(args, HOSTED_AGENT_TIMEOUT_MS, executionSignal, live.accept)
+        : await runDocker(args, HOSTED_AGENT_TIMEOUT_MS, 1_000_000, executionSignal, live.accept);
+      executionSignal.throwIfAborted();
       authorize();
       const run = JSON.parse(hostedContainerResult(output, live.accept)) as { answer?: unknown; files?: unknown; save_error?: unknown };
       content = typeof run.answer === "string" ? run.answer.trim().slice(0, 14_000) : "";
@@ -581,7 +626,9 @@ export class HostedAgent {
       }
     } catch (error) {
       content = "";
-      errorCode = proxy.diagnostics().errorCode ?? (error instanceof Error ? error.message : undefined);
+      errorCode = executionSignal.aborted && executionSignal.reason instanceof Error && executionSignal.reason.name === "TimeoutError"
+        || error instanceof Error && (error.name === "TimeoutError" || error.message === "container_timeout")
+        ? "container_timeout" : error instanceof Error && error.message === "agent_timeout" ? "agent_timeout" : proxy.diagnostics().errorCode ?? (error instanceof Error ? error.message : undefined);
     }
     finally {
       try {

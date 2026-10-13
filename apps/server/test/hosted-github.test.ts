@@ -63,7 +63,7 @@ function fixture() {
    runs++;
    assert.ok(args.includes("none") && args.includes("2048m") && args.includes("GT_HOSTED_REPOSITORY=1"));
    assert.equal(args[args.indexOf("--memory-swap") + 1], "2048m");
-   assert.equal(timeout, 900000);
+   assert.equal(timeout, 720000);
    assert.ok(!JSON.stringify(args).includes("ghu_test") && !JSON.stringify(args).includes("fake-model-secret"));
    const mount = args.find((arg) => arg.endsWith("dst=/input,readonly"))!;
    const root = mount.split("src=")[1]!.split(",dst=")[0]!;
@@ -1096,4 +1096,120 @@ unixTest("revoking the initiating device prevents result source persistence and 
    assert.equal(stored.state, "failed"); assert.equal(stored.result_files, null);
    assert.equal(f.db.sqlite.prepare("SELECT status FROM hosted_agent_runs").get()!.status, "failed");
  } finally { release?.(JSON.stringify({ answer: "Done", files: initial })); await f.close(); }
+});
+
+for (const timeoutCode of ["container_timeout", "agent_timeout"]) unixTest(`repository ${timeoutCode} is distinct and Continue carries the maximum-size original task with saved source in a fresh 12-minute round`, async () => {
+ const f = fixture(); let calls = 0;
+ const original = "测".repeat(6000);
+ f.runOptions.runContainer = async (args, timeout, signal) => {
+  assert.equal(timeout, 720_000); assert.equal(signal?.aborted, false);
+  if (++calls === 1) throw new Error(timeoutCode);
+  const control = args.find(value => value.endsWith("dst=/run/gatherthread,readonly"))!.split("src=")[1]!.split(",dst=")[0]!;
+  const prompt = readFileSync(join(control, "prompt.txt"), "utf8");
+  assert.equal(prompt.split(original).length, 2); assert.ok(prompt.includes("Continue with the observed saved source."));
+  assert.ok(prompt.includes("hidden thinking and unsaved work are not restored"));
+  return JSON.stringify({ answer: "Verified saved source", files: initial, save_error: null });
+ };
+ try {
+  await connect(f);
+  const first = f.github.start(f.actor, f.session.id, { content: original, profile_id: "coding", idempotency_key: "github-timeout-original" });
+  const timedOut = await settled(f, first.id); assert.equal(timedOut.state, "failed");
+  assert.equal(timedOut.error_code, "github_task_timeout"); assert.equal(timedOut.resumable, true);
+  const response = f.service.replay(f.actor, f.session.id, 0, 100).events.find(event => event.type === "agent_response")!;
+  assert.equal((response.payload as {outcome: string}).outcome, "timed_out"); f.advance();
+  assert.throws(() => f.github.start(f.actor, f.session.id, { content: "Continue", profile_id: "other", continue_task_id: first.id,
+    idempotency_key: "github-timeout-wrong-model" }), error => error instanceof ApiError && error.code === "hosted_profile_changed");
+  const second = f.github.start(f.actor, f.session.id, { content: "Continue with the observed saved source.", profile_id: "coding",
+    continue_task_id: first.id, idempotency_key: "github-timeout-continue" });
+  assert.equal((await settled(f, second.id)).state, "completed"); assert.equal(calls, 2);
+  assert.equal(f.db.hostedAgentUsage(f.actor, 20, 20).user_used_runs, 2);
+ } finally { await f.close(); }
+});
+
+for (const repeated of [false, true]) for (const cleanup of ["delete", "expire", "restart"] as const) unixTest(`repository continuation retains its ${repeated ? "repeated" : "original"} task after ancestor snapshot ${cleanup}`, async () => {
+ const f = fixture(); let calls = 0;
+ const original = "测".repeat(6000);
+ f.runOptions.runContainer = async (args) => {
+  if (++calls === 1) throw new Error("container_timeout");
+  const control = args.find(value => value.endsWith("dst=/run/gatherthread,readonly"))!.split("src=")[1]!.split(",dst=")[0]!;
+  assert.equal(readFileSync(join(control, "prompt.txt"), "utf8").split(original).length, 2);
+  return JSON.stringify({ answer: "Verified saved source", files: initial, save_error: null });
+ };
+ try {
+  await connect(f);
+  const first = f.github.start(f.actor, f.session.id, { content: original, profile_id: "coding", idempotency_key: `lineage-root-${cleanup}` });
+  assert.equal((await settled(f, first.id)).error_code, "github_task_timeout"); f.advance();
+  const second = f.github.start(f.actor, f.session.id, { content: repeated ? original : "Continue with the observed saved source.", profile_id: "coding",
+    continue_task_id: first.id, idempotency_key: `lineage-child-${cleanup}` });
+  assert.equal((await settled(f, second.id)).state, "completed");
+  if (cleanup === "expire") {
+   f.db.sqlite.prepare("UPDATE hosted_github_tasks SET expires_at=0 WHERE id=?").run(first.id);
+   f.github.status(f.actor, f.session.project_id);
+  }
+  else f.github.remove(f.actor, first.id);
+  if (cleanup === "restart") {
+   await f.github.close(); f.github = new HostedGithub(f.service, f.agent, f.runOptions, f.githubOptions);
+  }
+  f.advance();
+  const third = f.github.start(f.actor, f.session.id, { content: "Continue with the observed saved source.", profile_id: "coding",
+    continue_task_id: second.id, idempotency_key: `lineage-grandchild-${cleanup}` });
+  assert.equal((await settled(f, third.id)).state, "completed"); assert.equal(calls, 3);
+  assert.ok(f.service.replay(f.actor, f.session.id, 0, 100).events.some(event => (event.payload as { content?: string } | null)?.content === original));
+  assert.equal(f.db.hostedAgentUsage(f.actor, 20, 20).user_used_runs, 3);
+ } finally { await f.close(); }
+});
+
+unixTest("legacy repository task references are backfilled before restart pruning and remain subject to history erasure", async () => {
+ const f = fixture(); let calls = 0;
+ const original = "测".repeat(6000);
+ f.runOptions.runContainer = async () => {
+  if (++calls === 1) throw new Error("container_timeout");
+  return JSON.stringify({ answer: "Saved source", files: initial, save_error: null });
+ };
+ try {
+  await connect(f);
+  const root = f.github.start(f.actor, f.session.id, { content: original, profile_id: "coding", idempotency_key: "lineage-legacy-root" });
+  await settled(f, root.id); f.advance();
+  const child = f.github.start(f.actor, f.session.id, { content: "Continue", profile_id: "coding", continue_task_id: root.id,
+   idempotency_key: "lineage-legacy-child" });
+  assert.equal((await settled(f, child.id)).state, "completed");
+  await f.github.close();
+  f.db.sqlite.prepare("UPDATE hosted_github_tasks SET original_task_reference_ids=NULL").run();
+  f.db.sqlite.prepare("UPDATE hosted_github_tasks SET expires_at=0 WHERE id=?").run(root.id);
+  f.github = new HostedGithub(f.service, f.agent, f.runOptions, f.githubOptions);
+  assert.equal(f.db.sqlite.prepare("SELECT id FROM hosted_github_tasks WHERE id=?").get(root.id), undefined);
+  f.advance();
+  const next = f.github.start(f.actor, f.session.id, { content: "Continue", profile_id: "coding", continue_task_id: child.id,
+   idempotency_key: "lineage-legacy-next" });
+  assert.equal((await settled(f, next.id)).state, "completed"); assert.equal(calls, 3);
+  const rootEvent = f.service.replay(f.actor, f.session.id, 0, 100).events.find(event =>
+   event.type === "agent_request" && (event.payload as { content?: string }).content === original)!;
+  f.db.deleteMessage(f.actor, f.session.id, rootEvent.id, "lineage-legacy-erase");
+  const used = f.db.hostedAgentUsage(f.actor, 20, 20).user_used_runs;
+  assert.throws(() => f.github.start(f.actor, f.session.id, { content: "Continue", profile_id: "coding", continue_task_id: next.id,
+   idempotency_key: "lineage-legacy-erased" }), error => error instanceof ApiError && error.code === "context_changed");
+  assert.equal(calls, 3); assert.equal(f.db.hostedAgentUsage(f.actor, 20, 20).user_used_runs, used);
+ } finally { await f.close(); }
+});
+
+unixTest("legacy completed child with missing original task references is reviewable but not advertised as resumable", async () => {
+ const f = fixture();
+ try {
+  await connect(f);
+  const root = f.github.start(f.actor, f.session.id, { content: "Original task", profile_id: "coding", idempotency_key: "lineage-missing-root" });
+  await settled(f, root.id); f.advance();
+  const child = f.github.start(f.actor, f.session.id, { content: "Continue", profile_id: "coding", continue_task_id: root.id,
+   idempotency_key: "lineage-missing-child" });
+  await settled(f, child.id);
+  f.github.remove(f.actor, root.id); await f.github.close();
+  f.db.sqlite.prepare("UPDATE hosted_github_tasks SET original_task_reference_ids=NULL WHERE id=?").run(child.id);
+  f.github = new HostedGithub(f.service, f.agent, f.runOptions, f.githubOptions);
+  const saved = f.github.view(f.actor, child.id);
+  assert.equal(saved.state, "completed"); assert.ok(saved.answer && saved.revision && saved.changes.length);
+  assert.equal(saved.resumable, false);
+  const used = f.db.hostedAgentUsage(f.actor, 20, 20).user_used_runs;
+  assert.throws(() => f.github.start(f.actor, f.session.id, { content: "Continue", profile_id: "coding", continue_task_id: child.id,
+   idempotency_key: "lineage-missing-next" }), error => error instanceof ApiError && error.code === "github_task_access");
+  assert.equal(f.db.hostedAgentUsage(f.actor, 20, 20).user_used_runs, used);
+ } finally { await f.close(); }
 });

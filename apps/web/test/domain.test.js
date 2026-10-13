@@ -634,3 +634,14 @@ test("a request that streamed nothing has no live line", () => {
     { id: "c1", type: "agent_progress", replyTo: "request-1", createdAt: "t", payload: { phase: "activity", content: "Agent is working." } },
   ]), "");
 });
+
+test("timeout outcome differs from failure and old timeout codes stay readable", async () => {
+  const { isTimedOutAgentResponse } = await import("../src/domain.js");
+  for (const payload of [{ status: "failed", outcome: "timed_out", error: { code: "container_timeout" } },
+    { status: "failed", error: { code: "provider_timeout" } }, { status: "failed", outcome: "timed_out", error: { code: "agent_timeout" } }]) {
+    const event = { type: "agent_response", payload };
+    assert.equal(isFailedAgentResponse(event), true); assert.equal(isTimedOutAgentResponse(event), true);
+  }
+  assert.equal(isTimedOutAgentResponse({ type: "agent_response", payload: { status: "failed", error: { code: "provider_unavailable" } } }), false);
+  assert.equal(isTimedOutAgentResponse({ type: "agent_response", payload: { status: "completed" } }), false);
+});

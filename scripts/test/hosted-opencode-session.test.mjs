@@ -267,3 +267,99 @@ test('failure diagnostics contain only the failing phase, not provider or tool d
     });
   }
 });
+
+// Exercise the actual final-response runner against real HTTP and Undici parser
+// timers. Only OpenCode's process and the loopback destination are fictional.
+const { createServer } = await import('node:http');
+const { createRequire } = await import('node:module');
+const { Pool, fetch: runnerFetch } = await import('undici');
+const { createOpencodeDispatcher, OPENCODE_ROUND_TIMEOUT_MS } = await import('../../ops/hosted-agent/opencode-session.mjs');
+const parserClock = createRequire(import.meta.url)('undici/lib/util/timers.js');
+const flushParser = () => new Promise(resolve => setImmediate(resolve));
+
+for (const phase of ['headers', 'body']) for (const timesOut of [false, true]) {
+  test(`actual final JSON runner ${timesOut ? 'classifies a real 12-minute timeout' : 'survives the old five-minute deadline'} in ${phase}`, { timeout: 5000 }, async () => {
+    const entered = Promise.withResolvers(), release = Promise.withResolvers();
+    const final = JSON.stringify(finalReply());
+    let prompts = 0, sse = false;
+    const server = createServer(async (request, response) => {
+      request.resume();
+      if (request.url === '/event') {
+        sse = true; response.writeHead(200, { 'content-type': 'text/event-stream' }); response.write(': started\n\n'); return;
+      }
+      if (request.url === '/session/ses_fixture/message') {
+        prompts++;
+        if (phase === 'body') { response.writeHead(200, { 'content-type': 'application/json' }); response.write(final.slice(0, 20)); }
+        entered.resolve(); await release.promise;
+        if (!response.destroyed) {
+          if (phase === 'headers') response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(phase === 'body' ? final.slice(20) : final);
+        }
+        return;
+      }
+      const body = request.url === '/global/health' ? { healthy: true, version: '1.18.32' }
+        : request.url === '/session' ? { id: 'ses_fixture' } : {};
+      response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify(body));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const dispatcher = createOpencodeDispatcher((_, options) => new Pool(origin, options));
+    const unrelated = createOpencodeDispatcher();
+    const f = fixture(); let settled = false;
+    const result = runOpencodeSession(workspace, 'Observed task', 64_000, { spawnProcess: f.options.spawnProcess,
+      fetchResponse: runnerFetch, createDispatcher: () => dispatcher, onProgress: () => {} }).finally(() => { settled = true; });
+    // Register expected failure before the real transport rejects.
+    const checked = timesOut ? assert.rejects(result, error => {
+      assert.equal(error.message, 'agent_failed'); assert.equal(error.diagnosticCode, 'agent_timeout');
+      assert.deepEqual(Object.keys(error), ['diagnosticCode']); return true;
+    }) : result;
+    try {
+      await entered.promise; await flushParser(); await flushParser();
+      assert.equal(sse, true, 'the SSE connection must not block the final-response connection');
+      assert.equal(OPENCODE_ROUND_TIMEOUT_MS, 720_000);
+      parserClock.tick(0); parserClock.tick(301_000); await flushParser();
+      assert.equal(settled, false, 'a real final response cannot fail at the old five-minute parser limit');
+      if (timesOut) { parserClock.tick(421_000); await checked; }
+      else { release.resolve(); assert.equal(await checked, 'Done'); }
+      assert.equal(prompts, 1, 'waiting/timeout must never silently submit a second model request');
+      assert.equal(dispatcher.destroyed, true); assert.equal(unrelated.destroyed, false); assert.equal(f.child.closed, true);
+    } finally {
+      release.resolve(); await dispatcher.destroy(); await unrelated.destroy();
+      await result.catch(() => {}); server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve)); parserClock.reset();
+    }
+  });
+}
+
+test('final timeout classification is allowlisted and every owned dispatcher closes on malformed answers', async () => {
+  for (const error of [new DOMException('private deadline', 'TimeoutError'),
+    new TypeError('fetch failed', { cause: Object.assign(new Error('private detail'), { code: 'UND_ERR_HEADERS_TIMEOUT' }) }),
+    Object.assign(new Error('unrelated connection failure'), { code: 'ECONNRESET' })]) {
+    const dispatcher = createOpencodeDispatcher();
+    const f = fixture({ fetch: async path => {
+      if (path === '/global/health') return json({ healthy: true, version: '1.18.32' });
+      if (path === '/session') return json({ id: 'ses_fixture' }); throw error;
+    } });
+    await assert.rejects(runOpencodeSession(workspace, 'Task', 64_000, { ...f.options, createDispatcher: () => dispatcher }),
+      { message: 'agent_failed', diagnosticCode: error.code === 'ECONNRESET' ? 'agent_answer_failed' : 'agent_timeout' });
+    assert.equal(dispatcher.destroyed, true); assert.equal(f.child.closed, true);
+  }
+});
+
+test('the absolute round signal ends an outstanding answer even without an idle transport deadline', async t => {
+  const wholeRound = new AbortController(), originalTimeout = AbortSignal.timeout;
+  t.mock.method(AbortSignal, 'timeout', milliseconds => milliseconds === OPENCODE_ROUND_TIMEOUT_MS
+    ? wholeRound.signal : originalTimeout.call(AbortSignal, milliseconds));
+  const entered = Promise.withResolvers();
+  const dispatcher = createOpencodeDispatcher();
+  const f = fixture({ fetch: async (path, init) => {
+    if (path === '/global/health') return json({ healthy: true, version: '1.18.32' });
+    if (path === '/session') return json({ id: 'ses_fixture' });
+    entered.resolve();
+    return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+  } });
+  const result = runOpencodeSession(workspace, 'Task', 64_000, { ...f.options, createDispatcher: () => dispatcher });
+  const checked = assert.rejects(result, { message: 'agent_failed', diagnosticCode: 'agent_timeout' });
+  await entered.promise; wholeRound.abort(new DOMException('private deadline detail', 'TimeoutError')); await checked;
+  assert.equal(dispatcher.destroyed, true); assert.equal(f.child.closed, true);
+});

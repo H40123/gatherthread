@@ -18,7 +18,7 @@ class Node {
   focus() {}
 }
 const source = { id: "a", type: "human_chat", sequence: 1, visibility: "session", actor: { id: "u1", username: "Author" }, payload: { content: "original" } };
-function setup() {
+function setup(options = {}) {
   const nodes = new Map(), created = [], calls = [];
   const el = (id) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id); };
   const document = { getElementById: el, activeElement: new Node(),
@@ -29,7 +29,7 @@ function setup() {
   let finish, reject;
   const api = { createHistorySummary: (...args) => { calls.push(structuredClone(args)); return new Promise((yes, no) => { finish = yes; reject = no; }); } };
   const ui = mountHistorySummaries({ document, api, localizer: { t: (text) => text }, getContext: () => current,
-    onChange: () => ui.updateContext(), renderMarkdown: (text) => Object.assign(new Node(), { markdown: text }) });
+    onChange: () => ui.updateContext(), renderMarkdown: (text) => Object.assign(new Node(), { markdown: text }), ...options });
   ui.updateContext();
   const choose = () => { el("history-summary-select-button").dispatch("click"); const box = ui.sourceControl(source); box.checked = true; box.dispatch("change"); };
   const confirm = () => { el("history-summary-generate-button").dispatch("click"); return el("history-summary-confirm-button").dispatch("click"); };
@@ -40,6 +40,32 @@ const receipt = { id: "summary", type: "agent_request", sequence: 2, visibility:
   payload: { content: "prompt", history_summary: { version: 1, source_event_ids: ["a"], source_digest: "a".repeat(64) } } };
 const answer = { id: "answer", sequence: 3, type: "agent_response", visibility: "session", actor: { id: "u1" },
   replyTo: "summary", payload: { content: "summary text" } };
+
+test("cloud summary timeout shows Continue with the original request, while failure keeps regeneration", () => {
+  const calls = [];
+  const app = setup({ onContinue: (id, button) => calls.push([id, button]), canContinue: () => true });
+  const request = { ...receipt, payload: { ...receipt.payload, execution_profile: { harness: "opencode" } } };
+  const failed = { ...answer, payload: { content: "Timed out", status: "failed", outcome: "timed_out", error: { code: "container_timeout" } } };
+  app.update({ events: [source, request, failed], executionProfile: null });
+  const version = app.ui.timeline().versions[0];
+  const card = app.ui.card(version);
+  assert.equal(card.children[0].children[0].textContent, "Summary timed out");
+  const button = card.children.find(child => child.textContent === "Continue");
+  assert.equal(button.disabled, false);
+  button.dispatch("click");
+  assert.equal(calls[0][0], request.id);
+  app.update({ events: [source, request, failed, { ...request, id: "child", sequence: 4,
+    payload: { ...request.payload, continue_from_event_id: request.id } }] });
+  assert.equal(app.ui.card(version).children.find(child => child.textContent === "Continue").disabled, true);
+  app.update({ writable: false });
+  assert.equal(app.ui.card(version).children.some(child => child.textContent === "Continue"), false);
+  app.update({ writable: true, userId: "other" });
+  assert.equal(app.ui.card(version).children.some(child => child.textContent === "Continue"), false);
+  app.update({ userId: "u1", events: [source, request, { ...failed, payload: { ...failed.payload, outcome: "failed", error: { code: "provider_unavailable" } } }] });
+  const normal = app.ui.card(app.ui.timeline().versions[0]);
+  assert.equal(normal.children[0].children[0].textContent, "Summary failed");
+  assert.equal(normal.children.some(child => child.textContent === "Continue"), false);
+});
 
 test("deletion revision clears summary receipts, versions and selection before a delayed acceptance", async () => {
   const app = setup(); app.choose(); const pending = app.confirm();

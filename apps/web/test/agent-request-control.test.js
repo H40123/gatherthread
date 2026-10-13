@@ -47,6 +47,19 @@ test("personal cloud retry requires the immutable private revision and cannot ad
   assert.throws(() => cloudRequestInput(cloud, "k", [profile], { ...selection, profile_id: "api-other" }), /API connection changed/);
 });
 
+test("personal cloud Continue preserves private API and captured history revisions", async () => {
+  const { continueCloudRequestInput } = await import("../src/agent-request-control.js");
+  const cloud = request("cloud", "me", "opencode");
+  cloud.payload.profile_id = "api-10000000-0000-4000-8000-000000000001";
+  const profile = { id: cloud.payload.profile_id, provider: "deepseek-official", model: "original-model", api_config_revision: "old-revision" };
+  const selection = { profile_id: profile.id, api_config_revision: "old-revision" };
+  const input = continueCloudRequestInput(cloud, "key", [profile], selection, 3);
+  assert.equal(input.apiConfigRevision, "old-revision");
+  assert.equal(input.contentRevision, 3);
+  assert.equal(input.continueFromEventId, cloud.id);
+  assert.throws(() => continueCloudRequestInput(cloud, "key", [{ ...profile, api_config_revision: "new-revision" }], selection, 3), /API connection changed/);
+});
+
 test("composer control is author-scoped, claim-aware, and resets after terminal completion", () => {
   const own = request();
   assert.equal(composerAgentAction([], "me").action, "request");
@@ -180,4 +193,14 @@ test("resume retries reuse a key without changing the target or drafts; viewer/s
   assert.equal(calls.length, 2); assert.equal(f.button.disabled, true);
   f.setContext({ writable: true, sending: true }); f.control.handleClick();
   assert.equal(calls.length, 2);
+});
+
+test("timeout continuation is a fresh request with exact cloud target and original linkage", async () => {
+  const { continueCloudRequestInput } = await import("../src/agent-request-control.js");
+  const cloud = request("timeout-request", "me", "opencode");
+  cloud.payload.profile_id = "cloud-free"; cloud.payload.include_code = true;
+  const result = continueCloudRequestInput(cloud, "stable-continue-key", [{ id: "cloud-free", provider: "deepseek-official", model: "original-model" }]);
+  assert.deepEqual(result, { content: cloud.payload.content, profileId: "cloud-free", includeCode: true,
+    idempotencyKey: "stable-continue-key", replyTo: "quote-1", continueFromEventId: "timeout-request" });
+  assert.throws(() => continueCloudRequestInput(cloud, "key", [{ id: "cloud-free", provider: "deepseek-official", model: "changed" }]), /original cloud model/);
 });

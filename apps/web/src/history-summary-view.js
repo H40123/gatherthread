@@ -1,8 +1,9 @@
-import { createIdempotencyKey, eventContent } from "./domain.js?v=20261012-content-1";
+import { createIdempotencyKey, eventContent, isTimedOutAgentResponse } from "./domain.js?v=20261012-content-1";
 import { eligibleHistorySources, historySelectionError, historySummaryTimeline, selectedHistorySourceIds } from "./history-summaries.js?v=20261012-content-1";
 
 /** Derived display state is tab-local. It never edits canonical history or drafts. */
-export function mountHistorySummaries({ document, api, localizer, getContext, onChange, renderMarkdown, renderEventAvatar, eventAuthorLabel }) {
+export function mountHistorySummaries({ document, api, localizer, getContext, onChange, renderMarkdown, renderEventAvatar, eventAuthorLabel,
+  onContinue, canContinue = () => true }) {
   const el = (id) => document.getElementById(id);
   const t = (text) => localizer.t(text);
   const confirmation = el("history-summary-confirm-dialog");
@@ -202,6 +203,8 @@ export function mountHistorySummaries({ document, api, localizer, getContext, on
     return input;
   }
   function card(version, { list = false } = {}) {
+    const timedOut = version.status === "failed" && version.request.payload?.execution_profile?.harness === "opencode"
+      && isTimedOutAgentResponse(version.response);
     const article = document.createElement("article");
     article.className = "event-card history-summary-card";
     article.dataset.summaryRequestId = version.id;
@@ -211,7 +214,8 @@ export function mountHistorySummaries({ document, api, localizer, getContext, on
     article.dataset.view = showingOriginals ? "original" : "summary";
     const header = document.createElement("header");
     const title = document.createElement("strong");
-    title.textContent = t(version.status === "completed" ? showingOriginals ? "Original messages" : "History summary" : version.status === "failed" ? "Summary failed" : "Summary pending");
+    title.textContent = t(version.status === "completed" ? showingOriginals ? "Original messages" : "History summary"
+      : timedOut ? "Summary timed out" : version.status === "failed" ? "Summary failed" : "Summary pending");
     const controls = document.createElement("div");
     controls.className = "history-summary-actions";
     if (!list && version.status === "completed") {
@@ -270,8 +274,21 @@ export function mountHistorySummaries({ document, api, localizer, getContext, on
       status.setAttribute("role", "status");
       status.textContent = t(version.status === "pending"
         ? "Waiting for the selected Agent. A new generation is unavailable until this request finishes."
-        : "Summary generation failed. Originals are unchanged. Select them to retry with your current Agent.");
+        : timedOut ? "Summary generation timed out. Continue uses the original selected messages and instructions in a new round."
+          : "Summary generation failed. Originals are unchanged. Select them to retry with your current Agent.");
       article.append(status);
+      if (timedOut && onContinue && context().writable && version.request.actor?.id === context().userId) {
+        const continuing = document.createElement("button");
+        continuing.type = "button";
+        continuing.className = "text-button agent-retry-button";
+        continuing.textContent = t("Continue");
+        continuing.disabled = !version.available || busy() || !canContinue(version.request)
+          || events().some(event => event.payload?.continue_from_event_id === version.request.id);
+        continuing.addEventListener("click", () => {
+          if (!continuing.disabled) return onContinue(version.request.id, continuing);
+        });
+        article.append(continuing);
+      }
     }
     if (list) {
       const sources = document.createElement("p");

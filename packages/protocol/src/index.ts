@@ -216,14 +216,22 @@ export const HostedAgentRequestInputSchema = z.object({
   idempotency_key: IdempotencyKeySchema,
   reply_to_event_id: IdSchema.nullable().optional(),
   github_task_id: z.string().regex(/^gh-task-[a-f0-9]{32}$/u).optional(),
+  continue_from_event_id: IdSchema.optional(),
   api_config_revision: PersonalCloudRevisionSchema,
   content_revision: z.number().int().nonnegative().optional(),
 }).strict().refine(hasValidPersonalCloudRevision, { message: "Personal cloud profiles require their exact configuration revision" });
+/** Additive terminal classification: legacy clients still recognize status=failed. */
+export const HostedAgentFailurePayloadSchema = z.object({
+  content: z.string().min(1).max(512), status: z.literal("failed"),
+  outcome: z.enum(["timed_out", "failed"]),
+  error: z.object({ code: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/u),
+    provider_attempts: z.number().int().min(0).max(64).optional() }).strict(),
+}).strict();
 export type HostedAgentRequestInput = z.infer<typeof HostedAgentRequestInputSchema>;
 
 /** Summaries use server-validated selected history, never client-supplied text or code. */
 export const HostedHistorySummaryInputSchema = CreateHistorySummaryInputSchema.omit({ execution_profile: true })
-  .extend({ profile_id: HostedAgentRequestInputSchema.shape.profile_id.unwrap(), api_config_revision: PersonalCloudRevisionSchema })
+  .extend({ profile_id: HostedAgentRequestInputSchema.shape.profile_id.unwrap(), api_config_revision: PersonalCloudRevisionSchema, continue_from_event_id: IdSchema.optional() })
   .strict().refine(hasValidPersonalCloudRevision, { message: "Personal cloud profiles require their exact configuration revision" });
 export type HostedHistorySummaryInput = z.infer<typeof HostedHistorySummaryInputSchema>;
 export const HostedAgentAcceptedSchema = z.object({
