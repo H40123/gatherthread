@@ -38,7 +38,7 @@ const server = await startCollaborationServer({ databasePath: ":memory:", codeRe
 }, port);
 let scenarios = 0;
 
-async function seed(context, locale) {
+async function seed(context, locale, timeout = false) {
   const marker = randomUUID();
   const sent = await server.database.registration.send({ email: `${randomUUID()}@example.invalid`, locale: "en",
     challenge_token: randomUUID(), idempotency_key: randomUUID() }, marker, randomUUID(), registration);
@@ -54,7 +54,7 @@ async function seed(context, locale) {
   const reservation = server.service.reserveHostedAgentRequest(actor, session.id, { profile_id: endpoint.profileId,
     content: "Who are you?", include_code: false, idempotency_key: randomUUID() }, [endpoint],
     { userDailyRuns: null, globalDailyRuns: null, maxConcurrent: 1 });
-  server.service.finishHostedAgentRequest(reservation.event.id, { errorCode: "container_failed", providerAttempts: 0 });
+  server.service.finishHostedAgentRequest(reservation.event.id, { errorCode: timeout ? "container_timeout" : "container_failed", providerAttempts: 0 });
   // Fixture time does not gate the first retry; later starts use the actual interval.
   server.database.sqlite.prepare("DELETE FROM hosted_agent_user_activity WHERE user_id=?").run(actor.user_id);
   const cookie = server.database.createBrowserSession(actor);
@@ -74,6 +74,7 @@ try {
     ["chromium", chromium, "en", { width: 1440, height: 760 }, false],
     ["webkit", webkit, "zh", { width: 1440, height: 760 }, false],
     ["webkit-phone", webkit, "zh", { width: 390, height: 844 }, true],
+    ["webkit-continue", webkit, "zh", { width: 1440, height: 760 }, false],
   ]) {
     const browser = await engine.launch({ headless: true, ...(name === "chromium" && process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
       ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
@@ -82,7 +83,8 @@ try {
     const page = await context.newPage(), errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await context.route(/^https?:/, route => route.request().url().startsWith(origin + "/") ? route.continue() : route.abort());
-    const f = await seed(context, locale);
+    const continuing = name === "webkit-continue";
+    const f = await seed(context, locale, continuing);
     const actionState = action => page.waitForFunction(action => document.querySelector("#send-agent-button").dataset.agentAction === action, action);
     try {
       await page.goto(`${origin}/app/#project=${f.project.id}&session=${f.session.id}`);
@@ -103,9 +105,16 @@ try {
       await page.locator("#message-input").fill("An unsent draft stays here.");
       const accepted = page.waitForResponse(response => response.request().method() === "POST"
         && response.url().endsWith("/hosted-agent-requests"));
-      await page.locator(`[data-action=retry-agent-request][data-request-id="${f.request.id}"]`).click();
+      const retry = page.locator(`[data-action=retry-agent-request][data-request-id="${f.request.id}"]`);
+      assert.equal(await retry.getAttribute("data-continue-cloud"), String(continuing));
+      await retry.click();
       assert.equal((await accepted).status(), 202);
       await actionState("pause");
+      if (continuing) {
+        assert.equal(server.service.replay(f.actor, f.session.id, 0, 100).events.filter(event => event.type === "agent_request")
+          .at(-1).payload.continue_from_event_id, f.request.id);
+        assert.equal(await retry.isDisabled(), true);
+      }
       await page.locator("#send-agent-button").click();
       await actionState("resume");
       assert.equal(await page.locator("#message-input").inputValue(), "An unsent draft stays here.");
@@ -137,7 +146,7 @@ try {
       await page.getByText("Fixture shared cloud summary.", { exact: true }).waitFor();
       await page.locator(".history-summary-card [data-summary-view-toggle]").click();
       await page.getByText(f.source.payload.content, { exact: true }).waitFor();
-      assert.deepEqual(errors, []); scenarios++; console.log(`${name}: retry → pause → resume → reply → cloud summary passed`);
+      assert.deepEqual(errors, []); scenarios++; console.log(`${name}: ${continuing ? "continue" : "retry"} → pause → resume → reply → cloud summary passed`);
     } finally {
       jobs.forEach(job => job.resolve(JSON.stringify({ answer: "Fixture cleanup", files: [] })));
       await context.close(); await browser.close();

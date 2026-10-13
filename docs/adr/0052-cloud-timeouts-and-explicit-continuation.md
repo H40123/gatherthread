@@ -40,6 +40,13 @@ instructions without widening provider transfer. Repository continuation retains
 its existing private saved-source workflow and exact original profile. No flow
 promises to recover stopped processes, hidden reasoning or unsaved files.
 
+Repository descendants persist only the canonical event IDs for the original
+instruction and exact repetitions. They read and authorize that instruction from
+current history on each new round, independently of deleted or expired private
+ancestor snapshots. Startup backfills intact older chains before pruning; an
+incomplete older chain is refused rather than guessing its original instruction.
+This does not preserve a second copy of erased history or relax revision fences.
+
 ## Compatibility and verification
 
 Server and Web should upgrade together to expose Continue. Older clients still
@@ -51,6 +58,7 @@ remain independently enforced.
 
 Tests exercise strict wire inputs, timeout/failure classification, duplicate child
 and idempotency fences, unauthorized/forged metadata, summaries, source snapshots,
-maximum-size ASCII/Chinese task continuation and real HTTP parsing past five
+maximum-size ASCII/Chinese task continuation, repeated instructions and ancestor
+snapshot deletion/expiry/restart, legacy backfill and erasure, and real HTTP parsing past five
 minutes with an accelerated parser clock. A live provider/deployment acceptance
 requires separate operator authorization; local fixtures establish no deployment.
