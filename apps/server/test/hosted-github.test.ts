@@ -1191,3 +1191,25 @@ unixTest("legacy repository task references are backfilled before restart prunin
   assert.equal(calls, 3); assert.equal(f.db.hostedAgentUsage(f.actor, 20, 20).user_used_runs, used);
  } finally { await f.close(); }
 });
+
+unixTest("legacy completed child with missing original task references is reviewable but not advertised as resumable", async () => {
+ const f = fixture();
+ try {
+  await connect(f);
+  const root = f.github.start(f.actor, f.session.id, { content: "Original task", profile_id: "coding", idempotency_key: "lineage-missing-root" });
+  await settled(f, root.id); f.advance();
+  const child = f.github.start(f.actor, f.session.id, { content: "Continue", profile_id: "coding", continue_task_id: root.id,
+   idempotency_key: "lineage-missing-child" });
+  await settled(f, child.id);
+  f.github.remove(f.actor, root.id); await f.github.close();
+  f.db.sqlite.prepare("UPDATE hosted_github_tasks SET original_task_reference_ids=NULL WHERE id=?").run(child.id);
+  f.github = new HostedGithub(f.service, f.agent, f.runOptions, f.githubOptions);
+  const saved = f.github.view(f.actor, child.id);
+  assert.equal(saved.state, "completed"); assert.ok(saved.answer && saved.revision && saved.changes.length);
+  assert.equal(saved.resumable, false);
+  const used = f.db.hostedAgentUsage(f.actor, 20, 20).user_used_runs;
+  assert.throws(() => f.github.start(f.actor, f.session.id, { content: "Continue", profile_id: "coding", continue_task_id: child.id,
+   idempotency_key: "lineage-missing-next" }), error => error instanceof ApiError && error.code === "github_task_access");
+  assert.equal(f.db.hostedAgentUsage(f.actor, 20, 20).user_used_runs, used);
+ } finally { await f.close(); }
+});
