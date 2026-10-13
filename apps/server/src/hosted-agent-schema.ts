@@ -69,7 +69,7 @@ INSERT OR IGNORE INTO hosted_agent_outcomes
   FROM hosted_agent_runs r JOIN events e ON e.reply_to_event_id=r.request_event_id
   WHERE r.status='failed' AND e.type='agent_response'
     AND json_extract(e.payload_json,'$.status')='failed'
-    AND json_extract(e.payload_json,'$.error.code') IN ('container_timeout','provider_timeout');
+    AND json_extract(e.payload_json,'$.error.code') IN ('container_timeout','provider_timeout','agent_timeout');
 
 -- Daily consumption is independent of conversation, project and account deletion.
 -- The request ID deduplicates backfill; no prompt, session, device or source is retained.

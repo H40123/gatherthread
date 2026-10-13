@@ -520,7 +520,7 @@ export function isFailedAgentResponse(event) {
 /** Legacy timeout codes remain readable without rewriting historical events. */
 export function isTimedOutAgentResponse(event) {
   return isFailedAgentResponse(event) && (event.payload.outcome === "timed_out"
-    || ["container_timeout", "provider_timeout"].includes(event.payload.error?.code));
+    || ["container_timeout", "provider_timeout", "agent_timeout"].includes(event.payload.error?.code));
 }
 
 /** The original request a response points at, when it is still in the timeline. */

@@ -1098,12 +1098,12 @@ unixTest("revoking the initiating device prevents result source persistence and 
  } finally { release?.(JSON.stringify({ answer: "Done", files: initial })); await f.close(); }
 });
 
-unixTest("repository timeout is distinct and Continue carries the maximum-size original task with saved source in a fresh 12-minute round", async () => {
+for (const timeoutCode of ["container_timeout", "agent_timeout"]) unixTest(`repository ${timeoutCode} is distinct and Continue carries the maximum-size original task with saved source in a fresh 12-minute round`, async () => {
  const f = fixture(); let calls = 0;
  const original = "测".repeat(6000);
  f.runOptions.runContainer = async (args, timeout, signal) => {
   assert.equal(timeout, 720_000); assert.equal(signal?.aborted, false);
-  if (++calls === 1) throw new Error("container_timeout");
+  if (++calls === 1) throw new Error(timeoutCode);
   const control = args.find(value => value.endsWith("dst=/run/gatherthread,readonly"))!.split("src=")[1]!.split(",dst=")[0]!;
   const prompt = readFileSync(join(control, "prompt.txt"), "utf8");
   assert.equal(prompt.split(original).length, 2); assert.ok(prompt.includes("Continue with the observed saved source."));

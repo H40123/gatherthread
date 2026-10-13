@@ -92,7 +92,7 @@ export class HostedRepositoryRunner {
       return { answer: String(redactJson(String(result.answer))).slice(0, 12000), files: changed };
     } catch (error) {
       if (signal.aborted && signal.reason instanceof Error && signal.reason.name === "TimeoutError") throw new Error("container_timeout");
-      if (error instanceof Error && error.message === "container_timeout") throw error;
+      if (error instanceof Error && ["container_timeout", "agent_timeout"].includes(error.message)) throw error;
       const diagnosis = model.diagnostics().errorCode;
       if (diagnosis) throw new Error(diagnosis);
       throw error;

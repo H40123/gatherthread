@@ -1,4 +1,4 @@
-# ADR-0051: Distinguish cloud timeouts and continue with bounded fresh rounds
+# ADR-0052: Distinguish cloud timeouts and continue with bounded fresh rounds
 
 - Status: proposed / implementation review
 - Date: 2026-10-12
@@ -16,7 +16,7 @@ Bound each cloud execution request to twelve minutes, including provider
 streams. Use a private per-execution Undici dispatcher with explicit matching
 header/body timeouts rather than changing a global dispatcher. Connection
 establishment retains its short bound. Destroy only the owned dispatcher on
-cleanup. The supported API is documented by [Undici](https://undici.nodejs.org/api/Client).
+cleanup. The container's independent OpenCode final-JSON transport uses its own image-pinned Undici pool with the same header/body bound and an absolute round signal; two connections keep supplementary SSE from blocking final response. A known final-response/whole-round deadline emits only `agent_timeout`. Short health/session/idle probes retain their phase failure semantics. The supported API is documented by [Undici](https://undici.nodejs.org/api/Client).
 
 Keep existing `failed` status values for compatibility and add a strict terminal
 `outcome`, plus an additive durable outcome table. Only allowlisted execution
@@ -45,6 +45,7 @@ promises to recover stopped processes, hidden reasoning or unsaved files.
 Server and Web should upgrade together to expose Continue. Older clients still
 see `failed`; stored timeout codes classify old events without rewriting them.
 The additive outcome table can remain during rollback and usage is never reset.
+A matching immutable runner image must be rebuilt and verified from this source; Web/server-only updates cannot fix the internal transport.
 Provider endpoints, quotas, executor-exit slot release and storage allowances
 remain independently enforced.
 

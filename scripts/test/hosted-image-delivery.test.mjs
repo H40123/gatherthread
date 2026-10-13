@@ -315,3 +315,11 @@ test("workflow metadata producer records only its seven public identity fields, 
     assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), workflow);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("hosted image pins a directly resolvable Undici matching the reviewed lockfile for its final JSON transport", () => {
+  const dockerfile = readFileSync("ops/hosted-agent/Dockerfile", "utf8");
+  const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+  const version = lock.packages["node_modules/undici"].version;
+  assert.ok(dockerfile.includes(`npm install --global undici@${version} --ignore-scripts --no-audit --no-fund`));
+  assert.match(dockerfile, /opencode-session\.mjs \/usr\/local\/lib\/opencode-session\.mjs/u);
+});

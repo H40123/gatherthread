@@ -112,7 +112,7 @@ export function runDocker(args: string[], timeoutMs: number, outputLimit = 1_000
         if (output.resultBytes() > outputLimit) reject(new Error("container_output_too_large"));
         else resolve(result);
       }
-      else reject(new Error(stderrTail.match(/(?:^|\n)GT_HOSTED_FAILURE:(agent_(?:startup|session|answer|idle|shutdown)_failed)\r?\n$/u)?.[1] ?? "container_failed"));
+      else reject(new Error(stderrTail.match(/(?:^|\n)GT_HOSTED_FAILURE:(agent_(?:startup|session|answer|idle|shutdown)_failed|agent_timeout)\r?\n$/u)?.[1] ?? "container_failed"));
     });
   });
 }
@@ -628,7 +628,7 @@ export class HostedAgent {
       content = "";
       errorCode = executionSignal.aborted && executionSignal.reason instanceof Error && executionSignal.reason.name === "TimeoutError"
         || error instanceof Error && (error.name === "TimeoutError" || error.message === "container_timeout")
-        ? "container_timeout" : proxy.diagnostics().errorCode ?? (error instanceof Error ? error.message : undefined);
+        ? "container_timeout" : error instanceof Error && error.message === "agent_timeout" ? "agent_timeout" : proxy.diagnostics().errorCode ?? (error instanceof Error ? error.message : undefined);
     }
     finally {
       try {

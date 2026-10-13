@@ -70,7 +70,7 @@ for (const erased of ["request", "earlier source"]) {
   });
 }
 
-for (const code of ["container_timeout", "provider_timeout", "provider_unavailable", "agent_answer_failed", "arbitrary private error"]) {
+for (const code of ["container_timeout", "provider_timeout", "agent_timeout", "provider_unavailable", "agent_answer_failed", "arbitrary private error"]) {
   test(`durable cloud outcome classifies ${code === "arbitrary private error" ? "unknown safe error" : code} without changing legacy status`, () => {
     const f = fixture();
     try {
@@ -90,7 +90,7 @@ for (const code of ["container_timeout", "provider_timeout", "provider_unavailab
   });
 }
 
-socketTest("timeout Continue uses a new 12-minute round, exact original task, latest public history and one durable child", async () => {
+for (const timeoutCode of ["container_timeout", "agent_timeout"]) socketTest(`timeout ${timeoutCode} Continue uses a new 12-minute round, exact original task, latest public history and one durable child`, async () => {
   const f = fixture(); let calls = 0;
   const quote = f.service.appendEvent(f.actor, f.session.id, { type: "human_chat", visibility: "session",
     idempotency_key: "timeout-original-quote", payload: { content: "An existing task note." } });
@@ -99,7 +99,7 @@ socketTest("timeout Continue uses a new 12-minute round, exact original task, la
     ...limits, endpoints: [endpoint], image: `sha256:${"a".repeat(64)}`,
     runContainer: async (args, timeout, signal) => {
       assert.equal(timeout, 720_000); assert.equal(HOSTED_AGENT_TIMEOUT_MS, timeout); assert.equal(signal?.aborted, false);
-      if (++calls === 1) throw new Error("container_timeout");
+      if (++calls === 1) throw new Error(timeoutCode);
       const control = args.find(value => value.endsWith("dst=/run/gatherthread,readonly"))!.split("src=")[1]!.split(",dst=")[0]!;
       const prompt = readFileSync(join(control, "prompt.txt"), "utf8");
       assert.ok(prompt.includes(input.content)); assert.ok(prompt.includes("The human added useful instructions after timeout."));
