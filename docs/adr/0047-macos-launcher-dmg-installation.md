@@ -15,8 +15,13 @@ Hook trust steps.
 ## Decision
 
 Make a read-only compressed DMG the primary Mac artifact, retaining the ZIP for
-compatibility. Its root contains the validated app, one `/Applications` symlink,
-static bilingual installation instructions and a public provenance manifest.
+compatibility. Its only visible root items are the validated app on the right
+and one `/Applications` symlink on the left. A static approved-brand background
+points leftward and presents concise bilingual manual safety and Hook guidance.
+Detailed instructions, public provenance and fixed background/layout assets
+remain in the hidden `.gatherthread` directory. Build-only hash-pinned metadata
+helpers write `.DS_Store` on a private writable intermediate, without Finder or
+Apple Events; the intermediate is detached before read-only compression.
 Users drag to Applications and open from there before installing the optional
 plugin or authorizing a device. No automatic installation, Launch Services
 registration, application replacement or user-data access is added.
@@ -30,11 +35,15 @@ Emphasize **review, trust and allow GatherThread Hooks** separately, preserving
 the explicit authority required to publish direct Codex turns.
 
 Build from clean committed source, bundle only Git-reviewed plugin paths and
-retain exact version matching and icon/runtime checks. Record public source
+retain exact connector/plugin version matching and icon/runtime checks. The
+Launcher app has its independently numbered 0.1.1 display version, covered by
+the existing app-file hashes; package/release-source versions are not rewritten.
+Record public source
 commit, architecture, Node/release versions, system minimum, signing limitation
 and all app-file hashes. Stage privately, refuse unexpected/symlinked content,
 verify the actual image, mount read-only without Finder/application launch,
-compare installed bytes to the original manifest, verify signature, and detach
+compare installed bytes to the original manifest, verify the exact Finder
+window, icon positions and in-image background alias, verify signature, and detach
 before promotion. Both DMG and compatible ZIP stage checksum/provenance privately
 and promote each with exclusive no-clobber links, followed by the archive as the
 completion marker. Existing archives or sidecars, including symlinks and late
