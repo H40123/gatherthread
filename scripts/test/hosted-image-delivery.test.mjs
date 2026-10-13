@@ -210,7 +210,7 @@ test("local export helper preserves one-build immutable-image order and has no p
   const cpuset = script.indexOf('"$task_build/scripts/test-hosted-cpuset.mjs"');
   const save = script.indexOf('docker_client save "$task_image" | gzip -n');
   const provenance = script.indexOf('"$task_metadata" provenance');
-  const deliver = script.indexOf('mv "$task_private/$task_file"');
+  const deliver = script.indexOf('mv "$task_archive_work/$task_file"');
   assert.ok(quota > 0 && quota < cpuset && cpuset < save && save < provenance && provenance < deliver);
   const sharedSmoke = script.indexOf('--shared-host --report "$task_private/shared-host.json"');
   assert.ok(sharedSmoke > cpuset && sharedSmoke < save);
@@ -234,6 +234,7 @@ test("public image modules explicitly remain readable by the nonroot user from a
     "COPY --chmod=0644 ops/hosted-agent/opencode-session.mjs /usr/local/lib/opencode-session.mjs",
     "COPY --chmod=0644 ops/hosted-agent/live-output.mjs /usr/local/lib/live-output.mjs",
     "COPY --chmod=0644 ops/hosted-agent/npm-setup.mjs /usr/local/lib/npm-setup.mjs",
+    "COPY --chmod=0644 ops/hosted-agent/runtime-environment.mjs /usr/local/lib/runtime-environment.mjs",
   ]);
   assert.match(dockerfile, /^USER 10001:10001$/mu);
   assert.match(dockerfile, /^ENTRYPOINT \["node", "\/usr\/local\/lib\/gatherthread-hosted-entrypoint\.mjs"\]$/mu);

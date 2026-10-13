@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { runOpencodeSession } from "./opencode-session.mjs";
 import { prepareNpm } from "./npm-setup.mjs";
 import { createHostedProgressWriter } from "./live-output.mjs";
+import { isTransientRuntimeDirectory, withHostedRuntimeInstructions } from "./runtime-environment.mjs";
 
 const INPUT = "/input";
 const repository = process.env.GT_HOSTED_REPOSITORY === "1";
@@ -17,7 +18,7 @@ function walk(root, prefix = "", budget = { entries: 0 }, depth = 0) {
   if (depth > 16) throw new Error("workspace_depth");
   const entries = [];
   for (const name of readdirSync(join(root, prefix))) {
-    if (repository && excluded.has(name)) continue;
+    if (isTransientRuntimeDirectory(name) || repository && excluded.has(name)) continue;
     budget.entries += 1;
     if (budget.entries > (repository ? 5000 : 500)) throw new Error("workspace_entries");
     const relative = prefix ? `${prefix}/${name}` : name;
@@ -89,12 +90,12 @@ async function main() {
       await prepareNpm(WORKSPACE, run);
       await run("git", ["init", "--quiet"], 64000);
       mkdirSync(join(WORKSPACE, ".git", "info"), { recursive: true });
-      writeFileSync(join(WORKSPACE, ".git", "info", "exclude"), "node_modules/\ndist/\ncoverage/\n.next/\n.turbo/\n");
+      writeFileSync(join(WORKSPACE, ".git", "info", "exclude"), "node_modules/\ndist/\ncoverage/\n.next/\n.turbo/\n.venv/\n__pycache__/\n");
       await run("git", ["add", "."], 64000);
       await run("git", ["-c", "user.name=GatherThread", "-c", "user.email=cloud@localhost",
         "commit", "--quiet", "-m", "Cloud task starting snapshot"], 64000);
     }
-    const prompt = readFileSync("/run/gatherthread/prompt.txt", "utf8");
+    const prompt = withHostedRuntimeInstructions(readFileSync("/run/gatherthread/prompt.txt", "utf8"));
     const answer = await runOpencodeSession(WORKSPACE, prompt, repository ? 1024 * 1024 : 64_000,
       { onProgress: createHostedProgressWriter({ maxBytes: repository ? 2 * 1024 * 1024 : 256_000 }) });
     let files = null;

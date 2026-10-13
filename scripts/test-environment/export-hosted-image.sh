@@ -21,7 +21,11 @@ umask 077
 mkdir "$task_output"
 # Keep Unix model/npm socket paths below Linux's pathname bound.
 task_private="$(mktemp -d /tmp/gt-image.XXXXXXXX)"
-trap 'rm -rf -- "$task_private"' EXIT
+task_archive_work=""
+trap 'rm -rf -- "$task_private"; if [[ -n "$task_archive_work" ]]; then rm -rf -- "$task_archive_work"; fi' EXIT
+# The potentially large archive stays on the operator-selected output filesystem.
+# Only bounded model socket fixtures and small metadata use the short /tmp path.
+task_archive_work="$(mktemp -d "$task_output/.staging.XXXXXXXX")"
 mkdir "$task_private/home" "$task_private/tmp" "$task_private/docker"
 clean() {
   env -i PATH="$task_path" HOME="$task_private/home" TMPDIR="$task_private/tmp" CI=true \
@@ -51,16 +55,16 @@ clean env GATHERTHREAD_TEST_HOSTED_IMAGE="$task_image" "$task_node" "$task_build
   --shared-host --report "$task_private/shared-host.json"
 # Save the tested immutable ID, never rebuild or resolve a mutable tag for delivery.
 docker_client save "$task_image" | gzip -n | clean "$task_node" "$task_metadata" archive \
-  "$task_private/hosted-image.tar.gz" "$task_private/archive.json"
-gzip -t "$task_private/hosted-image.tar.gz"
+  "$task_archive_work/hosted-image.tar.gz" "$task_private/archive.json"
+gzip -t "$task_archive_work/hosted-image.tar.gz"
 docker_client image inspect "$task_image" > "$task_private/exported-inspection.json"
 clean "$task_node" "$task_metadata" image "$task_commit" "$task_build/candidate.json" "$task_private/exported-inspection.json" "$task_image"
 clean "$task_node" "$task_metadata" provenance "$task_commit" "$task_build/candidate.json" \
   "$task_private/exported-inspection.json" "$task_image" "$task_private/quota.json" "$task_private/cpuset.json" "$task_private/shared-host.json" "$task_private/docker.json" \
-  "$task_private/archive.json" "$task_workflow" "$task_private/hosted-image-provenance.json"
+  "$task_private/archive.json" "$task_workflow" "$task_archive_work/hosted-image-provenance.json"
 task_hash="$(clean "$task_node" -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).sha256)' "$task_private/archive.json")"
-printf '%s  hosted-image.tar.gz\n' "$task_hash" > "$task_private/hosted-image.tar.gz.sha256"
+printf '%s  hosted-image.tar.gz\n' "$task_hash" > "$task_archive_work/hosted-image.tar.gz.sha256"
 for task_file in hosted-image.tar.gz hosted-image.tar.gz.sha256 hosted-image-provenance.json; do
-  mv "$task_private/$task_file" "$task_output/$task_file"
+  mv "$task_archive_work/$task_file" "$task_output/$task_file"
 done
 echo 'Verified hosted image exported; deployment-host aggregate isolation still requires independent acceptance.'
