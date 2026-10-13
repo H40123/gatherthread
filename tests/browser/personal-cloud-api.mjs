@@ -59,7 +59,12 @@ try {
       ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
     const context = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile, reducedMotion: "reduce",
       ...(mobile ? { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1" } : {}) });
-    const page = await context.newPage(), errors = []; page.on("pageerror", error => errors.push(error.message));
+    const page = await context.newPage(), errors = [], hostedPosts = [];
+    page.on("pageerror", error => errors.push(error.message));
+    page.on("request", request => {
+      if (request.method() === "POST" && request.url().endsWith("/hosted-agent-requests")) hostedPosts.push(request.url());
+    });
+    let releaseHeldMetadata = () => {};
     page.on("dialog", dialog => dialog.accept());
     await context.route(/^https?:/, route => route.request().url().startsWith(origin + "/") ? route.continue() : route.abort());
     const f = await seed(context, locale);
@@ -129,20 +134,64 @@ try {
       const shared = (await sharedReply.json()).data;
       assert.equal(shared.repository.enabled, true); assert.equal(shared.own_branch_id, null);
       assert.equal(codeFixture.snapshot(f.actor, f.project.id, "main").snapshot.files[0].path, "README.md");
+      await cloudReady();
+      const codeUrl = `${origin}/v1/projects/${f.project.id}/code`;
+      const enteredMetadata = Promise.withResolvers(), releaseMetadata = Promise.withResolvers();
+      releaseHeldMetadata = releaseMetadata.resolve;
+      await page.route(codeUrl, async route => {
+        if (route.request().method() !== "GET") return route.continue();
+        const response = await route.fetch(); assert.equal(response.status(), 200);
+        enteredMetadata.resolve(); await releaseMetadata.promise;
+        await route.fulfill({ response });
+      });
       await page.locator("#close-project-code-button").click();
-      await page.locator("#mobile-agent-button").click(); await page.locator("#cloud-agent-include-code:not([disabled])").waitFor();
-      assert.equal(await page.locator("#cloud-agent-include-code").isChecked(), true, "availability does not reset the initial choice");
-      await page.locator("#mobile-agent-dialog [data-mobile-close]").click(); await cloudReady();
+      await enteredMetadata.promise;
+      await page.waitForFunction(() => document.getElementById("send-agent-button").disabled
+        && /Checking GT Cloud|正在检查 GT Cloud/.test(document.getElementById("cloud-agent-code-scope").textContent));
+      assert.equal(await page.locator("#cloud-agent-include-code").isChecked(), true, "loading does not silently clear selected code");
       await page.locator("#message-input").fill("Use the available shared main version.");
+      const beforeDelayedPosts = hostedPosts.length;
+      await clickDisabledAgent();
+      assert.equal(hostedPosts.length, beforeDelayedPosts, "a normal click cannot send an empty-directory task while code metadata is delayed");
+      assert.equal(await page.locator("#message-input").inputValue(), "Use the available shared main version.");
+      const codeRestored = page.waitForResponse(response => response.url() === codeUrl && response.request().method() === "GET");
+      releaseMetadata.resolve(); assert.equal((await codeRestored).status(), 200);
+      await page.unroute(codeUrl);
+      await page.waitForFunction(() => !document.getElementById("send-agent-button").disabled);
+      assert.equal(await page.locator("#cloud-agent-include-code").isChecked(), true, "successful metadata restores the same code choice");
+      assert.equal(await page.locator("#message-input").inputValue(), "Use the available shared main version.");
       const mainRequested = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/hosted-agent-requests"));
       await page.locator("#send-agent-button").click(); const mainAccepted = await mainRequested;
       assert.equal(mainAccepted.status(), 202); assert.equal(mainAccepted.request().postDataJSON().include_code, true,
         "default-on reads the shared main version when no personal branch exists");
       await page.getByText("Selected personal model answered.", { exact: true }).last().waitFor();
+      await cloudReady();
+      await page.route(codeUrl, async route => route.request().method() === "GET"
+        ? route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: {
+          code: "fixture_metadata_unavailable", message: "Isolated metadata failure" } }) }) : route.continue());
+      await page.reload(); await page.locator("#session-view:not([hidden])").waitFor();
+      await page.waitForFunction(() => document.getElementById("send-agent-button").disabled
+        && /Could not check GT Cloud|无法检查 GT Cloud/.test(document.getElementById("cloud-agent-code-scope").textContent));
+      await page.locator("#message-input").fill("Keep this draft until I explicitly choose no code.");
+      const beforeFailedPosts = hostedPosts.length;
+      await clickDisabledAgent();
+      assert.equal(hostedPosts.length, beforeFailedPosts, "a failed metadata read cannot silently dispatch a no-code request");
+      assert.equal(await page.locator("#message-input").inputValue(), "Keep this draft until I explicitly choose no code.");
       await page.locator("#mobile-agent-button").click();
-      assert.equal(await page.locator("#cloud-agent-include-code").isChecked(), true, "sending does not clear the selection");
+      assert.equal(await page.locator("#cloud-agent-include-code").isChecked(), true, "failure preserves the desired code selection");
+      assert.equal(await page.locator("#cloud-agent-include-code").isDisabled(), false, "the user can explicitly choose an empty workspace after metadata failure");
       await page.locator("#cloud-agent-include-code").uncheck();
+      assert.match(await page.locator("#cloud-agent-code-scope").innerText(), /Code is off|代码选项已关闭/);
       await page.locator("#mobile-agent-dialog [data-mobile-close]").click();
+      await page.waitForFunction(() => !document.getElementById("send-agent-button").disabled);
+      const priorAnswers = await page.getByText("Selected personal model answered.", { exact: true }).count();
+      const noCodeRequested = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/hosted-agent-requests"));
+      await page.locator("#send-agent-button").click(); const noCodeAccepted = await noCodeRequested;
+      assert.equal(noCodeAccepted.status(), 202); assert.equal(noCodeAccepted.request().postDataJSON().include_code, false,
+        "only the explicit opt-out allows a no-code request despite failed metadata");
+      assert.equal(noCodeAccepted.request().postDataJSON().api_config_revision, config.revision);
+      await page.getByText("Selected personal model answered.", { exact: true }).nth(priorAnswers).waitFor();
+      await page.unroute(codeUrl);
       await page.reload(); await page.locator("#session-view:not([hidden])").waitFor();
       await page.locator("#mobile-agent-button").click(); await page.locator("#cloud-agent-include-code:not([disabled])").waitFor();
       assert.equal(await page.locator("#cloud-agent-include-code").isChecked(), false, "the user's opt-out survives refresh");
@@ -183,6 +232,16 @@ try {
           } else await page.evaluate(() => new Promise(requestAnimationFrame));
         }
         throw Error("Actual Cloud Agent availability did not settle within 10 seconds");
+      }
+      async function clickDisabledAgent() {
+        const button = page.locator("#send-agent-button"); assert.equal(await button.isDisabled(), true);
+        await button.scrollIntoViewIfNeeded();
+        const box = await button.boundingBox(); assert.ok(box, "disabled Agent control remains visible and reachable");
+        const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+        assert.equal(await button.evaluate((node, point) => node.contains(document.elementFromPoint(point.x, point.y)), point), true,
+          "ordinary pointer hit-tests the disabled button, not a modal or another element");
+        if (mobile) await page.touchscreen.tap(point.x, point.y); else await page.mouse.click(point.x, point.y);
+        await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
       }
       const failedCloudRequest = async content => {
         await cloudReady();
@@ -242,7 +301,7 @@ try {
       await page.locator("#cloud-api-delete").click(); assert.equal((await deleted).status(), 204);
       await page.locator("#cloud-api-editor").waitFor({ state: "hidden" }); assert.equal(await page.locator("#cloud-api-list li").count(), 0);
       assert.equal(await page.locator("#settings-dialog").evaluate(node => node.scrollWidth > node.clientWidth + 1), false);
-      assert.deepEqual(errors, []); console.log(`${name}: domestic presets/custom IDs, GT Cloud default/opt-out persistence, private API, exact model, deletion fence, retry drafts, pause/delete; ordinary clicks passed`);
-    } finally { await context.close(); await browser.close(); }
+      assert.deepEqual(errors, []); console.log(`${name}: domestic presets/custom IDs, GT Cloud delayed/failed metadata blocks dispatch until confirmation or explicit opt-out, preference persistence, private API, deletion fence, retry drafts, pause/delete; ordinary clicks passed`);
+    } finally { releaseHeldMetadata(); await context.close(); await browser.close(); }
   }
 } finally { await server.close(); rmSync(directory, { recursive: true, force: true }); }

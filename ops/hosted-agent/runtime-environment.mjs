@@ -15,5 +15,6 @@ export function withHostedRuntimeInstructions(prompt) {
     + "The repository runner separately prepares approved lockfile dependencies; do not bypass that setup. "
     + "Do not ask the user to run sudo or change the server host to execute a task. "
     + "Explain missing dependencies or other limits honestly, and never claim a program ran without observing its result. "
-    + ".venv and __pycache__ are temporary and are not saved to the code branch.\n\n" + prompt;
+    + "New .venv and __pycache__ artifacts are temporary and are not saved to the code branch. "
+    + "Files already saved under those paths in the input snapshot are preserved unchanged.\n\n" + prompt;
 }

@@ -48,7 +48,8 @@ function harness(names, overrides = {}) {
     authView: element(), workspace: element(), emptyState: element(), sessionView: element(),
     hostedAgentStatus: { enabled: false },
     cloudGithubUi: { updateContext: noop, completeAuthorization: async () => {} },
-    cloudCodeConsent: { updateContext: noop, refresh: noop, refreshLanguage: noop, includeCode: () => true },
+    cloudCodeConsent: { updateContext: noop, refresh: noop, refreshLanguage: noop, includeCode: () => true,
+      submission: () => ({ allowed: true, includeCode: true, reason: "" }) },
     deviceCredentialDialog: { open: false }, codeSyncUi: { showFirstLoginNotice: noop },
     onboarding: { cancel: noop, offer: noop, refreshLanguage: noop },
     invitationLink: { hasPending: () => false, reset: noop },
@@ -603,6 +604,22 @@ function messageHarness(pending) {
     messageActions: { metadata: () => ({ replyTo: null, mentions: [] }), sent: noop },
   });
   return { app, input, writes: () => writes };
+}
+
+for (const reason of ["Checking GT Cloud files…", "Could not check GT Cloud files. Reopen Project files to try again."]) {
+  test(`cloud send rechecks code readiness and preserves the draft: ${reason}`, async () => {
+    const f = messageHarness(deferred()); let calls = 0;
+    f.app.CLOUD_AGENT_ENTRY_ENABLED = true;
+    f.app.currentCloudProfile = () => ({ id: "fixture" });
+    f.app.cloudCodeConsent.submission = () => ({ allowed: false, includeCode: false, reason });
+    f.app.api.appendHostedAgentRequest = async () => { calls++; };
+    f.app.element("cloud-agent-source").value = "trial";
+    await f.app.sendMessage("hosted_agent");
+    assert.equal(calls, 0);
+    assert.equal(f.input.value, "First draft");
+    assert.equal(f.app.sendError.textContent, reason);
+    assert.equal(f.app.pendingMessageSend, null);
+  });
 }
 
 for (const source of ["trial", "github"]) {

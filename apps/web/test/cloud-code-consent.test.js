@@ -10,11 +10,12 @@ function fixture({ storage, getProjectCode } = {}) {
   const help = { textContent: "" };
   let context = { scope: "login-1:user-1:project-1", userId: "user-1", projectId: "project-1", writable: true, source: "trial" };
   let enabled = true;
-  const calls = [];
+  const calls = [], notifications = [];
   const options = { checkbox, help, storage, localizer: { t: text => text }, getContext: () => context,
+    onChange: () => notifications.push(true),
     api: { getProjectCode: getProjectCode ?? (async id => { calls.push(id); return { repository: { enabled } }; }) } };
   let controller = mountCloudCodeConsent(options);
-  return { checkbox, help, calls, values, get controller() { return controller; },
+  return { checkbox, help, calls, values, notifications, get controller() { return controller; },
     change: patch => { context = { ...context, ...patch }; },
     enable: value => { enabled = value; },
     choose: value => { checkbox.checked = value; checkbox.change(); },
@@ -34,6 +35,39 @@ test("GT Cloud code defaults on and only an explicit choice changes the persiste
   assert.deepEqual([...f.values.values()], ["false"]);
 });
 
+test("selected code blocks submission until metadata resolves instead of silently using an empty workspace", async () => {
+  let resolve;
+  const f = fixture({ getProjectCode: () => new Promise(done => { resolve = done; }) });
+  f.controller.updateContext();
+  assert.equal(f.checkbox.checked, true);
+  assert.equal(f.controller.submission().allowed, false);
+  assert.match(f.controller.submission().reason, /Checking GT Cloud/);
+  resolve({ repository: { enabled: true } }); await nextTurn();
+  assert.deepEqual(f.controller.submission(), { allowed: true, includeCode: true, reason: "" });
+  assert.ok(f.notifications.length >= 2, "Both pending and completed metadata notify the composer");
+});
+
+test("a metadata error blocks selected code but an explicit off choice allows an empty task", async () => {
+  const f = fixture({ getProjectCode: async () => { throw Error("offline"); } });
+  f.controller.updateContext(); await nextTurn();
+  assert.equal(f.checkbox.checked, true);
+  assert.equal(f.controller.submission().allowed, false);
+  assert.match(f.controller.submission().reason, /Could not check GT Cloud/);
+  f.choose(false);
+  assert.deepEqual(f.controller.submission(), { allowed: true, includeCode: false, reason: "" });
+  assert.equal(f.checkbox.checked, false);
+});
+
+test("new scopes cannot reuse a previous account's off choice before synchronization", async () => {
+  const f = fixture(); f.controller.updateContext(); await nextTurn(); f.choose(false);
+  f.change({ scope: "login-2:user-2:project-1", userId: "user-2" });
+  assert.equal(f.controller.submission().allowed, false);
+  f.controller.updateContext(); await nextTurn();
+  assert.deepEqual(f.controller.submission(), { allowed: true, includeCode: true, reason: "" });
+  f.change({ source: "github" });
+  assert.deepEqual(f.controller.submission(), { allowed: true, includeCode: false, reason: "" });
+});
+
 test("preferences are account and project scoped, not session or model scoped", async () => {
   const f = fixture(); f.controller.updateContext(); await nextTurn(); f.choose(false);
   f.change({ scope: "login-1:user-1:project-2", projectId: "project-2" }); f.controller.updateContext(); await nextTurn();
@@ -47,6 +81,7 @@ test("preferences are account and project scoped, not session or model scoped", 
 test("disabled storage, read-only sessions and GitHub selection do not erase the code preference", async () => {
   const f = fixture(); f.enable(false); f.controller.updateContext(); await nextTurn();
   assert.equal(f.checkbox.checked, true); assert.equal(f.checkbox.disabled, true); assert.equal(f.controller.includeCode(), false);
+  assert.equal(f.controller.submission().allowed, true, "Confirmed disabled sharing allows an empty task without changing the remembered choice");
   assert.match(f.help.textContent, /Enable GT Cloud/);
   f.enable(true); await f.controller.refresh();
   assert.equal(f.checkbox.checked, true); assert.equal(f.checkbox.disabled, false); assert.equal(f.controller.includeCode(), true);
@@ -64,7 +99,7 @@ test("late project metadata cannot enable code for another account and reads fai
   f.controller.updateContext();
   f.change({ scope: "login-1:user-1:project-2", projectId: "project-2" }); f.controller.updateContext(); await nextTurn();
   finish({ repository: { enabled: true } }); await nextTurn();
-  assert.equal(f.checkbox.checked, true); assert.equal(f.checkbox.disabled, true); assert.equal(f.controller.includeCode(), false);
+  assert.equal(f.checkbox.checked, true); assert.equal(f.controller.submission().allowed, false); assert.equal(f.controller.includeCode(), false);
   f.logout(); f.controller.updateContext(); assert.equal(f.controller.includeCode(), false);
 });
 

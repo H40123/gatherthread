@@ -14,18 +14,18 @@ const MAX_FILES = repository ? 1000 : 100;
 const MAX_BYTES = repository ? 8 * 1024 * 1024 : 512_000;
 const excluded = new Set(["node_modules", ".git", "dist", "coverage", ".next", ".turbo", ".npmrc"]);
 
-function walk(root, prefix = "", budget = { entries: 0 }, depth = 0) {
+function walk(root, { includeTransient = false } = {}, prefix = "", budget = { entries: 0 }, depth = 0) {
   if (depth > 16) throw new Error("workspace_depth");
   const entries = [];
   for (const name of readdirSync(join(root, prefix))) {
-    if (isTransientRuntimeDirectory(name) || repository && excluded.has(name)) continue;
+    if ((!includeTransient && isTransientRuntimeDirectory(name)) || repository && excluded.has(name)) continue;
     budget.entries += 1;
     if (budget.entries > (repository ? 5000 : 500)) throw new Error("workspace_entries");
     const relative = prefix ? `${prefix}/${name}` : name;
     const path = join(root, relative);
     const stat = lstatSync(path);
     if (stat.isSymbolicLink() || !stat.isFile() && !stat.isDirectory()) throw new Error("unsafe_file");
-    if (stat.isDirectory()) entries.push(...walk(root, relative, budget, depth + 1));
+    if (stat.isDirectory()) entries.push(...walk(root, { includeTransient }, relative, budget, depth + 1));
     else entries.push({ path: relative, absolute: path, size: stat.size, executable: Boolean(stat.mode & 0o111) });
   }
   return entries;
@@ -42,7 +42,11 @@ function initialFiles() {
 }
 
 function outputFiles() {
-  const entries = walk(WORKSPACE);
+  // Keep previously saved source unchanged from the read-only snapshot. Never
+  // traverse new environments or let them replace those retained input files.
+  const retained = walk(INPUT, { includeTransient: true })
+    .filter(file => file.path.split("/").some(isTransientRuntimeDirectory));
+  const entries = [...walk(WORKSPACE), ...retained];
   if (entries.length > MAX_FILES || entries.reduce((sum, file) => sum + file.size, 0) > MAX_BYTES) {
     throw new Error("workspace_limit");
   }

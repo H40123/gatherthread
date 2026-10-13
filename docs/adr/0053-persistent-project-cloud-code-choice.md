@@ -30,6 +30,8 @@ No task starts merely by loading or enabling the checkbox.
 
 ## Verification
 
+When the remembered choice is on and GT Cloud metadata is still loading or unavailable, new trial requests wait with an explicit status rather than silently submitting `include_code: false`. The user may deliberately turn the choice off to run without files; a confirmed sharing-disabled project also remains usable without code. The sender rechecks this decision immediately before the request, independently of the button state.
+
 Tests cover the default, remembered off, send/render stability, account/project
 isolation, blocked browser storage, paused sharing and lost write permission.
 Browser acceptance uses ordinary clicks and checks the actual request body;

@@ -10,6 +10,7 @@ const ZH_CN = Object.freeze({
   "Enable GT Cloud in Project files to let the Cloud Agent use this project's code.": "请在「项目文件」启用 GT Cloud，云端 Agent 才能使用本项目代码。",
   "Could not check GT Cloud files. Reopen Project files to try again.": "无法检查 GT Cloud 文件，请重新打开「项目文件」重试。",
   "Checking GT Cloud files…": "正在检查 GT Cloud 文件…",
+  "Code is off. This task will not read or save GT Cloud files.": "代码选项已关闭，本次任务不会读取或保存 GT Cloud 文件。",
   "Delete my message": "删除我的消息",
   "Message deleted": "消息已删除",
   "Update and reconnect your Agent connector before continuing.": "请更新并重新连接 Agent 连接器后继续。",
