@@ -413,7 +413,7 @@ export class HostedGithub {
    });
    const input = JSON.parse(task.input_json) as HostedGithubTaskInput;
    return HostedGithubTaskSchema.parse({ id, session_id: task.session_id, profile_id: input.profile_id,
-     resumable: Boolean(task.initial_files && (task.result_files ?? task.starting_files))
+     resumable: Boolean(task.initial_files && (task.result_files ?? task.starting_files) && this.taskReferenceIds(task))
        && ["completed", "failed", "interrupted"].includes(task.state) && !task.pr_url,
      state: task.state, repository: task.repository, base_branch: task.base_branch,
      base_sha: task.base_sha, revision: task.revision ?? null, answer: task.answer ?? null,
