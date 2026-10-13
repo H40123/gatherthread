@@ -89,7 +89,12 @@ before conversion to the final read-only compressed DMG.
 The builder verifies the actual DMG, mounts it **read-only without opening Finder
 or launching the app**, checks its exact inventory, instructions, hashes, versions,
 icons, exact Finder view/icon positions/background target, and signature, and
-detaches before publishing the local file. Both formats
+detaches before publishing the local file. Only mounted images may additionally
+contain ordinary `.fseventsd`, `.Spotlight-V100` or `.Trashes` system directories;
+the unmounted stage rejects them. Symlinks, special types, other root entries,
+application bytes and Finder metadata are still strictly checked. Inventory
+failures report the validation phase and bounded missing/unexpected filenames.
+Both formats
 privately prepare their checksum and source record, then promote metadata before
 the archive with no-clobber links. An existing DMG, ZIP or either sidecar is never
 overwritten, including symlinks and collisions arriving during the build. Failure

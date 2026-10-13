@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
@@ -30,7 +30,9 @@ function snapshotFixture(repository) {
   assert.ok(inventorySource.includes("function initialFiles()") && inventorySource.includes("function outputFiles()"));
   const inventory = runInNewContext(`${inventorySource}\n({ initialFiles, outputFiles, MAX_FILES, MAX_BYTES });`, {
     process: { env: { GT_HOSTED_REPOSITORY: repository ? "1" : "0" } },
-    join, dirname, isTransientRuntimeDirectory,
+    // The extracted functions run in a Linux container. Keep virtual paths
+    // POSIX on Windows too; mapped() alone translates into host-native paths.
+    join: posix.join, dirname: posix.dirname, isTransientRuntimeDirectory,
     mkdirSync: (path, ...args) => mkdirSync(mapped(path), ...args),
     copyFileSync: (from, to) => copyFileSync(mapped(from), mapped(to)),
     chmodSync: (path, mode) => chmodSync(mapped(path), mode),

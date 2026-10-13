@@ -536,6 +536,107 @@ class DmgFinderLayoutTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 BUILD.write_dmg_finder_layout(stage)
 
+    def test_writable_mount_accepts_only_known_system_volume_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stage, provenance = DmgPackagingTests().stage(root)
+            temporary = root / "image-build"
+            temporary.mkdir()
+
+            def attach_fixture(command, **_kwargs):
+                if command[:2] == ["hdiutil", "attach"]:
+                    mount = Path(command[command.index("-mountpoint") + 1])
+                    shutil.copytree(stage, mount, dirs_exist_ok=True, symlinks=True)
+                    for name in (".fseventsd", ".Spotlight-V100", ".Trashes"):
+                        (mount / name).mkdir()
+
+            _, Alias = BUILD.dmg_metadata_tools()
+            with patch.object(BUILD.subprocess, "run", side_effect=attach_fixture) as run, \
+                    patch.object(Alias, "for_file", return_value=self.alias()):
+                BUILD.configure_dmg_image(root / "fixture.dmg", temporary, provenance)
+            mount = temporary / "layout-mount"
+            BUILD.validate_dmg_finder_layout(mount)
+            self.assertEqual({p.name for p in mount.iterdir() if not p.name.startswith(".")},
+                             {"Applications", "GatherThread Launcher.app"})
+            self.assertEqual(run.call_args_list[-1].args[0][:2], ["hdiutil", "detach"])
+
+    def test_readonly_mount_accepts_system_directories_without_skipping_bundle_or_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stage, provenance = self.stage(root)
+            for name in (".fseventsd", ".Spotlight-V100", ".Trashes"):
+                (stage / name).mkdir()
+
+            def attach_fixture(command, **_kwargs):
+                if command[:2] == ["hdiutil", "attach"]:
+                    mount = Path(command[command.index("-mountpoint") + 1])
+                    shutil.copytree(stage, mount, dirs_exist_ok=True, symlinks=True)
+
+            with patch.object(BUILD.subprocess, "run", side_effect=attach_fixture) as run:
+                BUILD.verify_dmg(root / "fixture.dmg", provenance)
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertIn(["hdiutil", "verify", str(root / "fixture.dmg")], commands)
+            self.assertTrue(any(command[:4] == ["codesign", "--verify", "--deep", "--strict"]
+                                for command in commands))
+            self.assertEqual(commands[-1][:2], ["hdiutil", "detach"])
+
+    def test_system_volume_directories_are_never_allowed_in_an_unmounted_stage(self):
+        for name in (".fseventsd", ".Spotlight-V100", ".Trashes"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                stage, provenance = self.stage(Path(directory))
+                (stage / name).mkdir()
+                with self.assertRaises(SystemExit):
+                    BUILD.validate_dmg_root(stage, provenance, require_finder=True)
+
+    def test_readonly_mount_refuses_arbitrary_extras_or_linked_system_directories(self):
+        for mutation in ("visible", "hidden", "near-name", "system-file", "system-symlink", "app-content", "finder"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                stage, provenance = self.stage(root)
+                if mutation == "visible":
+                    (stage / "unreviewed.sh").write_text("synthetic fixture")
+                elif mutation == "hidden":
+                    (stage / ".unreviewed").mkdir()
+                elif mutation == "near-name":
+                    (stage / ".fseventsd-extra").mkdir()
+                elif mutation == "system-file":
+                    (stage / ".fseventsd").write_text("not a system directory")
+                elif mutation == "system-symlink":
+                    (stage / ".Trashes").symlink_to(root, target_is_directory=True)
+                elif mutation == "app-content":
+                    (stage / ".fseventsd").mkdir()
+                    (stage / "GatherThread Launcher.app/Contents/Resources/connector/index.js").write_text("changed")
+                else:
+                    (stage / ".fseventsd").mkdir()
+                    (stage / ".DS_Store").unlink()
+
+                def attach_fixture(command, **_kwargs):
+                    if command[:2] == ["hdiutil", "attach"]:
+                        mount = Path(command[command.index("-mountpoint") + 1])
+                        shutil.copytree(stage, mount, dirs_exist_ok=True, symlinks=True)
+
+                with patch.object(BUILD.subprocess, "run", side_effect=attach_fixture) as run:
+                    with self.assertRaises(SystemExit):
+                        BUILD.verify_dmg(root / "fixture.dmg", provenance)
+                self.assertEqual(run.call_args_list[-1].args[0][:2], ["hdiutil", "detach"])
+
+    def test_root_entry_diagnostic_is_phase_specific_bounded_and_filename_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stage, provenance = self.stage(Path(directory))
+            shutil.rmtree(stage / "GatherThread Launcher.app")
+            for number in range(40):
+                (stage / (f"unreviewed-{number:02d}-" + "x" * 100)).mkdir()
+            with self.assertRaises(SystemExit) as caught:
+                BUILD.validate_dmg_root(stage, provenance, require_finder=True)
+            message = str(caught.exception)
+            self.assertIn("stage", message)
+            self.assertIn("missing", message)
+            self.assertIn("GatherThread Launcher.app", message)
+            self.assertIn("unexpected", message)
+            self.assertIn("unreviewed-00", message)
+            self.assertLess(len(message), 2048)
+            self.assertNotIn(str(stage), message)
+
     def test_mounted_validation_refuses_missing_or_tampered_finder_records(self):
         for mutation in ("missing", "icon", "window", "alias", "extra", "symlink"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:

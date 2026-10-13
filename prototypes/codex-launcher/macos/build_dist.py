@@ -9,6 +9,7 @@ import platform
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
 import struct
 import tempfile
@@ -29,6 +30,10 @@ LAUNCHER_VERSION = "0.1.1"
 DMG_METADATA = ".gatherthread"
 DMG_ENTRIES = {APP_NAME, "Applications", DMG_METADATA}
 DMG_METADATA_ENTRIES = {"READ ME FIRST.html", "BUILD_PROVENANCE.json", "background.png", "layout.json"}
+# macOS may create these volume directories after attaching a fresh image.
+# They are never accepted from the unmounted source staging directory.
+DMG_SYSTEM_VOLUME_DIRECTORIES = {".fseventsd", ".Spotlight-V100", ".Trashes"}
+DMG_MOUNT_PHASES = {"writable-pre-layout", "writable-post-layout", "readonly-final"}
 # Finder can retain the user's path/status bars even when bwsp requests them off.
 # Reserve their height so both bilingual guidance blocks remain visible.
 DMG_WINDOW_SIZE = (720, 648)
@@ -225,12 +230,36 @@ def prepare_dmg_stage(app: Path, stage: Path, provenance: dict) -> None:
     validate_dmg_root(stage, provenance)
 
 
-def validate_dmg_root(root: Path, expected_provenance: dict, *, require_finder: bool = False) -> None:
+def dmg_entry_diagnostic(names: set[str]) -> str:
+    """Bound public root filenames and escape controls, without exposing paths/content."""
+    shown = []
+    for name in sorted(names)[:8]:
+        rendered = json.dumps(name, ensure_ascii=True)
+        shown.append(rendered if len(rendered) <= 96 else rendered[:92] + '..."')
+    if len(names) > 8:
+        shown.append(f"... ({len(names) - 8} more)")
+    return "[" + ", ".join(shown) + "]"
+
+
+def validate_dmg_root(root: Path, expected_provenance: dict, *, require_finder: bool = False,
+                      phase: str = "stage") -> None:
     """Validate actual mounted bytes against the pre-build manifest, not just filenames."""
+    if phase != "stage" and phase not in DMG_MOUNT_PHASES:
+        raise SystemExit("Invalid installation image validation phase")
     try:
         expected_entries = DMG_ENTRIES | ({".DS_Store"} if require_finder else set())
-        if {entry.name for entry in root.iterdir()} != expected_entries:
-            raise ValueError("Unexpected installation image entries")
+        entries = {entry.name: entry for entry in root.iterdir()}
+        system_entries = set()
+        if phase in DMG_MOUNT_PHASES:
+            for name in DMG_SYSTEM_VOLUME_DIRECTORIES & entries.keys():
+                if not stat.S_ISDIR(entries[name].lstat().st_mode):
+                    raise ValueError(f"System volume entry {name} must be an ordinary directory")
+                system_entries.add(name)
+        missing = expected_entries - entries.keys()
+        unexpected = entries.keys() - expected_entries - system_entries
+        if missing or unexpected:
+            raise ValueError("Unexpected installation image entries; missing=" + dmg_entry_diagnostic(missing)
+                             + "; unexpected=" + dmg_entry_diagnostic(unexpected))
         applications = root / "Applications"
         if not applications.is_symlink() or os.readlink(applications) != "/Applications":
             raise ValueError("The drag target must be /Applications")
@@ -254,7 +283,7 @@ def validate_dmg_root(root: Path, expected_provenance: dict, *, require_finder: 
         if require_finder:
             validate_dmg_finder_layout(root)
     except (OSError, ValueError) as error:
-        raise SystemExit("macOS installation image validation failed: " + str(error)) from error
+        raise SystemExit(f"macOS installation image validation failed [{phase}]: " + str(error)) from error
 
 
 def finder_window_settings() -> dict:
@@ -352,9 +381,9 @@ def configure_dmg_image(image: Path, temporary: Path, provenance: dict) -> None:
                         "-mountpoint", str(mount), str(image)], check=True, timeout=60,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         attached = True
-        validate_dmg_root(mount, provenance)
+        validate_dmg_root(mount, provenance, phase="writable-pre-layout")
         write_dmg_finder_layout(mount)
-        validate_dmg_root(mount, provenance, require_finder=True)
+        validate_dmg_root(mount, provenance, require_finder=True, phase="writable-post-layout")
     finally:
         if attached:
             subprocess.run(["hdiutil", "detach", str(mount)], check=True, timeout=60,
@@ -371,7 +400,7 @@ def verify_dmg(image: Path, provenance: dict) -> None:
             subprocess.run(["hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
                             "-mountpoint", str(mount), str(image)], check=True, timeout=60,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            validate_dmg_root(mount, provenance, require_finder=True)
+            validate_dmg_root(mount, provenance, require_finder=True, phase="readonly-final")
             subprocess.run(["codesign", "--verify", "--deep", "--strict", str(mount / APP_NAME)],
                            check=True, timeout=60, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         finally:
