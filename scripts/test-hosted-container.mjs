@@ -33,6 +33,7 @@ const file = (path, content, executable = false) => ({ path,
 const sourcePath = "src/deep/nested/value.cjs";
 // Workspace tmpfs forbids direct execution. Preserve executable metadata, then use its interpreter.
 const initialFiles = [file(sourcePath, "module.exports = 1;\n"),
+  file("python-smoke.py", readFileSync(new URL("./fixtures/hosted-python-smoke.py", import.meta.url), "utf8")),
   file("src/deep/nested/check.sh", "#!/bin/sh\nset -eu\nnode -e \"require('node:assert/strict').equal(require('./src/deep/nested/value.cjs'), 2)\"\nprintf '%s\\n' EXECUTABLE_OK\n", true),
   file("test.cjs", "require('node:assert/strict').equal(require('./src/deep/nested/value.cjs'), 2); require('node:assert/strict').equal(require('node:child_process').execFileSync('/bin/sh', ['./src/deep/nested/check.sh'], {encoding:'utf8'}), 'EXECUTABLE_OK\\n'); console.log('TEST_OK');\n")];
 const checks = "const assert=require('node:assert/strict'),fs=require('node:fs');"
@@ -47,7 +48,7 @@ const checks = "const assert=require('node:assert/strict'),fs=require('node:fs')
   + "assert.equal(Object.keys(process.env).some(k=>/^(GATHERTHREAD_|GITHUB_TOKEN$|GH_TOKEN$|AWS_|SILICONFLOW_API_KEY$|OPENAI_API_KEY$)/.test(k)),false);"
   + "fs.writeFileSync('src/deep/nested/value.cjs','module.exports = 2;\\n');console.log('READONLY_OK');console.log('SECRETS_ABSENT');";
 const commandMarker = `GT_SMOKE_COMMAND_OK_${randomBytes(12).toString("hex")}`;
-const command = `node -e ${JSON.stringify(checks)} && node test.cjs && printf '\\n%s\\n' ${commandMarker}`;
+const command = `node -e ${JSON.stringify(checks)} && node test.cjs && python3 python-smoke.py && printf '\\n%s\\n' ${commandMarker}`;
 
 function toolOutputLines(messages) {
   const text = content => typeof content === "string" ? [content] : Array.isArray(content)
@@ -73,7 +74,7 @@ const fetcher = async (url, init) => {
         && message.content.some(block => block.type === "tool_result"))) {
         check = "tool stdout";
         const lines = toolOutputLines(body.messages);
-        for (const marker of ["TEST_OK", "READONLY_OK", "SECRETS_ABSENT", commandMarker]) {
+        for (const marker of ["TEST_OK", "READONLY_OK", "SECRETS_ABSENT", "PYTHON_STDLIB_OK", "PYTHON_VENV_PIP_OK", commandMarker]) {
           assert.ok(lines.includes(marker), `Missing fixture tool stdout marker: ${marker}`);
         }
         observedChecks = true;
@@ -206,7 +207,7 @@ try {
   assert.deepEqual(snapshot.files, initialFiles.map((entry) => entry.path === sourcePath
     ? file(sourcePath, "module.exports = 2;\n") : entry).sort((a, b) => a.path.localeCompare(b.path)));
   const memoryDescription = memoryPolicy === "shared-host" ? "shared-host RAM/swap" : `${memoryMiB}m`;
-  process.stdout.write(`Hosted OpenCode production-path smoke passed at ${memoryDescription}${cpuSet === undefined ? "" : ` with guarded CPU ${cpuSet}`} under strict Linux umask: nested source edited and tested, read-only input and credential isolation verified; ${calls} fake model call(s).\n`);
+  process.stdout.write(`Hosted OpenCode production-path smoke passed at ${memoryDescription}${cpuSet === undefined ? "" : ` with guarded CPU ${cpuSet}`} under strict Linux umask: nested source edited and tested, Python stdlib/venv/pip executed, transient environments excluded, read-only input and credential isolation verified; ${calls} fake model call(s).\n`);
   // Exercise the bundled native Anthropic SDK against the same immutable,
   // network-disabled executor and its real bash/tool-result loop. No provider
   // account/key or extra SDK download is involved in this fixture.

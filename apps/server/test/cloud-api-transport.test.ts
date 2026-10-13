@@ -6,6 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { HostedModelProxy } from "../src/hosted-agent.js";
 import { ApiError } from "../src/errors.js";
+import { CLOUD_API_PROVIDERS } from "../src/cloud-api.js";
+import type { HostedEndpoint } from "../src/hosted-agent-pool.js";
 
 const socketTest = process.platform === "win32" ? test.skip : test;
 const endpoint = { id: "anthropic", profileId: "anthropic", label: "Claude fixture", provider: "anthropic" as const,
@@ -57,4 +59,43 @@ socketTest("native streaming rechecks authorization on each chunk and cancels pe
     await entered.promise; authorized = false; release.resolve(); const response = await reply;
     assert.doesNotMatch(response.body, /private late content/); assert.equal(upstreamSignal?.aborted, true);
   } finally { release.resolve(); await proxy.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+function personalEndpoint(baseUrl: string): HostedEndpoint {
+  return { ...endpoint, id: "personal-fixture", profileId: "api-10000000-0000-4000-8000-000000000001", provider: "openai-compatible", transport: "openai-chat", model: "my-enabled-model", baseUrl,
+    personal: { configId: "10000000-0000-4000-8000-000000000001", configRevision: "20000000-0000-4000-8000-000000000001", userId: "fixture-user" } };
+}
+
+test("personal API egress rejects every non-exact origin/path and transport before any request", () => {
+  for (const baseUrl of ["http://127.0.0.1/v1", "https://dashscope.aliyuncs.com/compatible-mode/v1/", "https://dashscope.aliyuncs.com/compatible-mode/v1?x=1",
+    "https://dashscope.aliyuncs.com:443/compatible-mode/v1", "https://key@dashscope.aliyuncs.com/compatible-mode/v1", "https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "https://ark.cn-beijing.volces.com/api/v3/../v1", "https://open.bigmodel.cn/api/paas/v4/other"]) {
+    assert.throws(() => new HostedModelProxy({ endpoint: personalEndpoint(baseUrl), fetch: async () => { throw Error("must not fetch"); } }), /personal.*destination/i);
+  }
+  assert.throws(() => new HostedModelProxy({ endpoint: { ...personalEndpoint("https://api.anthropic.com/v1"), transport: "openai-chat" }, fetch: async () => { throw Error("must not fetch"); } }), /personal.*destination/i);
+});
+
+socketTest("domestic providers use only their exact fixed chat endpoint with no redirects or model substitution", async () => {
+  const root = mkdtempSync(join(tmpdir(), "gt-domestic-api-"));
+  try {
+    for (const id of ["qwen", "glm", "doubao"]) {
+      const preset = CLOUD_API_PROVIDERS.find(item => String(item.id) === id); assert.ok(preset);
+      const selected = personalEndpoint(preset.base_url); let calls = 0;
+      const proxy = new HostedModelProxy({ endpoint: selected, fetch: async (url, init) => {
+        calls++; assert.equal(url, `${preset.base_url}/chat/completions`); assert.equal(init?.redirect, "error");
+        assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${selected.apiToken}`);
+        assert.equal(JSON.parse(String(init?.body)).model, "my-enabled-model");
+        return Response.json({ choices: [{ message: { content: "Fixture" }, finish_reason: "stop" }] });
+      } });
+      try {
+        const socket = join(root, `${id}.sock`); await proxy.listen(socket);
+        const body = { model: selected.model, messages: [{ role: "user", content: "Fixture" }] };
+        assert.equal((await post("/v1/chat/completions", socket, body)).status, 200); assert.equal(calls, 1);
+        selected.baseUrl = "https://api.openai.com/v1";
+        assert.equal((await post("/v1/chat/completions", socket, body)).status, 502); assert.equal(calls, 1, "an allowlisted but different provider cannot receive this credential");
+        selected.baseUrl = "https://127.0.0.1/v1";
+        assert.equal((await post("/v1/chat/completions", socket, body)).status, 502); assert.equal(calls, 1);
+      } finally { await proxy.close(); }
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

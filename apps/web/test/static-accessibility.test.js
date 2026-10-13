@@ -317,7 +317,9 @@ test("official light and dark lockups include the approved mark and outlined wor
 test("Codex desktop connection puts email Launcher first and collapses terminal fallback", async () => {
   const html = await readFile(htmlPath, "utf8");
   const primary = html.slice(html.indexOf('id="codex-launcher-option"'), html.indexOf('id="connect-codex-manual"'));
-  assert.match(primary, /Download Launcher/);
+  assert.match(primary, /Install from GitHub \(recommended\)/);
+  assert.match(primary, /Website download/);
+  assert.match(primary, /id="download-codex-launcher-github-button"[^>]*href="https:\/\/github\.com\/TH060419\/gatherthread\/releases\/tag\/launcher-v0\.1\.1"/);
   assert.match(primary, /id="codex-launcher-email"[^>]*type="email"/);
   assert.match(primary, /id="open-codex-launcher-button"/);
   assert.doesNotMatch(primary, /gtd_|gta_|data-copy-command|device token/i);

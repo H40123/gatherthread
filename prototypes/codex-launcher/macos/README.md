@@ -2,6 +2,8 @@
 
 This optional arm64/x86_64 prototype uses a native AppKit `.app` and bundles
 Node 24, the fixed-version connector, and a copy of the reviewed Codex plugin.
+Launcher 0.1.1 is the installer/app display version; the bundled connector and
+plugin keep their separately verified `0.1.0-beta.1` package version.
 End users do not need Python or npm. Codex Desktop / CLI must already be
 installed and signed in. The manual terminal connection remains an advanced fallback.
 The packaged Launcher and Node require macOS 13.5 or later; the build explicitly
@@ -11,7 +13,7 @@ targets that minimum rather than the build machine's OS version.
 
 1. Download `GatherThreadLauncher-macOS-<architecture>.dmg` (`arm64` for Apple
    silicon; `x86_64` for Intel), verify its SHA-256 sidecar, and open the DMG.
-   **Drag `GatherThread Launcher.app` onto the adjacent Applications folder.**
+   **Drag `GatherThread Launcher.app` from the right onto Applications on the left.**
    Open it from Applications once, then eject the DMG. This registers
    `gatherthread-connect:` with macOS Launch Services. The prototype is
    ad-hoc signed, **not Developer ID signed or Apple-notarized**. If macOS
@@ -56,10 +58,15 @@ or connector state. Remove the optional plugin separately in Codex if desired.
 ## Build and verify
 
 On macOS arm64 or x86_64 with Node 24, npm, Swift command-line tools, and the
-repo dependencies installed:
+repo dependencies installed. Create an isolated build environment for the
+hash-pinned, build-only Finder metadata helpers:
 
 ```sh
-python3 prototypes/codex-launcher/macos/build_dist.py
+GT_DMG_BUILD_ENV="$(mktemp -d /tmp/gatherthread-dmg-build.XXXXXX)"
+python3 -m venv "$GT_DMG_BUILD_ENV"
+"$GT_DMG_BUILD_ENV/bin/python" -m pip install --require-hashes --only-binary=:all: -r prototypes/codex-launcher/macos/requirements-dmg.txt
+"$GT_DMG_BUILD_ENV/bin/python" -m unittest discover -s prototypes/codex-launcher/macos -p 'test_build_dist.py' -v
+"$GT_DMG_BUILD_ENV/bin/python" prototypes/codex-launcher/macos/build_dist.py
 ```
 
 The builder compiles the AppKit executable, runs the shared URI vectors,
@@ -70,11 +77,24 @@ ad hoc, and creates an architecture-specific **DMG**, compatible ZIP, SHA-256
 sidecars and public `*.dmg.provenance.json` / `*.zip.provenance.json`. Build from a clean committed checkout;
 the manifest identifies that exact commit, version, architecture, Node version,
 signing limitation and every app-file hash, without local paths or credentials.
-Only Git-reviewed plugin files are copied. A fresh stage contains the app,
-`/Applications` symlink, bilingual `READ ME FIRST.html` and build provenance.
+Only Git-reviewed plugin files are copied. Finder shows exactly two root items:
+the application on the right and `/Applications` shortcut on the left. A clear
+leftward arrow and bilingual security/Hook instructions are part of the static
+background. Detailed `READ ME FIRST.html`, `BUILD_PROVENANCE.json`, background
+and layout source stay in the hidden `.gatherthread` directory; external checksum
+and provenance sidecars remain available for verification. A private writable
+intermediate receives the fixed `.DS_Store` using pinned build-only helpers,
+without driving Finder or requesting Apple Events permission. It is detached
+before conversion to the final read-only compressed DMG.
 The builder verifies the actual DMG, mounts it **read-only without opening Finder
 or launching the app**, checks its exact inventory, instructions, hashes, versions,
-icons and signature, and detaches before publishing the local file. Both formats
+icons, exact Finder view/icon positions/background target, and signature, and
+detaches before publishing the local file. Only mounted images may additionally
+contain ordinary `.fseventsd`, `.Spotlight-V100` or `.Trashes` system directories;
+the unmounted stage rejects them. Symlinks, special types, other root entries,
+application bytes and Finder metadata are still strictly checked. Inventory
+failures report the validation phase and bounded missing/unexpected filenames.
+Both formats
 privately prepare their checksum and source record, then promote metadata before
 the archive with no-clobber links. An existing DMG, ZIP or either sidecar is never
 overwritten, including symlinks and collisions arriving during the build. Failure
@@ -84,6 +104,20 @@ It does not publish a Release. Verify a downloaded image's hash and perform
 a real macOS/Safari/Codex smoke test before distributing.
 The build does not prove a live authenticated connection or that a particular
 Codex Desktop version will load the plugin.
+
+The approved background is generated locally with `dmg-background/RenderBackground.swift`
+and `layout.json`, retaining the byte-identical approved logo. To preview a copy
+without changing the packaged source asset (use a new output path):
+
+```sh
+swiftc -O -framework AppKit -o /tmp/gatherthread-render-dmg prototypes/codex-launcher/macos/dmg-background/RenderBackground.swift
+/tmp/gatherthread-render-dmg prototypes/codex-launcher/macos/dmg-background/layout.json "$PWD" /tmp/gatherthread-dmg-background-preview.png
+```
+
+The background is 720 × 560 points at 2× with native bilingual UI text. The
+renderer verifies the approved logo's SHA-256 and refuses an existing output.
+Build-tool wheel sources, pinned hashes and MIT attribution are documented in
+[`dmg-background/THIRD_PARTY_NOTICES.md`](dmg-background/THIRD_PARTY_NOTICES.md).
 
 For a future production release, use Developer ID signing, notarization, and an
 updater. These are release gates, not features of this prototype.

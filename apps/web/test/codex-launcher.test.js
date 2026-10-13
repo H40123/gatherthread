@@ -81,6 +81,15 @@ test("the same Launcher download button uses a bounded exact same-source server 
   f.ui.clear();
 });
 
+test("recommended GitHub installation stays pinned independently of the same-origin download index", async () => {
+  const source = "a".repeat(40);
+  const f = fixture(undefined, { fetchResponse: async () => Response.json({ source_commit: source, index_path: `/downloads/${source}/index.html` }) });
+  await f.ui.open();
+  assert.equal(f.get("download-codex-launcher-github-button").href, "https://github.com/TH060419/gatherthread/releases/tag/launcher-v0.1.1");
+  assert.equal(f.get("download-codex-launcher-button").href, `/downloads/${source}/index.html`);
+  f.ui.clear();
+});
+
 test("missing, oversized or unsafe download metadata preserves the Release fallback and password handoff", async () => {
   const source = "a".repeat(40), fallback = "https://github.com/TH060419/gatherthread/releases";
   for (const response of [new Response("test gate", { headers: { "content-type": "text/html" } }),

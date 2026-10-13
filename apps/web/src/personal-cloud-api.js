@@ -3,7 +3,7 @@ export function mountPersonalCloudApi({ document, api, localizer, getContext, ma
   confirm = () => false, onChanged = () => {} }) {
   const el = id => document.getElementById(`cloud-api-${id}`);
   const controls = ["refresh", "new", "save", "cancel", "delete", "provider", "label", "model", "key", "enabled"];
-  let generation = 0, busy = false, snapshot = null, selected = null, draftId = null, scope = null, statusSource = "";
+  let generation = 0, busy = false, snapshot = null, selected = null, draftId = null, scope = null, statusSource = "", suggestedModel = "", modelCustomized = false;
   const translations = [];
   const current = (run, context) => run === generation && getContext()?.scope === context.scope;
   const setStatus = value => { statusSource = value; el("status").textContent = localizer.t(value); };
@@ -18,7 +18,7 @@ export function mountPersonalCloudApi({ document, api, localizer, getContext, ma
     update(); return result;
   };
   function cancelEdit() {
-    selected = null; draftId = null; el("key").value = ""; el("editor").hidden = true;
+    selected = null; draftId = null; suggestedModel = ""; modelCustomized = false; el("key").value = ""; el("editor").hidden = true;
     for (const id of ["label", "model"]) el(id).value = "";
   }
   function clear() {
@@ -26,8 +26,13 @@ export function mountPersonalCloudApi({ document, api, localizer, getContext, ma
     el("list").replaceChildren(); el("provider").replaceChildren(); el("endpoint").textContent = "";
     el("docs").removeAttribute("href"); cancelEdit(); setStatus(""); setBusy(false);
   }
-  function refreshProvider() {
+  function refreshProvider({ suggest = false } = {}) {
     const provider = snapshot?.providers.find(item => item.id === el("provider").value);
+    const nextSuggestion = provider?.default_model ?? "";
+    // Preserve a custom/stored ID. Only an untouched suggestion or empty input
+    // follows a new provider; the user's exact model selection is not replaced.
+    if (suggest && (!el("model").value || !modelCustomized && el("model").value === suggestedModel)) el("model").value = nextSuggestion;
+    el("model").placeholder = nextSuggestion; suggestedModel = nextSuggestion;
     el("endpoint").textContent = provider?.base_url ?? "";
     el("docs").removeAttribute("href");
     if (provider) {
@@ -40,18 +45,19 @@ export function mountPersonalCloudApi({ document, api, localizer, getContext, ma
   function edit(configuration = null) {
     if (busy || !snapshot?.enabled || !getContext() || getContext().scope !== scope) return;
     selected = configuration; draftId = configuration?.id ?? makeId();
+    suggestedModel = ""; modelCustomized = Boolean(configuration);
     el("provider").value = configuration?.provider_id ?? snapshot.providers[0]?.id ?? "";
     el("label").value = configuration?.label ?? ""; el("model").value = configuration?.model ?? "";
     el("enabled").checked = configuration?.enabled ?? true;
     el("key").value = ""; el("key").placeholder = localizer.t(configuration
       ? "Leave blank to keep the saved key" : "Paste your provider API key");
     el("delete").hidden = !configuration; el("editor").hidden = false;
-    refreshProvider(); setStatus(""); el("provider").focus();
+    refreshProvider({ suggest: !configuration }); setStatus(""); el("provider").focus();
   }
   function render() {
     translations.length = 0; el("list").replaceChildren(); el("provider").replaceChildren();
     for (const provider of snapshot.providers) {
-      const option = node("option", provider.label); option.value = provider.id; el("provider").append(option);
+      const option = node("option", provider.label, true); option.value = provider.id; el("provider").append(option);
     }
     for (const configuration of snapshot.configurations) {
       const row = node("li", ""); row.className = "account-device-row";
@@ -117,7 +123,8 @@ export function mountPersonalCloudApi({ document, api, localizer, getContext, ma
   el("refresh").addEventListener("click", () => void load()); el("new").addEventListener("click", () => edit());
   el("save").addEventListener("click", () => void save()); el("delete").addEventListener("click", () => void remove());
   el("cancel").addEventListener("click", () => { if (!busy) { cancelEdit(); setStatus(""); el("new").focus(); } });
-  el("provider").addEventListener("change", () => { el("key").value = ""; refreshProvider(); });
+  el("provider").addEventListener("change", () => { el("key").value = ""; refreshProvider({ suggest: true }); });
+  el("model").addEventListener("input", () => { modelCustomized = Boolean(el("model").value); });
   return { load, clear, refreshLanguage() {
     for (const update of translations) update(); setStatus(statusSource);
     if (!el("editor").hidden) el("key").placeholder = localizer.t(selected ? "Leave blank to keep the saved key" : "Paste your provider API key");

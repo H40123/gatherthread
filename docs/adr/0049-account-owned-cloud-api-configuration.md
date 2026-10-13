@@ -10,7 +10,7 @@ Writers need their own model API accounts without installing a local Agent. Publ
 
 ## Decision
 
-Account-level Personal API settings use a fixed provider preset, exact model ID and write-only key. Initial presets are OpenAI Chat, native Anthropic Messages, DeepSeek, SiliconFlow CN/global and OpenRouter. Each has fixed credential-free HTTPS and host-created standard authorization headers. Arbitrary URLs/headers, IAM, Gemini-native and Responses-only transports are unsupported. Saving invokes no model discovery, billable test, retry or fallback.
+Account-level Personal API settings use a fixed provider preset, exact model ID and write-only key. Presets include Qwen/DashScope China, GLM/BigModel, Doubao/Volcengine Ark China, OpenAI Chat, native Anthropic Messages, DeepSeek, SiliconFlow CN/global and OpenRouter. Each has fixed credential-free HTTPS origin, path and transport, with host-created standard authorization headers and redirects refused. Model examples remain editable account-specific hints. Arbitrary URLs/headers, IAM, Gemini-native and Responses-only transports are unsupported. Saving invokes no model discovery, billable test, retry or fallback.
 
 `cloud_api_configs` contains metadata and AES-256-GCM ciphertext under an independent operator-managed 32-byte key. AAD binds account, config ID, revision and all routing metadata. Reads expose metadata and `has_key`, never keys, digests, ciphertext or suffixes. Exact/recognizable credential pastes in labels/model IDs are refused. Storage is limited to eight configs per account. Foreign access, stale revisions, encryption tampering and missing master key fail closed. Same-state create retries are idempotent; edits/deletes require current revision. An uncertain edit requires rereading metadata.
 

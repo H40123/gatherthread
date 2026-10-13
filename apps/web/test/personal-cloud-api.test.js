@@ -102,3 +102,49 @@ test("changing provider never reuses the saved key at another endpoint", async (
   assert.equal(f.calls.length, 0);
   assert.equal(f.node("cloud-api-status").textContent, "Changing provider requires a new API key.");
 });
+
+const domesticProviders = [
+  { id: "qwen", label: "Qwen · Alibaba Cloud (Beijing)", transport: "openai-chat", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", docs_url: "https://help.aliyun.com/zh/model-studio/base-url", default_model: "qwen-plus" },
+  { id: "glm", label: "GLM · Zhipu", transport: "openai-chat", base_url: "https://open.bigmodel.cn/api/paas/v4", docs_url: "https://docs.bigmodel.cn/api-reference/模型-api/对话补全", default_model: "glm-5.3" },
+  { id: "doubao", label: "Doubao · Volcengine (Beijing)", transport: "openai-chat", base_url: "https://ark.cn-beijing.volces.com/api/v3", docs_url: "https://docs.volcengine.com/docs/ark/base-url-and-authentication?lang=en", default_model: "doubao-seed-2-1-pro-260915" },
+];
+
+test("official personal providers suggest a model but preserve the user's manually chosen ID", async () => {
+  const f = fixture({ getCloudApi: async () => ({ enabled: true, providers: [provider, ...domesticProviders], configurations: [] }) });
+  await f.controller.load(); f.node("cloud-api-new").click();
+  for (const preset of domesticProviders) {
+    f.node("cloud-api-provider").value = preset.id; f.node("cloud-api-key").value = "fixture-k";
+    f.node("cloud-api-provider").handlers.change();
+    assert.equal(f.node("cloud-api-model").value, preset.default_model);
+    assert.equal(f.node("cloud-api-model").placeholder, preset.default_model);
+    assert.equal(f.node("cloud-api-endpoint").textContent, preset.base_url);
+    assert.equal(f.node("cloud-api-key").value, "");
+  }
+  f.node("cloud-api-model").value = "my-enabled-model";
+  f.node("cloud-api-provider").value = "qwen"; f.node("cloud-api-provider").handlers.change();
+  assert.equal(f.node("cloud-api-model").value, "my-enabled-model");
+  f.node("cloud-api-label").value = "My Qwen"; f.node("cloud-api-key").value = "fixture-k";
+  f.node("cloud-api-save").click(); await nextTurn();
+  assert.equal(f.calls[0][2].provider_id, "qwen");
+  assert.equal(f.calls[0][2].model, "my-enabled-model");
+});
+
+test("editing an official provider retains the stored exact model instead of refreshing its default", async () => {
+  const exact = { ...configuration, provider_id: "qwen", model: "custom-qwen-id" };
+  const f = fixture({ getCloudApi: async () => ({ enabled: true, providers: domesticProviders, configurations: [exact] }) });
+  await f.controller.load(); f.edit(); f.controller.refreshLanguage();
+  assert.equal(f.node("cloud-api-model").value, "custom-qwen-id");
+  assert.equal(f.node("cloud-api-model").placeholder, "qwen-plus");
+});
+
+test("a manually entered or saved ID matching a suggested ID is still an exact user selection", async () => {
+  for (const saved of [false, true]) {
+    const exact = { ...configuration, provider_id: "qwen", model: "qwen-plus" };
+    const f = fixture({ getCloudApi: async () => ({ enabled: true, providers: domesticProviders, configurations: saved ? [exact] : [] }) });
+    await f.controller.load(); if (saved) f.edit(); else {
+      f.node("cloud-api-new").click(); f.node("cloud-api-model").value = "qwen-plus"; f.node("cloud-api-model").handlers.input();
+    }
+    f.node("cloud-api-provider").value = "glm"; f.node("cloud-api-provider").handlers.change();
+    assert.equal(f.node("cloud-api-model").value, "qwen-plus"); assert.equal(f.node("cloud-api-model").placeholder, "glm-5.3");
+  }
+});

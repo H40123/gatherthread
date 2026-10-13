@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { CloudApiPutInputSchema, HostedAgentRequestInputSchema, HostedHistorySummaryInputSchema, HostedGithubTaskInputSchema, HostedAgentSelectionSchema } from "../src/index.js";
+import { CloudApiPutInputSchema, CloudApiProviderSchema, HostedAgentRequestInputSchema, HostedHistorySummaryInputSchema, HostedGithubTaskInputSchema, HostedAgentSelectionSchema } from "../src/index.js";
 
 test("requester-private selection contract is strict and cannot carry credentials or silently drop revisions", () => {
   const id = randomUUID(), revision = randomUUID();
@@ -38,5 +38,15 @@ test("automatic hosted retries pin an optional exact content revision independen
       assert.equal(schema.safeParse({ ...base, content_revision }).success, false);
     }
     assert.equal(schema.safeParse({ ...base, profile_id: `api-${randomUUID()}`, content_revision: 0 }).success, false);
+  }
+});
+
+test("official domestic presets accept custom model IDs and bounded model suggestions without arbitrary endpoints", () => {
+  for (const provider_id of ["qwen", "glm", "doubao"]) {
+    assert.equal(CloudApiPutInputSchema.safeParse({ expected_revision: null, provider_id, label: "My model", model: "my-enabled-model", enabled: true, api_key: "fixture".repeat(4) }).success, true);
+    const provider = { id: provider_id, label: "Official provider", transport: "openai-chat", base_url: "https://example.invalid/v1", docs_url: "https://example.invalid/docs", default_model: "official-model" };
+    assert.equal(CloudApiProviderSchema.safeParse(provider).success, true);
+    for (const default_model of ["bad model", "x".repeat(161), ""]) assert.equal(CloudApiProviderSchema.safeParse({ ...provider, default_model }).success, false);
+    assert.equal(CloudApiPutInputSchema.safeParse({ expected_revision: null, provider_id, label: "My model", model: "custom-model", enabled: true, base_url: provider.base_url }).success, false);
   }
 });

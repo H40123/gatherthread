@@ -9,6 +9,7 @@ import platform
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
 import struct
 import tempfile
@@ -25,7 +26,18 @@ APP = BUILD / "GatherThread Launcher.app"
 RESOURCES = APP / "Contents" / "Resources"
 MINIMUM_MACOS_VERSION = "13.5"
 APP_NAME = "GatherThread Launcher.app"
-DMG_ENTRIES = {APP_NAME, "Applications", "READ ME FIRST.html", "BUILD_PROVENANCE.json"}
+LAUNCHER_VERSION = "0.1.1"
+DMG_METADATA = ".gatherthread"
+DMG_ENTRIES = {APP_NAME, "Applications", DMG_METADATA}
+DMG_METADATA_ENTRIES = {"READ ME FIRST.html", "BUILD_PROVENANCE.json", "background.png", "layout.json"}
+# macOS may create these volume directories after attaching a fresh image.
+# They are never accepted from the unmounted source staging directory.
+DMG_SYSTEM_VOLUME_DIRECTORIES = {".fseventsd", ".Spotlight-V100", ".Trashes"}
+DMG_MOUNT_PHASES = {"writable-pre-layout", "writable-post-layout", "readonly-final"}
+# Finder can retain the user's path/status bars even when bwsp requests them off.
+# Reserve their height so both bilingual guidance blocks remain visible.
+DMG_WINDOW_SIZE = (720, 648)
+DMG_ICON_LOCATIONS = {"Applications": (180, 210), APP_NAME: (540, 210)}
 REQUIRED_BUNDLE_FILES = (
     "Contents/Info.plist", "Contents/MacOS/GatherThreadLauncher",
     "Contents/Resources/GatherThread.icns", "Contents/Resources/runtime/node",
@@ -135,7 +147,9 @@ def validate_bundle(app: Path) -> None:
             info = plistlib.load(handle)
         if (info.get("CFBundleExecutable") != "GatherThreadLauncher"
                 or info.get("CFBundleIdentifier") != "cn.gatherthread.codex-launcher"
-                or info.get("LSMinimumSystemVersion") != MINIMUM_MACOS_VERSION):
+                or info.get("LSMinimumSystemVersion") != MINIMUM_MACOS_VERSION
+                or info.get("CFBundleShortVersionString") != LAUNCHER_VERSION
+                or info.get("CFBundleVersion") != "11"):
             raise ValueError("Application identity or system minimum is invalid")
         version = info.get("GatherThreadReleaseVersion")
         if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?", version):
@@ -206,33 +220,174 @@ def prepare_dmg_stage(app: Path, stage: Path, provenance: dict) -> None:
     stage.mkdir()
     shutil.copytree(app, stage / APP_NAME)
     (stage / "Applications").symlink_to("/Applications", target_is_directory=True)
-    copy(HERE / "install-guide.html", stage / "READ ME FIRST.html")
-    (stage / "BUILD_PROVENANCE.json").write_text(
+    metadata = stage / DMG_METADATA
+    metadata.mkdir()
+    copy(HERE / "install-guide.html", metadata / "READ ME FIRST.html")
+    copy(HERE / "dmg-background/background.png", metadata / "background.png")
+    copy(HERE / "dmg-background/layout.json", metadata / "layout.json")
+    (metadata / "BUILD_PROVENANCE.json").write_text(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     validate_dmg_root(stage, provenance)
 
 
-def validate_dmg_root(root: Path, expected_provenance: dict) -> None:
+def dmg_entry_diagnostic(names: set[str]) -> str:
+    """Bound public root filenames and escape controls, without exposing paths/content."""
+    shown = []
+    for name in sorted(names)[:8]:
+        rendered = json.dumps(name, ensure_ascii=True)
+        shown.append(rendered if len(rendered) <= 96 else rendered[:92] + '..."')
+    if len(names) > 8:
+        shown.append(f"... ({len(names) - 8} more)")
+    return "[" + ", ".join(shown) + "]"
+
+
+def validate_dmg_root(root: Path, expected_provenance: dict, *, require_finder: bool = False,
+                      phase: str = "stage") -> None:
     """Validate actual mounted bytes against the pre-build manifest, not just filenames."""
+    if phase != "stage" and phase not in DMG_MOUNT_PHASES:
+        raise SystemExit("Invalid installation image validation phase")
     try:
-        if {entry.name for entry in root.iterdir()} != DMG_ENTRIES:
-            raise ValueError("Unexpected installation image entries")
+        expected_entries = DMG_ENTRIES | ({".DS_Store"} if require_finder else set())
+        entries = {entry.name: entry for entry in root.iterdir()}
+        system_entries = set()
+        if phase in DMG_MOUNT_PHASES:
+            for name in DMG_SYSTEM_VOLUME_DIRECTORIES & entries.keys():
+                if not stat.S_ISDIR(entries[name].lstat().st_mode):
+                    raise ValueError(f"System volume entry {name} must be an ordinary directory")
+                system_entries.add(name)
+        missing = expected_entries - entries.keys()
+        unexpected = entries.keys() - expected_entries - system_entries
+        if missing or unexpected:
+            raise ValueError("Unexpected installation image entries; missing=" + dmg_entry_diagnostic(missing)
+                             + "; unexpected=" + dmg_entry_diagnostic(unexpected))
         applications = root / "Applications"
         if not applications.is_symlink() or os.readlink(applications) != "/Applications":
             raise ValueError("The drag target must be /Applications")
-        for name in ("READ ME FIRST.html", "BUILD_PROVENANCE.json"):
-            entry = root / name
-            if entry.is_symlink() or not entry.is_file() or entry.stat().st_size > 512_000:
+        metadata = root / DMG_METADATA
+        if metadata.is_symlink() or not metadata.is_dir() or {p.name for p in metadata.iterdir()} != DMG_METADATA_ENTRIES:
+            raise ValueError("Unexpected installation metadata entries")
+        for name in DMG_METADATA_ENTRIES:
+            entry = metadata / name
+            if entry.is_symlink() or not entry.is_file() or not (0 < entry.stat().st_size <= 512_000):
                 raise ValueError("Missing or invalid image instructions/provenance")
-        if (root / "READ ME FIRST.html").read_bytes() != (HERE / "install-guide.html").read_bytes():
+        if (metadata / "READ ME FIRST.html").read_bytes() != (HERE / "install-guide.html").read_bytes():
             raise ValueError("Installation instructions changed")
-        provenance = json.loads((root / "BUILD_PROVENANCE.json").read_text(encoding="utf-8"))
+        for name in ("background.png", "layout.json"):
+            if (metadata / name).read_bytes() != (HERE / "dmg-background" / name).read_bytes():
+                raise ValueError("Installation background changed")
+        provenance = json.loads((metadata / "BUILD_PROVENANCE.json").read_text(encoding="utf-8"))
         if provenance != expected_provenance:
             raise ValueError("Installation image provenance changed")
         validate_bundle(root / APP_NAME)
         validate_provenance(provenance, root / APP_NAME)
+        if require_finder:
+            validate_dmg_finder_layout(root)
     except (OSError, ValueError) as error:
-        raise SystemExit("macOS installation image validation failed: " + str(error)) from error
+        raise SystemExit(f"macOS installation image validation failed [{phase}]: " + str(error)) from error
+
+
+def finder_window_settings() -> dict:
+    """Fixed icon view, without a toolbar or a sidebar stealing background space."""
+    return {"WindowBounds": "{{120, 120}, {720, 648}}", "ShowToolbar": False,
+            "ShowSidebar": False, "ContainerShowSidebar": False, "ShowStatusBar": False,
+            "ShowTabView": False, "ShowPathbar": False, "PreviewPaneVisibility": False,
+            "SidebarWidth": 0}
+
+
+def finder_icon_settings(background_alias: bytes) -> dict:
+    # Finder's metadata field names are documented by the MIT dmgbuild project.
+    # See dmg-background/THIRD_PARTY_NOTICES.md for the pinned reference and license.
+    return {"viewOptionsVersion": 1, "backgroundType": 2,
+            "backgroundImageAlias": background_alias,
+            "backgroundColorRed": 251 / 255, "backgroundColorGreen": 250 / 255,
+            "backgroundColorBlue": 247 / 255, "iconSize": 128.0, "textSize": 13.0,
+            "arrangeBy": "none", "labelOnBottom": True, "showIconPreview": False,
+            "showItemInfo": False, "gridOffsetX": 0.0, "gridOffsetY": 0.0,
+            "gridSpacing": 100.0, "scrollPositionX": 0.0, "scrollPositionY": 0.0}
+
+
+def dmg_metadata_tools():
+    """Build-only, pinned pure-Python helpers; neither one enters the application."""
+    try:
+        from importlib.metadata import version
+        from ds_store import DSStore
+        from mac_alias import Alias
+        if version("ds_store") != "1.3.3" or version("mac_alias") != "2.2.3":
+            raise ValueError("Unreviewed Finder metadata tool version")
+    except (ImportError, ValueError) as error:
+        raise SystemExit("Install the hash-pinned macOS requirements-dmg.txt in a build venv") from error
+    return DSStore, Alias
+
+
+def write_dmg_finder_layout(root: Path) -> None:
+    """Only the fresh temporary writable image receives this installation layout."""
+    DSStore, Alias = dmg_metadata_tools()
+    store_path = root / ".DS_Store"
+    if store_path.exists() or store_path.is_symlink():
+        raise SystemExit("Refusing to overwrite existing Finder metadata")
+    alias = Alias.for_file(str(root / DMG_METADATA / "background.png"))
+    # Keep the volume's creation/CNID identity, never publish a private build path.
+    alias.volume.posix_path = b"/Volumes/GatherThread Launcher"
+    with DSStore.open(str(store_path), "w+") as store:
+        store["."]["vSrn"] = ("long", 1)
+        store["."]["bwsp"] = finder_window_settings()
+        store["."]["icvp"] = finder_icon_settings(alias.to_bytes())
+        store["."]["icvl"] = ("type", b"icnv")
+        for name, location in DMG_ICON_LOCATIONS.items():
+            store[name]["Iloc"] = location
+    validate_dmg_finder_layout(root)
+
+
+def validate_dmg_finder_layout(root: Path) -> None:
+    """Read the real .DS_Store, including its image target, not a layout claim."""
+    DSStore, Alias = dmg_metadata_tools()
+    path = root / ".DS_Store"
+    if path.is_symlink() or not path.is_file() or not (0 < path.stat().st_size <= 64_000):
+        raise SystemExit("Missing or invalid Finder installation metadata")
+    try:
+        with DSStore.open(str(path), "r") as store:
+            expected = {(".", code) for code in (b"vSrn", b"bwsp", b"icvp", b"icvl")}
+            expected |= {(name, b"Iloc") for name in DMG_ICON_LOCATIONS}
+            if {(entry.filename, entry.code) for entry in store} != expected:
+                raise ValueError("Unexpected Finder metadata records")
+            if store["."]["bwsp"] != finder_window_settings() or store["."]["icvl"] != (b"type", b"icnv"):
+                raise ValueError("Finder view/window changed")
+            if store["."]["vSrn"] != (b"long", 1):
+                raise ValueError("Finder view version changed")
+            for name, location in DMG_ICON_LOCATIONS.items():
+                if store[name]["Iloc"] != location:
+                    raise ValueError("Installer icon placement changed")
+            settings = store["."]["icvp"]
+            alias_bytes = settings.get("backgroundImageAlias")
+            if not isinstance(alias_bytes, bytes) or settings != finder_icon_settings(alias_bytes):
+                raise ValueError("Finder background settings changed")
+            alias = Alias.from_bytes(alias_bytes)
+            if (alias.target.filename != "background.png" or alias.target.folder_name != ".gatherthread"
+                    or alias.target.posix_path != "/.gatherthread/background.png"
+                    or alias.volume.name != "GatherThread Launcher"
+                    or alias.volume.posix_path != "/Volumes/GatherThread Launcher"):
+                raise ValueError("Finder background alias escaped the installation image")
+    except (OSError, ValueError, KeyError, TypeError, struct.error) as error:
+        raise SystemExit("macOS Finder installation layout validation failed") from error
+
+
+def configure_dmg_image(image: Path, temporary: Path, provenance: dict) -> None:
+    """Mount only a fresh private intermediate, write its layout, and detach."""
+    mount = temporary / "layout-mount"
+    mount.mkdir()
+    attached = False
+    try:
+        subprocess.run(["hdiutil", "attach", "-readwrite", "-nobrowse", "-noautoopen",
+                        "-mountpoint", str(mount), str(image)], check=True, timeout=60,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        attached = True
+        validate_dmg_root(mount, provenance, phase="writable-pre-layout")
+        write_dmg_finder_layout(mount)
+        validate_dmg_root(mount, provenance, require_finder=True, phase="writable-post-layout")
+    finally:
+        if attached:
+            subprocess.run(["hdiutil", "detach", str(mount)], check=True, timeout=60,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
 def verify_dmg(image: Path, provenance: dict) -> None:
@@ -245,7 +400,7 @@ def verify_dmg(image: Path, provenance: dict) -> None:
             subprocess.run(["hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
                             "-mountpoint", str(mount), str(image)], check=True, timeout=60,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            validate_dmg_root(mount, provenance)
+            validate_dmg_root(mount, provenance, require_finder=True, phase="readonly-final")
             subprocess.run(["codesign", "--verify", "--deep", "--strict", str(mount / APP_NAME)],
                            check=True, timeout=60, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         finally:
@@ -299,9 +454,13 @@ def create_dmg(app: Path, output: Path, provenance: dict) -> None:
         temporary = Path(directory)
         stage = temporary / "stage"
         prepare_dmg_stage(app, stage, provenance)
+        writable = temporary / "layout.dmg"
         candidate = temporary / "candidate.dmg"
         subprocess.run(["hdiutil", "create", "-volname", "GatherThread Launcher", "-fs", "HFS+",
-                        "-format", "UDZO", "-srcfolder", str(stage), str(candidate)],
+                        "-format", "UDRW", "-srcfolder", str(stage), str(writable)],
+                       check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        configure_dmg_image(writable, temporary, provenance)
+        subprocess.run(["hdiutil", "convert", str(writable), "-format", "UDZO", "-o", str(candidate)],
                        check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         verify_dmg(candidate, provenance)
         publish_archive(candidate, output, provenance)

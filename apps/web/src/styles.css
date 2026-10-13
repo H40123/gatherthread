@@ -6167,6 +6167,7 @@ html[lang="zh-CN"] .composer .agent-request-profile select {
 .avatar-choice input { width: 14px; height: 14px; margin: 0; accent-color: var(--teal); }
 .avatar-settings-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
 /* Code transfer consent belongs to the whole cloud request, above send actions. */
+.launcher-download-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .composer .cloud-code-consent { width: 100%; min-width: 0; }
 .composer .cloud-code-consent[hidden] { display: none; }
 .composer .cloud-code-consent label { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.5; }

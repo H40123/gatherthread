@@ -8,7 +8,9 @@
 New testers may not have a local harness or model account. A cloud model alone
 can answer questions, but it cannot carry out ordinary coding steps such as
 editing files and running tests. An untrusted Agent must not gain a shell on
-the GatherThread server. Cloud code remains opt-in under ADR-0025.
+the GatherThread server. Project cloud sharing and local file access remain
+separately authorized under ADR-0025. The composer code choice is now default-on
+and remembered per account/project under [ADR-0053](0053-persistent-project-cloud-code-choice.md), without changing those permissions.
 
 ## Decision
 

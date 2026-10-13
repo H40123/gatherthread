@@ -18,7 +18,7 @@ import type { CodeRepository } from "./code-repository.js";
 import { hostedContainerCpuArguments, parseHostedCpuSet } from "./hosted-container-cpu.js";
 import { hostedContainerMemoryArguments, validateHostedMemoryPolicy, type HostedMemoryPolicy } from "./hosted-container-memory.js";
 import { createHostedContainerOutputDecoder, createHostedLiveOutputConsumer, hostedContainerResult, type HostedProgressCallback } from "./hosted-live-output.js";
-import { CloudApiStore, isPersonalCloudProfile, cloudApiRunIsCurrent, PERSONAL_CLOUD_DAILY_RUNS, PERSONAL_CLOUD_GLOBAL_DAILY_RUNS } from "./cloud-api.js";
+import { CloudApiStore, CLOUD_API_PROVIDERS, isPersonalCloudProfile, cloudApiRunIsCurrent, PERSONAL_CLOUD_DAILY_RUNS, PERSONAL_CLOUD_GLOBAL_DAILY_RUNS } from "./cloud-api.js";
 
 import { HOSTED_MODEL, validateHostedEndpoints, HOSTED_USER_MIN_INTERVAL_SECONDS, HOSTED_USER_MAX_CONCURRENT,
   isSiliconFlowFreeEndpoint,
@@ -117,6 +117,15 @@ export function runDocker(args: string[], timeoutMs: number, outputLimit = 1_000
   });
 }
 
+function assertPersonalCloudDestination(endpoint: HostedEndpoint): void {
+  if (!endpoint.personal && !isPersonalCloudProfile(endpoint.profileId ?? "")) return;
+  // Match the literal fixed origin AND full base path, not wildcard regional or
+  // workspace hosts, alternate ports, URL normalization, userinfo or redirects.
+  const preset = CLOUD_API_PROVIDERS.find(item => item.base_url === endpoint.baseUrl && item.transport === endpoint.transport);
+  const provider = preset?.id === "anthropic" ? "anthropic" : preset?.id === "deepseek" ? "deepseek" : "openai-compatible";
+  if (!endpoint.personal || !preset || endpoint.provider !== provider) throw new Error("Invalid personal API destination");
+}
+
 /** Only model egress: short-lived Unix socket with per-run request and Neuron caps. */
 export class HostedModelProxy {
   private calls = 0;
@@ -125,11 +134,15 @@ export class HostedModelProxy {
   private spent = 0;
   readonly server = createServer((request, response) => void this.forward(request, response));
   private readonly dispatcher: Agent | undefined;
+  private readonly personalDestination: string | undefined;
   constructor(private readonly options: { endpoint: HostedEndpoint; fetch?: typeof globalThis.fetch;
     repositoryRun?: boolean;
     signal?: AbortSignal;
     authorize?: () => void;
     onUnavailable?: (retryAfterMs: number) => void }) {
+    assertPersonalCloudDestination(options.endpoint);
+    this.personalDestination = options.endpoint.personal ? JSON.stringify([options.endpoint.baseUrl,
+      options.endpoint.transport, options.endpoint.provider, options.endpoint.model]) : undefined;
     this.dispatcher = options.fetch ? undefined : createHostedModelDispatcher();
   }
 
@@ -175,6 +188,9 @@ export class HostedModelProxy {
       // The untrusted body may arrive after access was revoked. Fence every
       // outbound call before charging or treating an error as provider failure.
       authorize();
+      assertPersonalCloudDestination(this.options.endpoint);
+      if (this.personalDestination !== undefined && this.personalDestination !== JSON.stringify([this.options.endpoint.baseUrl,
+        this.options.endpoint.transport, this.options.endpoint.provider, this.options.endpoint.model])) throw new Error("Personal API destination changed");
       this.calls += 1;
       this.spent += charge;
       delete body.max_completion_tokens;

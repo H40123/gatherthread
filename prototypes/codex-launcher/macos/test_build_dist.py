@@ -8,6 +8,7 @@ import os
 import tempfile
 import shutil
 import unittest
+import datetime
 from unittest.mock import patch
 from pathlib import Path
 
@@ -74,6 +75,13 @@ class DeploymentTargetTests(unittest.TestCase):
 
 
 class DmgPackagingTests(unittest.TestCase):
+    def setUp(self):
+        # Archive promotion fixtures never mount a native image. Real Finder
+        # metadata and mount cleanup have their own unpatched tests below.
+        layout = patch.object(BUILD, "configure_dmg_image")
+        layout.start()
+        self.addCleanup(layout.stop)
+
     def bundle(self, root):
         app = root / "GatherThread Launcher.app"
         contents = app / "Contents"
@@ -125,15 +133,60 @@ class DmgPackagingTests(unittest.TestCase):
             stage, provenance = self.stage(Path(directory))
             self.assertEqual(os.readlink(stage / "Applications"), "/Applications")
             self.assertEqual({p.name for p in stage.iterdir()},
-                             {"GatherThread Launcher.app", "Applications", "READ ME FIRST.html", "BUILD_PROVENANCE.json"})
-            guide = (stage / "READ ME FIRST.html").read_text(encoding="utf-8")
+                             {"GatherThread Launcher.app", "Applications", ".gatherthread"})
+            guide = (stage / ".gatherthread/READ ME FIRST.html").read_text(encoding="utf-8")
             self.assertIn("<strong>系统设置 → 隐私与安全性 → 仍要打开</strong>", guide)
             self.assertIn("<strong>System Settings → Privacy &amp; Security → Open Anyway</strong>", guide)
             self.assertIn("<strong>审查、信任并允许共序 Hooks</strong>", guide)
             self.assertIn("Applications", guide)
             self.assertNotIn("xattr", guide)
-            self.assertEqual(json.loads((stage / "BUILD_PROVENANCE.json").read_text()), provenance)
+            self.assertEqual(json.loads((stage / ".gatherthread/BUILD_PROVENANCE.json").read_text()), provenance)
             BUILD.validate_dmg_root(stage, provenance)
+
+    def test_only_the_app_and_applications_are_visible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stage, provenance = self.stage(Path(directory))
+            self.assertEqual({p.name for p in stage.iterdir() if not p.name.startswith(".")},
+                             {"GatherThread Launcher.app", "Applications"})
+            self.assertEqual(json.loads((stage / ".gatherthread/BUILD_PROVENANCE.json").read_text()),
+                             provenance)
+            self.assertEqual((stage / ".gatherthread/READ ME FIRST.html").read_bytes(),
+                             (HERE / "install-guide.html").read_bytes())
+
+    def test_installer_display_version_is_separate_from_the_connector_version(self):
+        with (HERE / "Info.plist").open("rb") as handle:
+            info = plistlib.load(handle)
+        self.assertEqual(info["CFBundleShortVersionString"], "0.1.1")
+        self.assertEqual(info["GatherThreadReleaseVersion"], "0.1.0-beta.1")
+
+    def test_finder_layout_keeps_app_on_right_and_drag_target_on_left(self):
+        settings = BUILD.finder_window_settings()
+        self.assertFalse(settings["ShowToolbar"])
+        self.assertFalse(settings["ShowSidebar"])
+        self.assertFalse(settings["ShowStatusBar"])
+        self.assertEqual(BUILD.DMG_ICON_LOCATIONS,
+                         {"Applications": (180, 210), "GatherThread Launcher.app": (540, 210)})
+        self.assertEqual(BUILD.DMG_WINDOW_SIZE, (720, 648))
+        self.assertIn("{720, 648}", settings["WindowBounds"])
+        icon_settings = BUILD.finder_icon_settings(b"fixture alias")
+        # Finder ignores the entire icvp block if these color fields are omitted,
+        # even for an image background. This was verified on the real DMG window.
+        for field in ("backgroundColorRed", "backgroundColorGreen", "backgroundColorBlue"):
+            self.assertIn(field, icon_settings)
+
+    def test_background_keeps_the_approved_logo_and_concise_bilingual_guidance(self):
+        background = json.loads((HERE / "dmg-background/layout.json").read_text(encoding="utf-8"))
+        self.assertEqual(background["logo"], "logo/png/lockup-color-transparent-light-1200px.png")
+        self.assertEqual(background["logo_sha256"],
+                         "25d384f65a331c578703232b11e7c907a4ae5de3f50cac3666b2131f09707073")
+        self.assertGreater(background["arrow"][0], background["arrow"][2])
+        combined = "\n".join(background["instructions"])
+        for text in ("系统设置 → 隐私与安全性 → 仍要打开", "核对官方包", "不规避 Gatekeeper",
+                     "System Settings → Privacy & Security → Open Anyway", "Codex /hooks",
+                     "审查、信任并允许共序 Hooks", "同步直接回合", "review, trust and allow"):
+            self.assertIn(text, combined)
+        self.assertNotIn("xattr", combined)
+        self.assertNotIn("sudo", combined)
 
     def test_stage_refuses_overwriting_a_preexisting_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -167,7 +220,7 @@ class DmgPackagingTests(unittest.TestCase):
                 BUILD.validate_bundle(app)
 
     def test_mounted_image_refuses_extra_entries_wrong_drag_target_and_changed_app(self):
-        for mutation in ("extra", "drag-target", "app-content", "provenance"):
+        for mutation in ("extra", "drag-target", "app-content", "provenance", "hidden-extra", "background"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 stage, provenance = self.stage(Path(directory))
                 if mutation == "extra":
@@ -177,8 +230,12 @@ class DmgPackagingTests(unittest.TestCase):
                     (stage / "Applications").symlink_to("/tmp")
                 elif mutation == "app-content":
                     (stage / "GatherThread Launcher.app/Contents/Resources/connector/index.js").write_text("changed")
+                elif mutation == "provenance":
+                    (stage / ".gatherthread/BUILD_PROVENANCE.json").write_text("{}")
+                elif mutation == "hidden-extra":
+                    (stage / ".gatherthread/unreviewed.txt").write_text("fixture")
                 else:
-                    (stage / "BUILD_PROVENANCE.json").write_text("{}")
+                    (stage / ".gatherthread/background.png").write_bytes(b"changed background")
                 with self.assertRaises(SystemExit):
                     BUILD.validate_dmg_root(stage, provenance)
 
@@ -203,7 +260,7 @@ class DmgPackagingTests(unittest.TestCase):
             output = root / "release.dmg"
             output.write_bytes(b"previous reviewed release")
             def create_fixture(command, **_kwargs):
-                if command[:2] == ["hdiutil", "create"]:
+                if command[:2] in (["hdiutil", "create"], ["hdiutil", "convert"]):
                     Path(command[-1]).write_bytes(b"candidate fixture")
             with patch.object(BUILD.subprocess, "run", side_effect=create_fixture), \
                     patch.object(BUILD, "verify_dmg", side_effect=SystemExit("invalid image")):
@@ -218,7 +275,7 @@ class DmgPackagingTests(unittest.TestCase):
             output = root / "release.dmg"
             provenance = self.provenance(app)
             def create_fixture(command, **_kwargs):
-                if command[:2] == ["hdiutil", "create"]:
+                if command[:2] in (["hdiutil", "create"], ["hdiutil", "convert"]):
                     Path(command[-1]).write_bytes(b"candidate fixture")
             with patch.object(BUILD.subprocess, "run", side_effect=create_fixture), \
                     patch.object(BUILD, "verify_dmg") as verify:
@@ -229,7 +286,7 @@ class DmgPackagingTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "release.dmg.provenance.json").read_text()), provenance)
 
     def create_fixture(self, command, **_kwargs):
-        if command[:2] == ["hdiutil", "create"] or command[0] == "ditto":
+        if command[:2] in (["hdiutil", "create"], ["hdiutil", "convert"]) or command[0] == "ditto":
             Path(command[-1]).write_bytes(b"candidate fixture")
 
     def test_existing_checksum_and_provenance_are_never_overwritten(self):
@@ -451,6 +508,183 @@ class DmgPackagingTests(unittest.TestCase):
         self.assertTrue("系统设置 → 隐私与安全性 → 仍要打开" in source, "Native Gatekeeper path is explicit")
         self.assertTrue("审查、信任并允许共序 Hooks" in source, "Native Hook consent is explicit")
         self.assertTrue("emphasized: true" in source, "Native security instructions are emphasized")
+
+
+class DmgFinderLayoutTests(unittest.TestCase):
+    def alias(self):
+        from mac_alias import Alias, VolumeInfo, TargetInfo
+        date = datetime.datetime(2026, 10, 13, tzinfo=datetime.timezone.utc)
+        return Alias(volume=VolumeInfo("GatherThread Launcher", date, b"H+", 0, 0, b"\0\0",
+                                      posix_path=b"/Volumes/GatherThread Launcher"),
+                     target=TargetInfo(0, "background.png", 16, 17, date, b"\0" * 4, b"\0" * 4,
+                                       folder_name=".gatherthread", posix_path=b"/.gatherthread/background.png"))
+
+    def stage(self, root):
+        stage, provenance = DmgPackagingTests().stage(root)
+        _, Alias = BUILD.dmg_metadata_tools()
+        with patch.object(Alias, "for_file", return_value=self.alias()):
+            BUILD.write_dmg_finder_layout(stage)
+        return stage, provenance
+
+    def test_actual_store_has_exact_window_background_and_two_icon_positions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stage, provenance = self.stage(Path(directory))
+            BUILD.validate_dmg_root(stage, provenance, require_finder=True)
+            self.assertEqual({p.name for p in stage.iterdir() if not p.name.startswith(".")},
+                             {"Applications", "GatherThread Launcher.app"})
+            self.assertNotIn(str(stage).encode(), (stage / ".DS_Store").read_bytes())
+            with self.assertRaises(SystemExit):
+                BUILD.write_dmg_finder_layout(stage)
+
+    def test_writable_mount_accepts_only_known_system_volume_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stage, provenance = DmgPackagingTests().stage(root)
+            temporary = root / "image-build"
+            temporary.mkdir()
+
+            def attach_fixture(command, **_kwargs):
+                if command[:2] == ["hdiutil", "attach"]:
+                    mount = Path(command[command.index("-mountpoint") + 1])
+                    shutil.copytree(stage, mount, dirs_exist_ok=True, symlinks=True)
+                    for name in (".fseventsd", ".Spotlight-V100", ".Trashes"):
+                        (mount / name).mkdir()
+
+            _, Alias = BUILD.dmg_metadata_tools()
+            with patch.object(BUILD.subprocess, "run", side_effect=attach_fixture) as run, \
+                    patch.object(Alias, "for_file", return_value=self.alias()):
+                BUILD.configure_dmg_image(root / "fixture.dmg", temporary, provenance)
+            mount = temporary / "layout-mount"
+            BUILD.validate_dmg_finder_layout(mount)
+            self.assertEqual({p.name for p in mount.iterdir() if not p.name.startswith(".")},
+                             {"Applications", "GatherThread Launcher.app"})
+            self.assertEqual(run.call_args_list[-1].args[0][:2], ["hdiutil", "detach"])
+
+    def test_readonly_mount_accepts_system_directories_without_skipping_bundle_or_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stage, provenance = self.stage(root)
+            for name in (".fseventsd", ".Spotlight-V100", ".Trashes"):
+                (stage / name).mkdir()
+
+            def attach_fixture(command, **_kwargs):
+                if command[:2] == ["hdiutil", "attach"]:
+                    mount = Path(command[command.index("-mountpoint") + 1])
+                    shutil.copytree(stage, mount, dirs_exist_ok=True, symlinks=True)
+
+            with patch.object(BUILD.subprocess, "run", side_effect=attach_fixture) as run:
+                BUILD.verify_dmg(root / "fixture.dmg", provenance)
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertIn(["hdiutil", "verify", str(root / "fixture.dmg")], commands)
+            self.assertTrue(any(command[:4] == ["codesign", "--verify", "--deep", "--strict"]
+                                for command in commands))
+            self.assertEqual(commands[-1][:2], ["hdiutil", "detach"])
+
+    def test_system_volume_directories_are_never_allowed_in_an_unmounted_stage(self):
+        for name in (".fseventsd", ".Spotlight-V100", ".Trashes"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                stage, provenance = self.stage(Path(directory))
+                (stage / name).mkdir()
+                with self.assertRaises(SystemExit):
+                    BUILD.validate_dmg_root(stage, provenance, require_finder=True)
+
+    def test_readonly_mount_refuses_arbitrary_extras_or_linked_system_directories(self):
+        for mutation in ("visible", "hidden", "near-name", "system-file", "system-symlink", "app-content", "finder"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                stage, provenance = self.stage(root)
+                if mutation == "visible":
+                    (stage / "unreviewed.sh").write_text("synthetic fixture")
+                elif mutation == "hidden":
+                    (stage / ".unreviewed").mkdir()
+                elif mutation == "near-name":
+                    (stage / ".fseventsd-extra").mkdir()
+                elif mutation == "system-file":
+                    (stage / ".fseventsd").write_text("not a system directory")
+                elif mutation == "system-symlink":
+                    (stage / ".Trashes").symlink_to(root, target_is_directory=True)
+                elif mutation == "app-content":
+                    (stage / ".fseventsd").mkdir()
+                    (stage / "GatherThread Launcher.app/Contents/Resources/connector/index.js").write_text("changed")
+                else:
+                    (stage / ".fseventsd").mkdir()
+                    (stage / ".DS_Store").unlink()
+
+                def attach_fixture(command, **_kwargs):
+                    if command[:2] == ["hdiutil", "attach"]:
+                        mount = Path(command[command.index("-mountpoint") + 1])
+                        shutil.copytree(stage, mount, dirs_exist_ok=True, symlinks=True)
+
+                with patch.object(BUILD.subprocess, "run", side_effect=attach_fixture) as run:
+                    with self.assertRaises(SystemExit):
+                        BUILD.verify_dmg(root / "fixture.dmg", provenance)
+                self.assertEqual(run.call_args_list[-1].args[0][:2], ["hdiutil", "detach"])
+
+    def test_root_entry_diagnostic_is_phase_specific_bounded_and_filename_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stage, provenance = self.stage(Path(directory))
+            shutil.rmtree(stage / "GatherThread Launcher.app")
+            for number in range(40):
+                (stage / (f"unreviewed-{number:02d}-" + "x" * 100)).mkdir()
+            with self.assertRaises(SystemExit) as caught:
+                BUILD.validate_dmg_root(stage, provenance, require_finder=True)
+            message = str(caught.exception)
+            self.assertIn("stage", message)
+            self.assertIn("missing", message)
+            self.assertIn("GatherThread Launcher.app", message)
+            self.assertIn("unexpected", message)
+            self.assertIn("unreviewed-00", message)
+            self.assertLess(len(message), 2048)
+            self.assertNotIn(str(stage), message)
+
+    def test_mounted_validation_refuses_missing_or_tampered_finder_records(self):
+        for mutation in ("missing", "icon", "window", "alias", "extra", "symlink"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                stage, provenance = self.stage(Path(directory))
+                path = stage / ".DS_Store"
+                if mutation in ("missing", "symlink"):
+                    path.unlink()
+                    if mutation == "symlink":
+                        path.symlink_to(stage / ".gatherthread/background.png")
+                else:
+                    DSStore, _ = BUILD.dmg_metadata_tools()
+                    with DSStore.open(str(path), "r+") as store:
+                        if mutation == "icon":
+                            store["Applications"]["Iloc"] = (540, 210)
+                        elif mutation == "window":
+                            settings = BUILD.finder_window_settings()
+                            settings["ShowToolbar"] = True
+                            store["."]["bwsp"] = settings
+                        elif mutation == "extra":
+                            store["private.txt"]["Iloc"] = (20, 20)
+                        else:
+                            alias = self.alias()
+                            alias.target.posix_path = b"/outside.png"
+                            store["."]["icvp"] = BUILD.finder_icon_settings(alias.to_bytes())
+                with self.assertRaises(SystemExit):
+                    BUILD.validate_dmg_root(stage, provenance, require_finder=True)
+
+    def test_writable_intermediate_detaches_on_layout_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(BUILD.subprocess, "run") as run, \
+                    patch.object(BUILD, "validate_dmg_root"), \
+                    patch.object(BUILD, "write_dmg_finder_layout", side_effect=SystemExit("layout failed")):
+                with self.assertRaisesRegex(SystemExit, "layout failed"):
+                    BUILD.configure_dmg_image(root / "fixture.dmg", root, {})
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertIn("-readwrite", commands[0])
+            self.assertIn("-nobrowse", commands[0])
+            self.assertIn("-noautoopen", commands[0])
+            self.assertEqual(commands[-1][:2], ["hdiutil", "detach"])
+
+    def test_failed_mount_does_not_detach_an_unmounted_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(BUILD.subprocess, "run", side_effect=OSError("mount failed")) as run:
+                with self.assertRaises(OSError):
+                    BUILD.configure_dmg_image(root / "fixture.dmg", root, {})
+            self.assertEqual(run.call_count, 1)
 
 
 class ReviewedPluginTests(unittest.TestCase):

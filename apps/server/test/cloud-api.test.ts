@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import { CloudApiStore } from "../src/cloud-api.js";
+import { CloudApiStore, CLOUD_API_PROVIDERS } from "../src/cloud-api.js";
+import { CloudApiPutInputSchema } from "@gatherthread/protocol";
 import { CollaborationDatabase } from "../src/database.js";
 
 function fixture() {
@@ -128,5 +129,26 @@ test("configuration storage is bounded and keys cascade on account deletion", ()
     assert.throws(() => f.store.put(f.actor, randomUUID(), f.input), /limit/);
     f.database.deleteAccount(f.actor);
     assert.equal(f.database.sqlite.prepare("SELECT COUNT(*) AS count FROM cloud_api_configs").get()!.count, 0);
+  } finally { f.close(); }
+});
+
+test("Qwen, GLM and Doubao keep fixed official destinations and the exact requested custom model", () => {
+  const f = fixture();
+  try {
+    for (const [provider_id, baseUrl, defaultModel] of [
+      ["qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"],
+      ["glm", "https://open.bigmodel.cn/api/paas/v4", "glm-5.3"],
+      ["doubao", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seed-2-1-pro-260915"],
+    ] as const) {
+      const preset = CLOUD_API_PROVIDERS.find(item => String(item.id) === provider_id);
+      assert.ok(preset); assert.equal(preset.base_url, baseUrl);
+      assert.equal(Reflect.get(preset, "default_model"), defaultModel);
+      const saved = f.store.put(f.actor, randomUUID(), CloudApiPutInputSchema.parse({ ...f.input, provider_id, model: "custom-enabled-model" }));
+      const endpoint = f.store.resolve(f.actor, saved.profile_id, saved.revision);
+      assert.equal(endpoint.baseUrl, baseUrl); assert.equal(endpoint.model, "custom-enabled-model");
+      assert.equal(endpoint.provider, "openai-compatible"); assert.equal(endpoint.transport, "openai-chat");
+      assert.equal(endpoint.apiToken, f.input.api_key);
+      assert.doesNotMatch(JSON.stringify(f.store.status(f.actor)), /synthetic-private/);
+    }
   } finally { f.close(); }
 });

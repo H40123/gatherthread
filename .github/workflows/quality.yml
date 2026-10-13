@@ -69,8 +69,11 @@ jobs:
       - if: matrix.os == 'macos-latest'
         name: Test and build macOS Codex Launcher
         run: |
-          python3 -m unittest discover -s prototypes/codex-launcher/macos -p 'test_*.py' -v
-          python3 prototypes/codex-launcher/macos/build_dist.py
+          task_dmg_env="$(mktemp -d "$RUNNER_TEMP/gt-dmg-build.XXXXXXXX")"
+          python3 -m venv "$task_dmg_env"
+          "$task_dmg_env/bin/python" -m pip install --require-hashes --only-binary=:all: -r prototypes/codex-launcher/macos/requirements-dmg.txt
+          "$task_dmg_env/bin/python" -m unittest discover -s prototypes/codex-launcher/macos -p 'test_*.py' -v
+          "$task_dmg_env/bin/python" prototypes/codex-launcher/macos/build_dist.py
           codesign --verify --deep --strict 'prototypes/codex-launcher/.build-macos/GatherThread Launcher.app'
       - if: matrix.os == 'windows-latest' || matrix.os == 'macos-latest'
         name: Preserve verified public Launcher packages

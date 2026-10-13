@@ -4,6 +4,11 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 ## [Unreleased]
 
+- Add fixed official personal API presets for Qwen, GLM and Doubao, with editable model/endpoint examples and exact-origin/path/transport egress checks. Keep encrypted private keys, pinned retries and separate personal billing; saving invokes no model.
+- Remember the Cloud Agent's GT Cloud code choice by account/project, default on without resetting after send; preserve explicit off and existing authorization. Update bilingual guides and privacy notice. Local file auto-upload and GitHub remain independent. See [ADR-0053](docs/adr/0053-persistent-project-cloud-code-choice.md).
+- Recommend the numeric Launcher 0.1.1 GitHub release while retaining website download. The Mac installer has only Applications and the App visible, with native Finder icon placement, a background drag arrow and concise bilingual first-open/Hooks guidance; it remains ad-hoc signed, not Apple-notarized.
+- Provide minimal Python 3, stdlib, venv and offline pip inside the nonroot cloud runner. Test actual Python execution through the existing isolated smoke and exclude temporary environments from checkpoints. Add read-only-first storage preparation for new operator-selected paths; do not move existing data or Docker storage.
+
 ### Added
 
 - Add a Mac Launcher DMG with drag-to-Applications installation, bilingual first-open instructions, a prominent macOS security path and explicit review/trust/allow guidance for GatherThread Hooks. Validate the mounted image against its reviewed source inventory and public file-hash provenance before producing checksum sidecars; preserve the Windows ZIP, native email/password login and exact test/production binding. The Mac app remains ad-hoc signed, not Apple-notarized; publishing a matching installer is a separate release action. See [ADR-0047](docs/adr/0047-macos-launcher-dmg-installation.md).

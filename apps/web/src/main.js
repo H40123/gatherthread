@@ -5,6 +5,7 @@ import { mountDeviceAuthorization } from "./device-authorization.js";
 import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261012-content-1";
 import { mountAccountDevices } from "./account-devices.js";
 import { mountPersonalCloudApi } from "./personal-cloud-api.js?v=20261012-content-1";
+import { mountCloudCodeConsent } from "./cloud-code-consent.js?v=20261012-content-1";
 import { cloudRequestInput, continueCloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261012-content-1";
 import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261012-content-1";
 import { mountRegistration } from "./registration.js";
@@ -426,6 +427,17 @@ const codeSyncUi = mountCodeSync({
 const codeStorageSettings = mountCodeStorageSettings({
   document, api, localizer, getUserId: () => state.currentUser?.id ?? null,
 });
+const cloudCodeConsent = mountCloudCodeConsent({
+  checkbox: element("cloud-agent-include-code"), help: element("cloud-agent-code-scope"), api, localizer,
+  onChange: () => queueMicrotask(renderComposerPermissions),
+  getContext: () => state.currentUser && state.project ? {
+    scope: `${authenticationGeneration}:${state.currentUser.id}:${state.project.id}`,
+    userId: state.currentUser.id, projectId: state.project.id, source: element("cloud-agent-source").value,
+    writable: ["owner", "participant"].includes(state.project.role)
+      && canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase, kind: "human_chat" }).allowed,
+  } : null,
+});
+element("project-code-dialog").addEventListener("close", () => void cloudCodeConsent.refresh());
 const onboarding = mountOnboarding({
   document,
   getContext: () => ({
@@ -600,6 +612,7 @@ element("claim-device-name").addEventListener("input", () => {
 
 clearSensitiveInputs();
 window.addEventListener("pagehide", () => {
+  cloudCodeConsent.suspend();
   invitationLink.reset();
   codeSyncUi.close();
   authenticationGeneration += 1;
@@ -615,6 +628,7 @@ window.addEventListener("pagehide", () => {
 });
 window.addEventListener("pageshow", (event) => {
   if (!event.persisted) return;
+  cloudCodeConsent.resume();
   document.documentElement.dataset.bootState = "loading";
   resetWorkspaceToAuth();
   void restoreBrowserSession();
@@ -1426,6 +1440,7 @@ function resetWorkspaceToAuth() {
   state.devices = [];
   messageInput.value = "";
   codeSyncUi.updateContext();
+  cloudCodeConsent.updateContext();
   cloudGithubUi.updateContext();
   selectedCodexLocalRuntimeId = "";
   localSyncStatusRequestsInFlight.clear();
@@ -3035,6 +3050,7 @@ function renderComposerPermissions() {
     pendingMessageSend = null;
   }
   codeSyncUi.updateContext();
+  cloudCodeConsent.updateContext();
   cloudGithubUi.updateContext();
   const common = { session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase };
   const chat = canAppend({ ...common, kind: "human_chat" });
@@ -3043,8 +3059,9 @@ function renderComposerPermissions() {
   const cloud = harness === "cloud";
   const cloudProfile = currentCloudProfile();
   const contextNotice = cloud ? "" : agentContextUpdateReason(resolution.runtime, state.sync.contentRevision ?? 0);
-  const agentAllowed = chat.allowed && !contextNotice && (cloud ? CLOUD_AGENT_ENTRY_ENABLED && cloudProfile?.available === true : resolution.runtime !== null);
-  const agentReason = chat.allowed ? (contextNotice || (cloud ? cloudStatusText(cloudProfile) : resolution.reason)) : chat.reason;
+  const codeSubmission = cloud ? cloudCodeConsent.submission() : null;
+  const agentAllowed = chat.allowed && !contextNotice && (cloud ? CLOUD_AGENT_ENTRY_ENABLED && cloudProfile?.available === true && codeSubmission.allowed : resolution.runtime !== null);
+  const agentReason = chat.allowed ? (contextNotice || (cloud ? localizer.t(codeSubmission.reason) || cloudStatusText(cloudProfile) : resolution.reason)) : chat.reason;
   const sending = Boolean(pendingMessageSend?.());
   sendChatButton.disabled = sending || !chat.allowed;
   sendAgentButton.disabled = sending || !agentAllowed;
@@ -3138,8 +3155,9 @@ async function sendMessage(kind) {
       mentions: metadata.mentions.map((mention) => ({ ...mention, start: mention.start - leading, end: mention.end - leading })) };
     if (kind === "human_chat") await api.appendHumanChat(sessionId, input);
     else if (kind === "hosted_agent") {
-      const includeCode = element("cloud-agent-include-code").checked;
-      element("cloud-agent-include-code").checked = false;
+      const submission = cloudCodeConsent.submission();
+      if (!submission.allowed) throw new Error(localizer.t(submission.reason));
+      const includeCode = submission.includeCode;
       if (element("cloud-agent-source").value === "github") {
         await cloudGithubUi.start(sessionId, { ...input, contentRevision, profileId: cloudProfile?.id, apiConfigRevision: cloudProfile?.api_config_revision });
       } else {
@@ -3640,6 +3658,7 @@ function applyVisualSettings(settings) {
   localizer.apply(normalized.general.locale);
   if (localeChanged) accountDevices.refreshLanguage();
   if (localeChanged) personalCloudApi.refreshLanguage();
+  if (localeChanged) cloudCodeConsent.refreshLanguage();
   onboarding.refreshLanguage();
   if (localeChanged) updateCreatedInvitationShareText(normalized.general.locale);
   element("auth-language-button").textContent = normalized.general.locale === "zh-CN" ? "EN" : "中";
