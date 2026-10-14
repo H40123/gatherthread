@@ -34,6 +34,10 @@ and `git diff --check` pass. The two generated tarballs declare Beta 2 and retai
 their standalone package inventories. External lockfile dependencies and all
 server/database/hosted execution source are byte-identical to the reviewed base.
 
+The first CI pass caught a dynamically constructed legacy Launcher Release URL
+and its static assertion. Both now point to the Beta 2 Release; the existing two
+download-path checks are reused rather than adding a new browser test campaign.
+
 The test service retains its separate accounts, admission, database, secrets,
 8GB/shared-host resource settings and recoverable backup. A later production
 promotion will reuse the same application build while retaining production data
