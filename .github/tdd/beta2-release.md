@@ -29,6 +29,11 @@ build uses a clean Linux source archive with private configuration excluded.
 Unchanged hosted runtime code reuses its existing immutable image and genuine
 4173-source provenance; it is not falsely presented as a new Beta 2 image build.
 
+Local build, `release:check`, `release:pack-npm`, reference/branding/secret audits
+and `git diff --check` pass. The two generated tarballs declare Beta 2 and retain
+their standalone package inventories. External lockfile dependencies and all
+server/database/hosted execution source are byte-identical to the reviewed base.
+
 The test service retains its separate accounts, admission, database, secrets,
 8GB/shared-host resource settings and recoverable backup. A later production
 promotion will reuse the same application build while retaining production data
