@@ -301,7 +301,9 @@ test("Beta product copy explains local execution, mobile requirements and cloud 
   assert.doesNotMatch(workspace, /Cloud Agent (?:· coming later|will open in a later release)/u);
   assert.match(operations, /GATHERTHREAD_HOSTED_AGENT_ENABLED/u);
   assert.match(operations, /provider\/model.*image.*deployment-host verification/iu);
-  assert.match(readiness, /end to end/iu);
+  assert.match(readiness, /Beta 2 includes cloud shared summaries, Pause\/Resume and explicit timeout continuation/iu);
+  assert.match(readiness, /reuse the existing feature review, CI and operator acceptance/iu);
+  assert.match(readiness, /Initial provider activation or a changed model\/resource configuration.*hosted Agent operator guide/iu);
 });
 
 test("file and conversation uploads, manual imports and human integration remain separate", async () => {

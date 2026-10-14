@@ -40,4 +40,4 @@ Fixed official APIs support Qwen (DashScope China), GLM (BigModel), Doubao (Volc
 
 ## GitHub cloud projects
 
-Computer-to-GitHub synchronization is available independently in **Project file collaboration → GitHub**. Beta 1 also opens the cloud repository-task workflow there, but running it needs the separately enabled GitHub service, App authorization and an eligible coding profile. The Cloudflare small-trial profile does not support repository tasks; other profiles still require actual coding and resource validation. For saved task review, limits and operator setup, see [GitHub cloud workspace](HOSTED_GITHUB.md).
+Computer-to-GitHub synchronization is available independently in **Project file collaboration → GitHub**. Beta 2 also opens the cloud repository-task workflow there, but running it needs the separately enabled GitHub service, App authorization and an eligible coding profile. The Cloudflare small-trial profile does not support repository tasks; other profiles still require actual coding and resource validation. For saved task review, limits and operator setup, see [GitHub cloud workspace](HOSTED_GITHUB.md).

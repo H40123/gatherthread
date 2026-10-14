@@ -14,7 +14,7 @@ test("current connector help uses the local package and password-based Launcher 
   const result = spawnSync(process.execPath, [path.join(root, "packages/codex-connect/dist/codex-connect.js"), "--help"], { encoding: "utf8", timeout: 10_000 });
   assert.equal(result.status, 0);
   assert.match(result.stdout, /--package.*LOCAL_CODEX_CONNECTOR\.tgz/);
-  assert.doesNotMatch(result.stdout, /npx --yes @gatherthread\/codex-connect@0\.1\.0-beta\.1/);
+  assert.doesNotMatch(result.stdout, /npx --yes @gatherthread\/codex-connect@0\.1\.0-beta\.2/);
   assert.match(result.stdout, /Launcher[\s\S]*password/);
   assert.doesNotMatch(result.stdout, /Paste[^\n]*Launcher/);
   assert.match(result.stdout, /hidden terminal prompt/);
@@ -27,7 +27,7 @@ async function json(relativePath) {
 test("GatherThread plugin manifest has valid local components and bilingual brand", async () => {
   const manifest = await json(".codex-plugin/plugin.json");
   assert.equal(manifest.name, "gatherthread");
-  assert.equal(manifest.version, "0.1.0-beta.1");
+  assert.equal(manifest.version, "0.1.0-beta.2");
   assert.equal(manifest.interface.displayName, "共序 / GatherThread");
   assert.equal(manifest.skills, "./skills/");
   assert.equal(manifest.hooks, undefined);
@@ -71,7 +71,7 @@ test("repo marketplace and current install surfaces preserve exact source and lo
     policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
     category: "Productivity",
   }]);
-  const fixedCommand = "codex plugin marketplace add https://github.com/TH060419/gatherthread.git --ref v0.1.0-beta.1 --sparse .agents/plugins --sparse plugins/gatherthread";
+  const fixedCommand = "codex plugin marketplace add https://github.com/TH060419/gatherthread.git --ref v0.1.0-beta.2 --sparse .agents/plugins --sparse plugins/gatherthread";
   const [html, english, chinese, rootEnglish, rootChinese, packageReadme, release, translations] = await Promise.all([
     readFile(path.join(root, "apps", "web", "index.html"), "utf8"),
     readFile(path.join(root, "docs", "CODEX_CONNECT.md"), "utf8"),
@@ -79,7 +79,7 @@ test("repo marketplace and current install surfaces preserve exact source and lo
     readFile(path.join(root, "README.md"), "utf8"),
     readFile(path.join(root, "README.zh-CN.md"), "utf8"),
     readFile(path.join(root, "packages", "codex-connect", "README.md"), "utf8"),
-    readFile(path.join(root, "docs", "releases", "0.1.0-beta.1.md"), "utf8"),
+    readFile(path.join(root, "docs", "releases", "0.1.0-beta.2.md"), "utf8"),
     readFile(path.join(root, "apps", "web", "src", "i18n.js"), "utf8"),
   ]);
   const installCommand = "codex plugin add gatherthread@gatherthread-source";
@@ -95,7 +95,7 @@ test("repo marketplace and current install surfaces preserve exact source and lo
     assert.match(surface, /node plugins\/gatherthread\/scripts\/prepare-source-plugin\.mjs/);
     assert.match(surface, /codex plugin marketplace add "PREPARED_PLUGIN_DIRECTORY"/);
     assert.match(surface, new RegExp(installCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.doesNotMatch(surface, /codex plugin marketplace add https:\/\/github\.com\/TH060419\/gatherthread\.git --ref v0\.1\.0-beta\.1/);
+    assert.doesNotMatch(surface, /codex plugin marketplace add https:\/\/github\.com\/TH060419\/gatherthread\.git --ref v0\.1\.0-beta\.2/);
     assert.doesNotMatch(surface, /codex plugin marketplace add \.\s*\n/);
     assert.match(surface, /LOCAL_CODEX_CONNECTOR\.tgz/);
   }
@@ -111,7 +111,7 @@ test("repo marketplace and current install surfaces preserve exact source and lo
   assert.match(rootEnglish, /launcher/i);
   assert.match(rootChinese, /启动器/);
   for (const readme of [rootEnglish, rootChinese]) {
-    assert.match(readme, /0\.1\.0-beta\.1/);
+    assert.match(readme, /0\.1\.0-beta\.2/);
     assert.doesNotMatch(readme, /npm install -g @openai\/codex/);
   }
   for (const guide of [html, english, chinese]) {
