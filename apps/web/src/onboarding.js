@@ -32,7 +32,7 @@ export function visibleGuideTarget(doc, selectors) {
   return undefined;
 }
 
-export function mountOnboarding({ document: doc, getContext, openSettings, storage = browserStorage(), createDriver = driver, prepareScenario }) {
+export function mountOnboarding({ document: doc, getContext, openSettings, storage = browserStorage(), createDriver = driver, prepareScenario, exampleApi }) {
   if (doc.documentElement.dataset.example !== "true") return mountExampleGateway({ document: doc, getContext, openSettings, storage });
   const win = doc.defaultView;
   const el = (id) => doc.getElementById(id);
@@ -63,6 +63,7 @@ export function mountOnboarding({ document: doc, getContext, openSettings, stora
   function prepare(item) {
     prepareScenario?.(item);
     const view = item.view;
+    if (view !== 'example-result') toolbar?.closeResult();
     const mobile = getContext().layout === "mobile";
     const settingsView = ["summary-settings", "account-device", "account-delete"].includes(view);
     if (!settingsView && ownedSettingsDialog) { ownedSettingsDialog = false; el("settings-dialog").close(); }
@@ -121,22 +122,30 @@ export function mountOnboarding({ document: doc, getContext, openSettings, stora
         if (mobile && !el("mobile-tools-dialog").open) el("mobile-tools-button").click();
         el("project-code-button").click();
       }
-      if (view === "code-github") {
+      if (view.startsWith("code-github")) {
         if (el("code-github-panel").hidden) el("code-provider-github").click();
-        el("github-mode-local").click();
-        if (["github-sync", "github-auth"].includes(item.id)) el("github-code-device-settings").click();
-        if (["github-auto", "github-upload", "github-recover"].includes(item.id)) el("github-code-ready").click();
-        if (item.id === "github-recover") el("github-code-recover").closest("details").open = true;
+        if (view === "code-github") {
+          el("github-mode-local").click();
+          if (["github-sync", "github-auth"].includes(item.id)) el("github-code-device-settings").click();
+          if (["github-auto", "github-upload", "github-recover"].includes(item.id)) el("github-code-ready").click();
+          if (item.id === "github-recover") el("github-code-recover").closest("details").open = true;
+        } else {
+          el("github-mode-cloud").click();
+          if (view === "code-github-account") el("cloud-github-account-settings").click();
+          if (view === "code-github-repository") el("cloud-github-edit").click();
+        }
       } else if (el("code-gt-cloud-panel").hidden) el("code-provider-gt-cloud").click();
       const viewButton = { "code-overview": "code-back-device-view", "code-device": "code-open-device-view", "code-branches": "code-open-branches-view" }[view];
       const viewPanel = { "code-overview": "code-enabled-home", "code-device": "code-device-view", "code-branches": "code-branches-view" }[view];
       if (!el("code-enabled-content").hidden && viewButton && el(viewPanel).hidden) el(viewButton).click();
     }
+    if (view === 'example-result') toolbar?.openResult();
   }
 
   function cleanup() {
     tour = null;
-    const toolbar = doc.querySelector(".example-toolbar"); if (toolbar) doc.body.append(toolbar);
+    toolbar?.closeResult();
+    const toolbarElement = doc.querySelector(".example-toolbar"); if (toolbarElement) doc.body.append(toolbarElement);
     line?.remove(); line = null;
     doc.removeEventListener("keydown", handleKey, true);
     doc.removeEventListener("focusin", containFocus, true);
@@ -321,11 +330,7 @@ export function mountOnboarding({ document: doc, getContext, openSettings, stora
       element: () => {
         prepare(item);
         // All scrolling happens inside the disposable example, never real history.
-        if (item.target && !visibleGuideTarget(doc, item.target)) {
-          const node = [...doc.querySelectorAll(item.target)].find((candidate) => !candidate.closest("[hidden]"));
-          node?.scrollIntoView({ block: ["invite", "join"].includes(item.id) ? "center" : "nearest", inline: "nearest", behavior: "instant" });
-        }
-        lastTarget = item.target ? visibleGuideTarget(doc, item.target) : undefined;
+        lastTarget = resolveExampleTarget(item);
         if (lastTarget) {
           const box = lastTarget.getBoundingClientRect();
           const circular = ["quote", "mention", "create-conversation"].includes(item.id);
@@ -395,6 +400,16 @@ export function mountOnboarding({ document: doc, getContext, openSettings, stora
       if (pendingKey === key() && !modal() && !el("workspace").hidden) start("basics");
     });
   }
+  function resolveExampleTarget(item) {
+    if (!item.target) return undefined;
+    if (!visibleGuideTarget(doc, item.target)) {
+      // A read-only panel can finish loading after the step first opens. Retry
+      // its scroll when data arrives, not only on the initial Driver callback.
+      const node = [...doc.querySelectorAll(item.target)].find(candidate => !candidate.closest('[hidden]'));
+      node?.scrollIntoView({ block: ['invite', 'join', 'review'].includes(item.id) ? 'center' : 'nearest', inline: 'nearest', behavior: 'instant' });
+    }
+    return visibleGuideTarget(doc, item.target);
+  }
   function reconcileLayout() {
     if (!tour) return;
     win.cancelAnimationFrame(layoutFrame);
@@ -403,7 +418,7 @@ export function mountOnboarding({ document: doc, getContext, openSettings, stora
       const item = activeItems[tour.getActiveIndex()];
       prepare(item);
       const active = tour.getActiveElement();
-      const resolved = item.target ? visibleGuideTarget(doc, item.target) : undefined;
+      const resolved = resolveExampleTarget(item);
       // Loading, live updates, and scrolling may reveal, replace or hide a target.
       if (resolved !== (active?.id === "driver-dummy-element" ? undefined : active)) tour.drive(tour.getActiveIndex());
       else { tour.refresh(); positionCard(tour.getState("popover").wrapper, active); }
@@ -430,7 +445,7 @@ export function mountOnboarding({ document: doc, getContext, openSettings, stora
       if (!initialOffer) return;
       initialOffer = false;
       const topic = win.__examplePresentation?.topic;
-      toolbar = exampleToolbar(doc, { start, cancel: () => end(null), onExit: (status) => exitExample(status) });
+      toolbar = exampleToolbar(doc, { start, cancel: () => end(null), onExit: (status) => exitExample(status), api: exampleApi });
       if (topic && topic !== "browse") win.requestAnimationFrame(() => start(topic));
     },
     cancel() { pendingKey = null; win.cancelAnimationFrame(autoFrame); end(null); },

@@ -449,6 +449,7 @@ const onboarding = mountOnboarding({
   }),
   openSettings: openSettingsDialog,
   prepareScenario: exampleMode ? prepareExampleScenario : undefined,
+  exampleApi: exampleMode ? api : undefined,
 });
 for (const button of document.querySelectorAll("[data-onboarding-topic]")) {
   button.addEventListener("click", () => {
