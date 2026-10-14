@@ -8,7 +8,7 @@
 
 ![GatherThread：多人、多端、多 Agent，一起做项目](docs/assets/product/cover.zh-CN.jpg)
 
-开源 · 可自托管 · 当前版本标识 **0.1.0-beta.1** · [Apache 2.0](LICENSE)
+开源 · 可自托管 · 当前版本标识 **0.1.0-beta.2** · [Apache 2.0](LICENSE)
 
 公开注册的 Beta 测试：验证邮箱、设置密码，即可创建账号。云端可用模型和额度以工作页显示为准；项目邀请用于加入团队，不是账号注册码。[版本与发布记录](CHANGELOG.md) · [开发者测试环境](docs/TEST_ENVIRONMENT.md)
 

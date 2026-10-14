@@ -335,7 +335,7 @@ test("project Codex connector presents a concise Beta install-connect-confirm fl
     readFile(stylesPath, "utf8"),
     readFile(i18nPath, "utf8"),
   ]);
-  assert.match(html, /Beta 1/);
+  assert.match(html, /Beta 2/);
   assert.doesNotMatch(html, /Official service is not open yet/i);
   assert.match(html, />1<\/span>[\s\S]*<h3>Install once<\/h3>[\s\S]*>2<\/span>[\s\S]*<h3>Connect this project<\/h3>[\s\S]*>3<\/span>[\s\S]*<h3>Confirm in Codex<\/h3>/);
   assert.match(html, /Use the Launcher to connect this project to Codex Desktop/i);
@@ -363,7 +363,7 @@ test("project Codex connector presents a concise Beta install-connect-confirm fl
   assert.match(html, /First run codex plugin marketplace remove gatherthread-source, then add the new prepared directory/);
   assert.match(i18n, /先运行 codex plugin marketplace remove gatherthread-source，再添加新准备目录/);
   assert.doesNotMatch(pluginCommands, /gta_|Bearer|cookie|token=|password|client_secret/i);
-  assert.match(i18n, /Beta 1 测试版/);
+  assert.match(i18n, /Beta 2 测试版/);
   assert.match(i18n, /"Install once": "仅需安装一次"/);
   assert.match(i18n, /如果终端提示.*command not found: codex/);
   assert.match(i18n, /如果显示版本号，再将 PATH 修改保存/);
@@ -410,7 +410,7 @@ test("DeepSeek Harness is a selectable exact runtime with the same concise three
     "settings-dsh-runtime",
   ]) assert.match(html, new RegExp(`id="${id}"`));
   assert.match(html, /value="deepseek-harness">DeepSeek Harness<\/option>/);
-  assert.match(html, /Beta 1/);
+  assert.match(html, /Beta 2/);
   assert.match(html, />1<\/span>[\s\S]*<h3>Install once<\/h3>[\s\S]*>2<\/span>[\s\S]*<h3>Open DSH<\/h3>[\s\S]*>3<\/span>[\s\S]*<h3>Pair this server<\/h3>/);
   assert.doesNotMatch(html, /Official service is not open yet/i);
   assert.match(html, /The plugin connects outward/i);

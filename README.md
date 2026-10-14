@@ -8,7 +8,7 @@ GatherThread puts your team's discussion, AI-assisted work, and file review in o
 
 ![GatherThread: work together across devices, with your own Agents](docs/assets/product/cover.en.jpg)
 
-Open source · Self-hostable · Current version identifier **0.1.0-beta.1** · [Apache 2.0](LICENSE)
+Open source · Self-hostable · Current version identifier **0.1.0-beta.2** · [Apache 2.0](LICENSE)
 
 Public-registration Beta: verify your email and choose a password to create an account. Available cloud models and allowances are shown in the workspace. Project invitations join a team; they are not account registration codes. [Release history](CHANGELOG.md) · [Developer test environment](docs/TEST_ENVIRONMENT.md)
 

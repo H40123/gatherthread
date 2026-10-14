@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const EXPECTED_VERSION = "0.1.0-beta.1";
+const EXPECTED_VERSION = "0.1.0-beta.2";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const manifestPaths = [
   "package.json",
@@ -88,7 +88,7 @@ const requiredFiles = [
   "docs/INTERFACE_CONTRACTS.md",
   "docs/ALIYUN_ECS.md",
   "docs/ALIYUN_ECS.zh-CN.md",
-  "docs/releases/0.1.0-beta.1.md",
+  "docs/releases/0.1.0-beta.2.md",
   "docs/CODEX_CONNECT.md",
   "docs/CODEX_CONNECT.zh-CN.md",
   "docs/DSH_CONNECT.md",
@@ -170,7 +170,7 @@ assert.equal(marketplace.interface?.displayName, "共序 / GatherThread");
 assert.deepEqual(marketplace.plugins?.[0]?.source, { source: "local", path: "./plugins/gatherthread" });
 const marketplaceCommand = `codex plugin marketplace add https://github.com/TH060419/gatherthread.git --ref v${EXPECTED_VERSION} --sparse .agents/plugins --sparse plugins/gatherthread`;
 const pluginInstallCommand = "codex plugin add gatherthread@gatherthread";
-const historicalRelease = await readFile(join(root, "docs/releases/0.1.0-beta.1.md"), "utf8");
+const historicalRelease = await readFile(join(root, "docs/releases/0.1.0-beta.2.md"), "utf8");
 assert.match(historicalRelease, new RegExp(marketplaceCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 assert.match(historicalRelease, new RegExp(pluginInstallCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 for (const path of ["apps/web/index.html", "docs/CODEX_CONNECT.md", "docs/CODEX_CONNECT.zh-CN.md", "packages/codex-connect/README.md"]) {
@@ -183,7 +183,7 @@ for (const path of ["apps/web/index.html", "docs/CODEX_CONNECT.md", "docs/CODEX_
   assert.match(surface, /codex plugin add gatherthread@gatherthread-source/);
   assert.match(surface, /codex plugin marketplace remove gatherthread-source/);
   assert.match(surface, /LOCAL_CODEX_CONNECTOR\.tgz/);
-  assert.doesNotMatch(surface, /codex plugin marketplace add https:\/\/github\.com\/TH060419\/gatherthread\.git --ref v0\.1\.0-beta\.1/);
+  assert.doesNotMatch(surface, /codex plugin marketplace add https:\/\/github\.com\/TH060419\/gatherthread\.git --ref v0\.1\.0-beta\.2/);
 }
 // Product READMEs link to canonical setup guides instead of duplicating
 // version-sensitive manual commands beside the Launcher flow.
@@ -200,10 +200,10 @@ assert.doesNotMatch(`${marketplaceCommand}\n${pluginInstallCommand}`, /gta_|Bear
 
 const webDomain = await readFile(join(root, "apps/web/src/domain.js"), "utf8");
 assert.match(webDomain, /LOCAL_CODEX_CONNECTOR\.tgz/);
-assert.doesNotMatch(webDomain, /@gatherthread\/codex-connect@0\.1\.0-beta\.1/);
+assert.doesNotMatch(webDomain, /@gatherthread\/codex-connect@0\.1\.0-beta\.2/);
 
 const installer = await readFile(join(root, "deploy/aliyun-ecs/install.sh"), "utf8");
-assert.match(installer, /release_version="0\.1\.0-beta\.1"/);
+assert.match(installer, /release_version="0\.1\.0-beta\.2"/);
 assert.match(installer, /GATHERTHREAD_SERVER_HOST=127\.0\.0\.1/);
 assert.match(installer, /GATHERTHREAD_ALLOW_HTTP_BOOTSTRAP=false/);
 assert.match(installer, /GATHERTHREAD_TLS_TERMINATED_BY_PROXY=true/);
