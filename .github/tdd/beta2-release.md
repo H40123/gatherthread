@@ -41,6 +41,8 @@ download-path checks are reused rather than adding a new browser test campaign.
 Independent review also corrected the canonical numeric Launcher declaration
 and the formerly undated Beta 1 launch-readiness paragraph. Current guidance
 now links Beta 2 capabilities and the scoped rollout; historical records remain.
+The existing product-copy assertion now checks those current capability and
+operator-guidance statements instead of requiring the removed launch-only phrase.
 
 The test service retains its separate accounts, admission, database, secrets,
 8GB/shared-host resource settings and recoverable backup. A later production
