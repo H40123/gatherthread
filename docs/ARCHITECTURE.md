@@ -157,3 +157,35 @@ MCP exposes collaboration capabilities but is not assumed to see a host's full c
 ## Verified-email identity
 
 `registration.ts` owns durable OTP/budget/pause state; `registration-providers.ts` owns mail and mandatory challenge verification. Bounded asynchronous scrypt runs outside SQLite transactions. The verified-email account table stores unique mailbox digests and salted password hashes; per-browser bindings create independent devices. Enrollment and password login return token-free actor metadata and HttpOnly Cookies. A project owner creates a single-use `gti_` invitation granting `participant` or `viewer` membership. Recipients register or sign in first, then accept it from the workspace. Acceptance does not create an account, issue a user credential or change project-creation capability. Owners choose one hour, 24 hours or seven days, with 24 hours as the default. Each additional Agent/device uses its own short-lived authorization or browser-approved DSH pairing; connector/device tokens, Cookie sessions and independent revocation remain supported. See [OPERATIONS](OPERATIONS.md) and [ADR-0036](adr/0036-verified-email-registration-and-password-login.md).
+
+## Project-scoped native Agent sharing (local preview)
+
+`agent-sharing.ts` and `agent-sharing-store.ts` form a separate execution plane
+for a member's explicitly shared Codex or DSH source. Strict wire shapes live in
+`packages/protocol/src/agent-sharing.ts`; additive SQLite tables are initialized
+by `agent-sharing-schema.ts`. A grant binds one owner/native device/source,
+advertised model catalog, project allowlist, revision and budget. The owner's
+browser manages the grant; the independently authorized native device alone
+claims work and reports availability. Borrowing never adds ordinary session
+write rights for the executor owner, including in the requester's Solo.
+
+Acceptance freezes bounded authorized public context and reserves quota in the
+same transaction as the canonical request. The broker gives the exact source a
+private execution capsule with the borrower-selected exact model and effort. The requester remains the canonical event author. A
+server-verified readonly execution proof identifies the sharing owner without
+exposing the source runtime identifier in public output provenance.
+
+The native controller runs independently of ordinary request loops. It reports
+OFF before READY after startup/interruption and never enables a grant. Shared
+executors use fresh Codex processes/homes or fresh scoped DSH SDK Agents with
+only the project file facade; ordinary history projections and Hooks are not
+reused. Server/native slot fences retain capacity until confirmed executor exit.
+Connection liveness and renewable execution leases are checked independently
+of model turns. Desktop locking is not a separate availability condition.
+`shared-stop-receipts.ts` persists only confirmed-exit identifiers so lost cleanup
+acknowledgments can recover after restart without replaying a task or assuming
+an unknown process stopped.
+The trust controls and retention live in [Security](SECURITY.md#native-agent-sharing-preview-boundary);
+routes and compatibility live in [Interface contracts](INTERFACE_CONTRACTS.md#native-agent-sharing-preview-contract).
+See [ADR-0056](adr/0056-project-scoped-native-agent-sharing.md). This is a local
+implementation preview, with no package version, publication or deployment change.

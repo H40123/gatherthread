@@ -20,8 +20,14 @@ export const AVATAR_CATALOG = Object.freeze([
 const robotImage = svgImage('<rect x="2" y="2" width="76" height="76" rx="24" fill="#fff5d6"/><path d="M40 15v10" stroke="#75531f" stroke-width="5"/><circle cx="40" cy="13" r="5" fill="#75531f"/><rect x="16" y="25" width="48" height="38" rx="12" fill="#75531f"/><circle cx="30" cy="41" r="4" fill="#fff5d6"/><circle cx="50" cy="41" r="4" fill="#fff5d6"/><path d="M30 53h20" stroke="#fff5d6" stroke-width="3"/>');
 export const avatarImage = (id) => AVATAR_CATALOG.find((entry) => entry.id === id)?.image ?? null;
 export const isAgentReply = (event) => event?.type === "agent_response";
+export function eventExecutionOwner(event) {
+  // Only the server's readonly origin proof can change execution attribution.
+  const shared = isAgentReply(event) ? event?.sharedExecution ?? event?.shared_execution : null;
+  return shared && typeof shared.executor_owner_user_id === "string" && typeof shared.executor_owner_display_name === "string"
+    ? { id: shared.executor_owner_user_id, username: shared.executor_owner_display_name } : event?.actor;
+}
 export function eventAuthorLabel(event, translate = (text) => text) {
-  const name = event?.actor?.username ?? "";
+  const name = eventExecutionOwner(event)?.username ?? "";
   return isAgentReply(event) ? translate("{name}'s Agent").replace("{name}", () => name) : name;
 }
 

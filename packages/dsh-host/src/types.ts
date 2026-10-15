@@ -1,4 +1,5 @@
 import type {
+  SharedAgentExecutor, SharedAgentControlApi,
   AgentRequestClaim,
   AppendEventInput,
   CanonicalEvent,
@@ -10,6 +11,7 @@ import type {
   ReadEventsResult,
   SessionSummary,
 } from "@gatherthread/bridge";
+import type { SharedExecutionCapability } from "@gatherthread/protocol";
 
 export type DshHarnessName = "deepseek-harness";
 
@@ -30,6 +32,7 @@ export interface DshExecutionSelection {
 
 export interface DshRuntimeRegistration {
   contextDeletionVersion?: 1;
+  sharingCapability?: SharedExecutionCapability;
   sessionId: string;
   deviceId: string;
   harness: DshHarnessName;
@@ -55,6 +58,7 @@ export type DshAppendEventInput = Omit<AppendEventInput, "runtime">;
  * structural makes the full connector testable without a token or live server.
  */
 export interface DshCollaborationApi {
+  agentSharingApi?(): SharedAgentControlApi;
   listProjectSessions(projectId: string): Promise<SessionSummary[]>;
   readEvents(sessionId: string, afterSequence: number, limit?: number): Promise<ReadEventsResult>;
   readContext?(sessionId: string, view?: HistoryContext["view"], throughSequence?: number): Promise<HistoryContext>;
@@ -179,6 +183,7 @@ export interface DshContextExecutionState {
 }
 
 export interface DshHostFacade {
+  createSharedExecutor?(): SharedAgentExecutor;
   readonly contextDeletionVersion?: 1;
   readonly sessionId: string;
   open(): Promise<"created" | "resumed">;

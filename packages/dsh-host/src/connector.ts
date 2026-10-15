@@ -1,6 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
 import { createLiveOutputPublisher, liveOutputPayload, redactText, redactValue } from "@gatherthread/adapters";
-import { isSessionWritableBy, parseHistoryContext } from "@gatherthread/bridge";
+import { isSessionWritableBy, parseHistoryContext, SharedAgentJobController, type SharedAgentExecutor } from "@gatherthread/bridge";
+import type { SharedExecutionCapability } from "@gatherthread/protocol";
 import { historySummaryMarker } from "@gatherthread/protocol";
 import {
   buildDshCanonicalPrompt,
@@ -89,6 +91,9 @@ export class DshHostConnector {
   readonly #adoptExistingLocalSession: boolean;
   #state: ConnectorState | undefined;
   #runtime: DshRegisteredRuntime | undefined;
+  #sharedExecutor: SharedAgentExecutor | undefined;
+  #sharingCapability: SharedExecutionCapability | undefined;
+  #sharingController: SharedAgentJobController | undefined;
   #started = false;
   #stopped = false;
   #timer: ReturnType<typeof setInterval> | undefined;
@@ -233,6 +238,7 @@ export class DshHostConnector {
       }),
       purpose: "execution",
       ...(this.#host.contextDeletionVersion === 1 ? { contextDeletionVersion: 1 as const } : {}),
+      ...(this.#sharingCapability === undefined ? {} : { sharingCapability: this.#sharingCapability }),
     };
   }
 
@@ -383,8 +389,22 @@ export class DshHostConnector {
       this.#state = this.#reconcileState(storedState, mode);
       await this.#stateStore.save(this.#state);
       await this.#refreshContentRevision();
+      if (this.#api.agentSharingApi && this.#host.createSharedExecutor) {
+        this.#sharedExecutor = this.#host.createSharedExecutor();
+        this.#sharingCapability = await this.#sharedExecutor.preflight();
+        if (!this.#sharingCapability) { await this.#sharedExecutor.close?.(); this.#sharedExecutor = undefined; }
+      }
       this.#runtime = await this.#api.registerRuntime(this.#runtimeRegistration());
       this.#assertRuntime(this.#runtime);
+      if (this.#sharedExecutor && this.#api.agentSharingApi) {
+        await this.#api.agentSharingApi().reportSourceAvailability(this.#config.projectId, this.#runtime.id, "offline", randomUUID());
+        this.#sharingController = new SharedAgentJobController({ projectId: this.#config.projectId,
+          privateStateRoot: path.join(path.dirname(this.#config.statePath), "shared-control", this.#runtime.id),
+          sourceRuntimeId: this.#runtime.id, ownerDeviceId: this.#config.deviceId, api: this.#api.agentSharingApi(),
+          executor: this.#sharedExecutor, signal: this.#lifecycleAbort.signal,
+          onError: error => this.#onBackgroundError?.(error) });
+        if (options.schedule !== false) this.#sharingController.start();
+      }
       this.#notifyLifecycle("idle");
       if (options.schedule !== false) this.#scheduleHeartbeat();
       if (this.#state.activeRequest !== undefined) {
@@ -462,6 +482,8 @@ export class DshHostConnector {
         this.#heartbeatTimer = undefined;
       }
       for (const dispose of this.#listenerDisposers.splice(0)) dispose();
+      await this.#sharingController?.stop();
+      if (!this.#sharingController) await this.#sharedExecutor?.close?.();
       await this.#host.dispose();
       void liveOutput?.mapper.finish(false).catch(() => undefined);
       try {
@@ -1044,7 +1066,7 @@ export class DshHostConnector {
         // user's untouched native conversation. Its final summary is projected.
         continue;
       }
-      if (event.sequence > throughSequence || (event.runtime?.runtimeId === runtime.id
+      if (event.sequence > throughSequence || (event.sharedExecution === undefined && event.runtime?.runtimeId === runtime.id
         && asObject(event.payload)?.context_execution !== "isolated")) continue;
       // Server-accepted history is projected in full. Native DSH owns its
       // context/compaction policy; the local-upload byte cap must not silently

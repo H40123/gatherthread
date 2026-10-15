@@ -15,3 +15,7 @@ export * from "./local-api-relay.js";
 export * from "./code-sync.js";
 export * from "./github-code-sync.js";
 export * from "./github-auth.js";
+export * from "./project-only-sandbox.js";
+export * from "./shared-agent-executor.js";
+export * from "./shared-agent-controller.js";
+export * from "./shared-stop-receipts.js";

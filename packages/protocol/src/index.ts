@@ -4,10 +4,12 @@ import { codeSyncRequestKinds } from "./code-sync.js";
 import { githubCodeSyncRequestKinds } from "./github-sync.js";
 import { RegistrationEmailSchema } from "./registration.js";
 import { PersonalCloudRevisionSchema, hasValidPersonalCloudRevision } from "./cloud-api.js";
+import { SharedExecutionCapabilitySchema, SharedAgentMetadataSchema } from "./agent-sharing.js";
 export * from "./code-sync.js";
 export * from "./github-sync.js";
 export * from "./history-summary.js";
 export * from "./test-gate.js";
+export * from "./agent-sharing.js";
 
 export const sessionModes = ["solo", "multi"] as const;
 export const membershipRoles = ["owner", "participant", "viewer"] as const;
@@ -157,6 +159,7 @@ export const CanonicalEventSchema = z.object({
   reply_to_event_id: IdSchema.nullable(),
   payload: JsonValueSchema,
   runtime_provenance: RuntimeProvenanceSchema.nullable(),
+  shared_execution: SharedAgentMetadataSchema.optional(),
   content_revision: z.number().int().nonnegative().optional(),
   deleted: z.object({ deleted_at: z.string().datetime(), reason: z.enum(["author", "request", "summary_invalidated"]) }).strict().optional(),
 });
@@ -596,6 +599,7 @@ export const RegisterRuntimeInputSchema = z.object({
   provider: z.string().trim().min(1).max(80),
   model: z.string().trim().min(1).max(160),
   execution_profiles: RuntimeExecutionProfilesSchema.optional(),
+  sharing_capability: SharedExecutionCapabilitySchema.optional(),
   context_deletion_version: z.literal(1).optional(),
   local_session_id: z.string().trim().min(1).max(512),
   capture_fidelity: CaptureFidelitySchema,

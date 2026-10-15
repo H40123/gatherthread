@@ -281,6 +281,7 @@
             <small id="connect-dsh-button-status">Not connected</small>
           </button>
           <button id="add-agent-button" class="icon-button agent-settings-shortcut" type="button" aria-label="Choose Agent connections" title="Choose Agent connections" data-tooltip aria-haspopup="dialog" aria-controls="settings-dialog"><span aria-hidden="true">＋</span></button>
+          <button id="agent-sharing-button" class="button button-secondary button-wide" type="button" aria-haspopup="dialog" aria-controls="agent-sharing-dialog" disabled>Share my Agent</button>
           <div class="project-action-row">
             <button id="rename-project-button" class="text-button project-rename-button" type="button" aria-haspopup="dialog" aria-controls="rename-project-dialog" hidden>
               Rename project
@@ -521,7 +522,10 @@
                   <label for="agent-cloud-model-select">Cloud model</label>
                   <select id="agent-cloud-model-select" name="agent-cloud-model"></select>
                 </div>
+                <div id="shared-agent-profile-fields" class="agent-profile-fields" hidden></div>
               </fieldset>
+              <p id="shared-agent-pending-status" class="field-help" role="status" hidden>Confirm the previous shared request before sending a new task.</p>
+              <button id="shared-agent-recover" class="text-button" type="button" hidden>Check the previous shared request</button>
               <div class="cloud-code-consent" id="send-cloud-agent-help" hidden>
                 <label for="cloud-agent-source">Cloud workspace</label>
                 <select id="cloud-agent-source"><option value="trial">GT Cloud trial</option><option value="github">GitHub repository</option></select>

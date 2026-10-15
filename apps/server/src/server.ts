@@ -1,4 +1,10 @@
 import { HostedGithub, type HostedGithubOptions } from "./hosted-github.js";
+import { AgentSharing } from "./agent-sharing.js";
+import { SaveAgentShareInputSchema, ControlAgentShareInputSchema, AgentSharesResponseSchema, AgentShareResponseSchema,
+  SharedAgentRequestInputSchema, ClaimAgentShareJobInputSchema, AgentShareJobLeaseInputSchema, AgentShareJobProgressInputSchema,
+  CompleteAgentShareJobInputSchema, AbortAgentShareJobInputSchema, ReportAgentShareAvailabilityInputSchema,
+  AgentShareJobsResponseSchema, AgentShareSourcesResponseSchema, AgentShareAvailabilityResponseSchema,
+  ReportAgentShareSourceAvailabilityInputSchema } from "@gatherthread/protocol";
 import { stopInterruptedHostedContainers } from "./hosted-agent-recovery.js";
 import { HostedGithubRepositoryInputSchema, HostedGithubTaskInputSchema, HostedGithubPrInputSchema, HostedGithubCompleteInputSchema,
   HostedGithubStatusSchema, HostedGithubAuthorizationSchema, HostedGithubConnectionSchema, HostedGithubDisconnectionSchema,
@@ -496,6 +502,7 @@ export async function startCollaborationServer(
   const codeRepository = new CodeRepository(database, options.codeRepositoryDirectory ?? ephemeralCodeDirectory ?? `${resolve(options.databasePath)}.code`);
   const hostedAgent = options.hostedAgent ? new HostedAgent(service, codeRepository, options.hostedAgent) : undefined;
   const personalApi = hostedAgent?.personalApi ?? new CloudApiStore(database);
+  const agentSharing = new AgentSharing(service);
   if (options.hostedGithub && !hostedAgent) throw new Error("Cloud GitHub requires Cloud Agent");
   const hostedGithub = options.hostedGithub && options.hostedAgent && hostedAgent
     ? new HostedGithub(service, hostedAgent, options.hostedAgent, options.hostedGithub) : undefined;
@@ -1111,6 +1118,55 @@ export async function startCollaborationServer(
       }
 
       const projectId = parts[0] === "v1" && parts[1] === "projects" ? parts[2] : undefined;
+      if (projectId && parts[3] === "agent-sharing-sources" && parts.length === 4 && request.method === "GET") {
+        assertRequestCurrent(); sendJson(response, 200, { data: AgentShareSourcesResponseSchema.parse(agentSharing.sources(actor, projectId)) }); return;
+      }
+      if (projectId && parts[3] === "agent-shares") {
+        if (parts.length === 4 && request.method === "GET") {
+          assertRequestCurrent();
+          sendJson(response, 200, { data: AgentSharesResponseSchema.parse(agentSharing.list(actor, projectId)) }); return;
+        }
+        if (parts.length === 4 && request.method === "POST") {
+          if (authentication.kind !== "browser_session") throw new ApiError(403, "browser_session_required", "Manage Agent sharing in the signed-in browser");
+          const input = SaveAgentShareInputSchema.parse(await readAuthenticatedJson());
+          sendJson(response, 200, { data: AgentShareResponseSchema.parse(agentSharing.save(actor, projectId, input)) }); return;
+        }
+        if (parts.length === 6 && parts[4] && parts[5] === "control" && request.method === "POST") {
+          if (authentication.kind !== "browser_session") throw new ApiError(403, "browser_session_required", "Manage Agent sharing in the signed-in browser");
+          const input = ControlAgentShareInputSchema.parse(await readAuthenticatedJson());
+          sendJson(response, 200, { data: AgentShareResponseSchema.parse(agentSharing.control(actor, projectId, parts[4], input)) }); return;
+        }
+      }
+      if (parts[0] === "v1" && (parts[1] === "agent-share-jobs" || parts[1] === "agent-shares" || parts[1] === "agent-sharing-sources")) {
+        if (authentication.kind !== "bearer" || requestOrigin !== undefined || request.headers["sec-fetch-site"] !== undefined) {
+          throw new ApiError(403, "native_device_required", "Shared execution controls require the owner's independently authorized native device");
+        }
+        if (parts[1] === "agent-sharing-sources" && parts.length === 3 && parts[2] === "availability" && request.method === "POST") {
+          const input = ReportAgentShareSourceAvailabilityInputSchema.parse(await readAuthenticatedJson());
+          sendJson(response, 200, { data: AgentShareAvailabilityResponseSchema.parse(agentSharing.sourceAvailability(actor, input)) }); return;
+        }
+        if (parts[1] === "agent-share-jobs" && parts.length === 2 && request.method === "GET") {
+          const scope = z.string().trim().min(1).max(128).parse(url.searchParams.get("project_id"));
+          assertRequestCurrent();
+          sendJson(response, 200, { data: AgentShareJobsResponseSchema.parse(agentSharing.listJobs(actor, scope)) }); return;
+        }
+        if (parts.length === 4 && parts[2] && request.method === "POST") {
+          const raw = await readAuthenticatedJson();
+          let result: unknown;
+          if (parts[1] === "agent-shares" && parts[3] === "availability") {
+            result = agentSharing.availability(actor, parts[2], ReportAgentShareAvailabilityInputSchema.parse(raw));
+          } else if (parts[1] === "agent-share-jobs") {
+            switch (parts[3]) {
+              case "claim": result = agentSharing.claim(actor, parts[2], ClaimAgentShareJobInputSchema.parse(raw)); break;
+              case "lease": result = agentSharing.renewLease(actor, parts[2], AgentShareJobLeaseInputSchema.parse(raw)); break;
+              case "progress": result = agentSharing.progress(actor, parts[2], AgentShareJobProgressInputSchema.parse(raw)); break;
+              case "complete": result = agentSharing.complete(actor, parts[2], CompleteAgentShareJobInputSchema.parse(raw)); break;
+              case "abort-ack": result = agentSharing.abortAck(actor, parts[2], AbortAgentShareJobInputSchema.parse(raw)); break;
+            }
+          }
+          if (result !== undefined) { sendJson(response, 200, { data: result }); return; }
+        }
+      }
       if (projectId && parts[3] === "github" && parts.length === 4 && request.method === "GET") {
         sendJson(response, 200, { data: GitHubProjectStatusSchema.parse(service.getProjectGitHub(actor, projectId)) });
         return;
@@ -1261,6 +1317,16 @@ export async function startCollaborationServer(
       }
 
       const sessionId = parts[0] === "v1" && parts[1] === "sessions" ? parts[2] : undefined;
+      if (sessionId && parts[3] === "shared-agent-requests") {
+        if (parts.length === 4 && request.method === "POST") {
+          const input = SharedAgentRequestInputSchema.parse(await readAuthenticatedJson());
+          sendJson(response, 202, { data: agentSharing.start(actor, sessionId, input) }); return;
+        }
+        if (parts.length === 6 && parts[4] && parts[5] === "cancel" && request.method === "POST") {
+          const input = z.object({ idempotency_key: z.string().trim().min(8).max(200) }).strict().parse(await readAuthenticatedJson(1024));
+          sendJson(response, 200, { data: agentSharing.cancelRequest(actor, sessionId, parts[4], input) }); return;
+        }
+      }
       if (sessionId && parts[3] === "hosted-agent-requests" && parts[4] && parts[5] === "selection" && parts.length === 6 && request.method === "GET") {
         if (authentication.kind !== "browser_session") throw new ApiError(403, "browser_session_required", "Read your Cloud Agent selection in the signed-in browser");
         assertRequestCurrent();
@@ -1670,6 +1736,7 @@ export async function startCollaborationServer(
     service,
     origin: `http://${address.address.includes(":") ? `[${address.address}]` : address.address}:${address.port}`,
     async close() {
+      agentSharing.close();
       clearInterval(heartbeat);
       clearInterval(registrationCleanup);
       unsubscribe();

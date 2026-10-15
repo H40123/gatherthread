@@ -4,7 +4,7 @@ export const isCloudTrialRequest = (request) => request?.payload?.execution_prof
   && !request.payload.github_task_id;
 
 export function retryAgentRequestPermission(request, context) {
-  return canAppend({ ...context, kind: isCloudTrialRequest(request) || request?.payload?.github_task_id ? "human_chat" : "agent_request" });
+  return canAppend({ ...context, kind: isCloudTrialRequest(request) || request?.payload?.github_task_id || request?.payload?.shared_agent ? "human_chat" : "agent_request" });
 }
 
 export function cloudRequestInput(request, idempotencyKey, profiles, selection, contentRevision) {
@@ -51,6 +51,7 @@ export function composerAgentAction(events, userId) {
   if (request.deleted || request.contentUnavailable) return { action: "request" };
   const linked = history.filter((event) => targetId(event) === request.id);
   if (linked.some((event) => event.type === "agent_response")) return { action: "request" };
+  if (request.payload?.shared_agent) return { action: "stop", request, shared: true };
   if (request.payload?.github_task_id) return { action: "wait", request, cloud: true };
   const cloud = isCloudTrialRequest(request);
   if (linked.some((event) => event.type === "agent_progress" && event.payload?.status === "paused")) {
@@ -78,6 +79,7 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
   confirmResume = () => true, t = (text) => text }) {
   let operation = null;
   let resumeIntent = null;
+  let stopIntent = null;
 
   function view() {
     const context = getContext();
@@ -87,15 +89,16 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
   function update() {
     const current = view();
     if (resumeIntent?.scope !== current.scope) resumeIntent = null;
+    if (stopIntent?.scope !== current.scope) stopIntent = null;
     const busy = operation?.scope === current.scope;
-    const labels = { request: "Request my agent", wait: "Waiting for Agent…", pause: "Pause Agent", resume: "Resume Agent" };
-    const label = busy ? operation.action === "pause" ? "Pausing…" : "Resuming…" : labels[current.action];
+    const labels = { request: current.requestLabel ?? "Request my agent", wait: "Waiting for Agent…", pause: "Pause Agent", resume: "Resume Agent", stop: "Stop shared Agent" };
+    const label = busy ? operation.action === "stop" ? "Stopping…" : operation.action === "pause" ? "Pausing…" : "Resuming…" : labels[current.action];
     // Reuse the same stable button and keep its accessible name meaningful.
     // Sending owns the button until its HTTP write settles.
     if (!current.sending) {
       const icon = button.ownerDocument.createElement("span");
       icon.setAttribute("aria-hidden", "true");
-      icon.textContent = current.action === "pause" ? "Ⅱ" : current.action === "resume" ? "▶" : "✦";
+      icon.textContent = current.action === "stop" ? "■" : current.action === "pause" ? "Ⅱ" : current.action === "resume" ? "▶" : "✦";
       button.replaceChildren(icon, ` ${t(label)}`);
       button.setAttribute("aria-label", t(label));
     }
@@ -103,7 +106,7 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
     button.setAttribute("aria-busy", String(busy));
     if (current.action !== "request") {
       button.disabled = busy || current.sending || !current.writable || current.action === "wait";
-      targetLabel.textContent = t(current.action === "resume"
+      targetLabel.textContent = t(current.action === "stop" ? "Stops your shared request and cancels queued work; your draft stays here." : current.action === "resume"
         ? "Starts a new request with latest history, using the original Agent and model."
         : current.action === "wait" ? current.cloud ? "Cloud Agent is working…" : "Waiting for your Agent to start this request."
           : "Pauses your current request; your draft stays here.");
@@ -134,7 +137,12 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
     const key = resumeIntent?.key;
     void (async () => {
       try {
-        if (current.action === "pause") {
+        if (current.action === "stop") {
+          if (stopIntent?.requestId !== current.request.id || stopIntent.scope !== current.scope) {
+            stopIntent = { requestId: current.request.id, scope: current.scope, key: makeKey("shared-cancel") };
+          }
+          await api.cancelSharedAgentRequest(current.sessionId, current.request.id, { idempotency_key: stopIntent.key });
+        } else if (current.action === "pause") {
           if (current.cloud) await api.pauseHostedAgentRequest(current.sessionId, current.request.id);
           else await api.pauseAgentRequest(current.sessionId, current.request.id);
         } else if (current.cloud) {

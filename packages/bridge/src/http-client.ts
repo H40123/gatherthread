@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 import { HISTORY_SUMMARY_MAX_CONTEXT_BYTES } from "@gatherthread/protocol";
+import { AgentSharesResponseSchema, AgentShareJobsResponseSchema, AgentShareJobClaimResponseSchema,
+  AgentShareJobLeaseResponseSchema, AgentShareJobEventResponseSchema, AgentShareJobResponseSchema,
+  AgentShareAvailabilityResponseSchema, AgentShareJobLeaseInputSchema, AgentShareJobProgressInputSchema,
+  CompleteAgentShareJobInputSchema, AbortAgentShareJobInputSchema, SharedExecutionCapabilitySchema,
+  SharedAgentRequestInputSchema, SharedAgentRequestAcceptedSchema, SharedAgentMetadataSchema, ClaimAgentShareJobInputSchema } from "@gatherthread/protocol";
+import type { AgentShareJobLeaseInput, AgentShareJobProgressInput, CompleteAgentShareJobInput, AbortAgentShareJobInput } from "@gatherthread/protocol";
 import type {
   AgentRequestClaim,
   AgentProgressInput,
@@ -191,6 +197,56 @@ export class HttpCollaborationClient implements CollaborationApi {
       body: "{}",
     }));
     return fromWireRuntime(body.runtime ?? body);
+  }
+
+  /** Dedicated owner-device transport. No borrower receives this credential. */
+  agentSharingApi() {
+    const post = (path: string, body: unknown) => this.#request(path, { method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(8000) });
+    const jobPath = (id: string, action: string) => `/agent-share-jobs/${encodeURIComponent(id)}/${action}`;
+    return {
+      listShares: async (projectId: string) => AgentSharesResponseSchema.parse(await this.#request(`/projects/${encodeURIComponent(projectId)}/agent-shares`, { signal: AbortSignal.timeout(8000) })),
+      listJobs: async (projectId: string) => AgentShareJobsResponseSchema.parse(await this.#request(`/agent-share-jobs?project_id=${encodeURIComponent(projectId)}`, { signal: AbortSignal.timeout(8000) })),
+      claim: async (id: string, key: string) => AgentShareJobClaimResponseSchema.parse(await post(jobPath(id, "claim"), { idempotency_key: key })),
+      renewLease: async (id: string, input: AgentShareJobLeaseInput) => AgentShareJobLeaseResponseSchema.parse(await post(jobPath(id, "lease"), AgentShareJobLeaseInputSchema.parse(input))),
+      progress: async (id: string, input: AgentShareJobProgressInput) => AgentShareJobEventResponseSchema.parse(await post(jobPath(id, "progress"), AgentShareJobProgressInputSchema.parse(input))),
+      complete: async (id: string, input: CompleteAgentShareJobInput) => AgentShareJobEventResponseSchema.parse(await post(jobPath(id, "complete"), CompleteAgentShareJobInputSchema.parse(input))),
+      abortAck: async (id: string, input: AbortAgentShareJobInput) => AgentShareJobResponseSchema.parse(await post(jobPath(id, "abort-ack"), AbortAgentShareJobInputSchema.parse(input))),
+      reportAvailability: async (id: string, state: "ready" | "locked" | "offline" | "unsupported", key: string) =>
+        AgentShareAvailabilityResponseSchema.parse(await post(`/agent-shares/${encodeURIComponent(id)}/availability`, { state, idempotency_key: key })),
+      reportSourceAvailability: async (projectId: string, runtimeId: string, state: "ready" | "locked" | "offline" | "unsupported", key: string) =>
+        AgentShareAvailabilityResponseSchema.parse(await post("/agent-sharing-sources/availability", {
+          project_id: projectId, source_runtime_id: runtimeId, state, idempotency_key: key,
+        })),
+    };
+  }
+
+  /** Public borrower API. Never publish the native execution control transport to MCP. */
+  agentSharingRequestApi(): NonNullable<ReturnType<NonNullable<CollaborationApi["agentSharingRequestApi"]>>> {
+    const post = (route: string, body: unknown) => this.#request(route, { method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(8000) });
+    return {
+      list: async (projectId: string) => {
+        const result = AgentSharesResponseSchema.parse(await this.#request(`/projects/${encodeURIComponent(projectId)}/agent-shares`, { signal: AbortSignal.timeout(8000) }));
+        if (result.shares.some(share => share.project_id !== projectId)) throw new Error("Shared Agent response scope mismatch");
+        return { shares: result.shares.filter(share => share.source_runtime_id === undefined && share.allowed_user_ids === undefined)
+          .map(({ source_runtime_id: _source, owner_device_id: _device, allowed_user_ids: _members, total_usage: _total, ...share }) => share) };
+      },
+      start: async (sessionId, input) => {
+        const body = SharedAgentRequestInputSchema.parse(input);
+        const result = SharedAgentRequestAcceptedSchema.parse(await post(`/sessions/${encodeURIComponent(sessionId)}/shared-agent-requests`, body));
+        if (result.event.session_id !== sessionId || result.job.session_id !== sessionId || result.job.request_event_id !== result.event.id
+          || result.event.type !== "agent_request" || result.job.share_id !== body.share_id || result.job.share_revision !== body.share_revision
+          || result.event.shared_execution?.job_id !== result.job.id || result.event.shared_execution?.share_id !== body.share_id
+          || result.event.shared_execution?.share_revision !== body.share_revision
+          || body.execution_profile && JSON.stringify(body.execution_profile) !== JSON.stringify(result.job.execution_profile)) throw new Error("Shared Agent response scope mismatch");
+        return result;
+      },
+      cancel: async (sessionId, requestEventId, input) => {
+        const body = ClaimAgentShareJobInputSchema.parse(input);
+        const result = AgentShareJobResponseSchema.parse(await post(`/sessions/${encodeURIComponent(sessionId)}/shared-agent-requests/${encodeURIComponent(requestEventId)}/cancel`, body));
+        if (result.job.session_id !== sessionId || result.job.request_event_id !== requestEventId) throw new Error("Shared Agent response scope mismatch");
+        return result;
+      },
+    };
   }
 
   async claimAgentRequest(
@@ -441,6 +497,7 @@ function toWireRuntimeRegistration(runtime: RuntimeRegistration): Record<string,
     ...(runtime.capabilities === undefined ? {} : { capabilities: [...runtime.capabilities] }),
     ...(runtime.purpose === undefined ? {} : { purpose: runtime.purpose }),
     ...(runtime.contextDeletionVersion === undefined ? {} : { context_deletion_version: runtime.contextDeletionVersion }),
+    ...(runtime.sharingCapability === undefined ? {} : { sharing_capability: SharedExecutionCapabilitySchema.parse(runtime.sharingCapability) }),
   };
 }
 
@@ -540,6 +597,7 @@ function fromWireEvent(value: unknown): CanonicalEvent {
     ...(input.content_revision === undefined ? {} : { contentRevision: requiredRevision(input.content_revision, "event.content_revision") }),
     ...(input.deleted === undefined ? {} : { deleted: fromWireDeletion(input.deleted) }),
     ...(runtime === undefined ? {} : { runtime }),
+    ...(input.shared_execution === undefined ? {} : { sharedExecution: SharedAgentMetadataSchema.parse(input.shared_execution) }),
   };
 }
 
@@ -655,6 +713,7 @@ function fromWireRuntime(value: unknown): RegisteredRuntime {
     captureFidelity: requiredString(input.capture_fidelity, "runtime.capture_fidelity") as RegisteredRuntime["captureFidelity"],
     purpose,
     ...(input.context_deletion_version === 1 ? { contextDeletionVersion: 1 } : {}),
+    ...(input.sharing_capability === undefined || input.sharing_capability === null ? {} : { sharingCapability: SharedExecutionCapabilitySchema.parse(input.sharing_capability) }),
   };
 }
 

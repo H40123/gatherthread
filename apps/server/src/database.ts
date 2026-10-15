@@ -31,7 +31,7 @@ import type {
   ProjectInvitationPreview,
   ProjectListItem,
   ReplayResponse,
-  RuntimeExecutionProfile,
+  RuntimeExecutionProfile, SharedAgentMetadata,
   RuntimeProvenance,
   SessionListItem,
   SessionMode,
@@ -61,6 +61,8 @@ import { cloudApiRunIsCurrent } from "./cloud-api.js";
 import { ApiError, agentRequestAlreadyClaimed, agentRequestAlreadyCompleted, agentRequestFailed, conflict, forbidden, idempotencyConflict, notFound, runtimeBusy, sessionQuotaExceeded, snapshotStorageQuotaExceeded, storageQuotaExceeded, unauthorized } from "./errors.js";
 import { redactJson } from "./redaction.js";
 import { hostedFailureCode, hostedFailureContent, hostedFailureOutcome } from "./hosted-agent-errors.js";
+import { AGENT_SHARING_SCHEMA } from "./agent-sharing-schema.js";
+import { SharedExecutionCapabilitySchema, SharedAgentMetadataSchema, type SharedExecutionCapability } from "@gatherthread/protocol";
 
 export interface Actor {
   user_id: string;
@@ -110,6 +112,7 @@ export interface RuntimeRecord {
   provider: string;
   model: string;
   execution_profiles?: RuntimeExecutionProfile[];
+  sharing_capability?: SharedExecutionCapability;
   local_session_id: string;
   capture_fidelity: CaptureFidelity;
   status: "online" | "offline" | "revoked";
@@ -238,6 +241,7 @@ interface EventRow {
   reply_to_event_id: string | null;
   payload_json: string;
   runtime_provenance_json: string | null;
+  shared_execution_json?: string | null;
   deleted_at?: string | null;
   deleted_reason?: "author" | "request" | "summary_invalidated" | null;
   content_revision?: number;
@@ -370,6 +374,11 @@ const MAX_HISTORY_SUMMARY_DEPENDENCY_EVENTS = 10_000;
 const MAX_HISTORY_SUMMARY_DEPENDENCY_BYTES = 16 * 1024 * 1024;
 
 function rejectHistorySummaryMetadata(payload: JsonValue): void {
+  if (payload !== null && typeof payload === "object" && !Array.isArray(payload)
+    && Object.keys(payload).some(key => /^(shared_agent(?:_|$)|agent_share(?:_|$))/u.test(key))) {
+    throw forbidden("shared_agent is server-owned metadata; use the shared Agent endpoint");
+  }
+
   if (payload !== null && typeof payload === "object" && !Array.isArray(payload)
     && Object.hasOwn(payload, "continue_from_event_id")) {
     throw forbidden("continue_from_event_id is server-owned metadata; use the Cloud Agent endpoint");
@@ -912,6 +921,8 @@ function mapEvent(row: EventRow): CanonicalEvent {
     runtime_provenance: storedProvenance === null
       ? null
       : { ...storedProvenance, local_session_id: "private" },
+    ...(row.shared_execution_json === "1" && !row.deleted_at
+      ? { shared_execution: SharedAgentMetadataSchema.parse((JSON.parse(row.payload_json) as { shared_agent?: unknown }).shared_agent) } : {}),
     ...(row.deleted_at && row.deleted_reason ? { deleted: { deleted_at: row.deleted_at, reason: row.deleted_reason } } : {}),
     content_revision: row.content_revision ?? 0,
   };
@@ -1052,6 +1063,11 @@ export class CollaborationDatabase {
     }
     this.migrateAgentClaimLease();
     this.migrateAgentClaimPause();
+    this.sqlite.exec(AGENT_SHARING_SCHEMA);
+    if (!this.sqlite.prepare("PRAGMA table_info(events)").all().some(row => row.name === "shared_execution_json")) {
+      this.sqlite.exec("ALTER TABLE events ADD COLUMN shared_execution_json TEXT CHECK(shared_execution_json IS NULL OR json_valid(shared_execution_json))");
+    }
+
     this.initializeEventStorageUsage();
     this.sqlite.exec(REGISTRATION_SCHEMA);
     this.registration = new RegistrationStore(this.sqlite, (value) => this.tokenDigest(value), this.clock);
@@ -1306,6 +1322,7 @@ export class CollaborationDatabase {
         .run(timestamp, deviceId, actor.user_id);
       if (Number(result.changes) === 0) throw notFound("Device");
       this.sqlite.prepare("UPDATE runtimes SET status = 'revoked' WHERE device_id = ?").run(deviceId);
+      this.fenceSharedExecutionsInsideTransaction({ device_id: deviceId });
       this.sqlite.prepare(`
         UPDATE device_authorizations SET revoked_at = ?
         WHERE authorizer_device_id = ? AND claimed_at IS NULL AND expired_at IS NULL AND revoked_at IS NULL
@@ -1812,6 +1829,7 @@ export class CollaborationDatabase {
           ON CONFLICT(repository_hash) DO UPDATE SET deleted_at=excluded.deleted_at
         `).run(createHash("sha256").update(projectId).digest("hex"), this.now());
       }
+      this.fenceSharedExecutionsInsideTransaction({ project_id: projectId });
       const result = this.sqlite.prepare("DELETE FROM projects WHERE id = ? AND owner_user_id = ?")
         .run(projectId, actor.user_id);
       if (Number(result.changes) !== 1) throw notFound("Project");
@@ -1940,6 +1958,7 @@ export class CollaborationDatabase {
         INSERT INTO users(id,display_name,created_at,can_create_projects)
         VALUES (?, 'Deleted member', ?, 0) ON CONFLICT(id) DO NOTHING
       `).run(deletedUserId, this.now());
+      this.fenceSharedExecutionsInsideTransaction({ user_id: actor.user_id });
       // Solo cloud history belongs to the departing account; shared Multi sequences stay stable.
       this.sqlite.prepare("DELETE FROM sessions WHERE owner_user_id = ? AND mode = 'solo'").run(actor.user_id);
       const devices = this.sqlite.prepare("SELECT id FROM devices WHERE user_id = ?")
@@ -1952,7 +1971,12 @@ export class CollaborationDatabase {
       const scrub = (value: unknown): unknown => {
         if (Array.isArray(value)) return value.map(scrub);
         if (!value || typeof value !== "object") return value;
+        const deletedExecutor = (value as Record<string, unknown>).executor_owner_user_id === actor.user_id;
         return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+          if (key === "executor_owner_user_id" && item === actor.user_id) return [key, deletedUserId];
+          if (deletedExecutor && key === "executor_owner_display_name") return [key, "Deleted member"];
+          if (deletedExecutor && key === "share_id") return [key, "deleted-share"];
+          if (deletedExecutor && key === "job_id") return [key, "deleted-shared-job"];
           if (key === "user_id" && item === actor.user_id) return [key, deletedUserId];
           if (key === "device_id" && typeof item === "string" && deviceIds.has(item)) return [key, "deleted-device"];
           if (key === "runtime_id" && typeof item === "string" && runtimeIds.has(item)) return [key, "deleted-runtime"];
@@ -1961,10 +1985,10 @@ export class CollaborationDatabase {
         }));
       };
       const events = this.sqlite.prepare(`
-        SELECT id,payload_json,runtime_provenance_json FROM events
+        SELECT id,payload_json,runtime_provenance_json,shared_execution_json FROM events
         WHERE session_id IN (SELECT id FROM sessions WHERE mode = 'multi')
-      `).all() as Array<{ id: string; payload_json: string; runtime_provenance_json: string | null }>;
-      const updateEventJson = this.sqlite.prepare("UPDATE events SET payload_json = ?, runtime_provenance_json = ? WHERE id = ?");
+      `).all() as Array<{ id: string; payload_json: string; runtime_provenance_json: string | null; shared_execution_json: string | null }>;
+      const updateEventJson = this.sqlite.prepare("UPDATE events SET payload_json = ?, runtime_provenance_json = ?, shared_execution_json=? WHERE id = ?");
       for (const event of events) {
         const payload = event.payload_json;
         const provenance = event.runtime_provenance_json;
@@ -1973,7 +1997,8 @@ export class CollaborationDatabase {
           && !runtimes.some((runtime) => payload.includes(runtime.id) || provenance?.includes(runtime.id)
             || payload.includes(runtime.local_session_id) || provenance?.includes(runtime.local_session_id))) continue;
         updateEventJson.run(JSON.stringify(scrub(JSON.parse(payload))),
-          provenance === null ? null : JSON.stringify(scrub(JSON.parse(provenance))), event.id);
+          provenance === null ? null : JSON.stringify(scrub(JSON.parse(provenance))),
+          event.shared_execution_json === null ? null : JSON.stringify(scrub(JSON.parse(event.shared_execution_json))), event.id);
       }
       this.sqlite.prepare("UPDATE events SET actor_user_id = ?, actor_display_name = 'Deleted member' WHERE actor_user_id = ?")
         .run(deletedUserId, actor.user_id);
@@ -2004,6 +2029,17 @@ export class CollaborationDatabase {
           OR claimed_by_runtime_id IN (SELECT id FROM runtimes WHERE user_id = ?)
       `).run(actor.user_id, actor.user_id, actor.user_id);
       this.sqlite.prepare("DELETE FROM code_mutations WHERE user_id = ?").run(actor.user_id);
+      this.sqlite.prepare(`UPDATE agent_share_jobs SET owner_user_id=CASE WHEN owner_user_id=? THEN ? ELSE owner_user_id END,
+        requester_user_id=CASE WHEN requester_user_id=? THEN ? ELSE requester_user_id END,
+        requester_display_name=CASE WHEN requester_user_id=? THEN 'Deleted member' ELSE requester_display_name END,
+        owner_device_id=CASE WHEN owner_user_id=? THEN 'deleted-device' ELSE owner_device_id END,
+        requester_device_id=CASE WHEN requester_user_id=? THEN 'deleted-device' ELSE requester_device_id END,
+        source_runtime_id=CASE WHEN owner_user_id=? THEN 'deleted-runtime' ELSE source_runtime_id END,
+        share_id=CASE WHEN owner_user_id=? THEN 'deleted-share' ELSE share_id END,content='',context_json='{}'
+        WHERE owner_user_id=? OR requester_user_id=?`)
+        .run(actor.user_id, deletedUserId, actor.user_id, deletedUserId, actor.user_id, actor.user_id,
+          actor.user_id, actor.user_id, actor.user_id, actor.user_id, actor.user_id);
+      this.sqlite.prepare("DELETE FROM agent_share_daily_usage WHERE owner_user_id=? OR member_user_id=?").run(actor.user_id, actor.user_id);
       this.sqlite.prepare("DELETE FROM devices WHERE user_id = ?").run(actor.user_id);
       this.sqlite.prepare("DELETE FROM users WHERE id = ?").run(actor.user_id);
       // Rebuild attribution charges after ownership and JSON redaction; old account charges must not remain.
@@ -2011,7 +2047,7 @@ export class CollaborationDatabase {
       this.sqlite.prepare(`
         INSERT INTO event_storage_usage(session_id,actor_user_id,bytes)
         SELECT session_id,actor_user_id,SUM(length(CAST(payload_json AS BLOB))
-          + COALESCE(length(CAST(runtime_provenance_json AS BLOB)),0) + 512)
+          + COALESCE(length(CAST(runtime_provenance_json AS BLOB)),0) + COALESCE(length(CAST(shared_execution_json AS BLOB)),0) + 512)
         FROM events GROUP BY session_id,actor_user_id
       `).run();
       return { deleted_solo_sessions: preview.solo_sessions,
@@ -2147,8 +2183,11 @@ export class CollaborationDatabase {
         SELECT user_id FROM project_memberships WHERE project_id = (SELECT project_id FROM sessions WHERE id = ?)
         UNION
         SELECT actor_user_id FROM events WHERE session_id = ? AND (visibility = 'session' OR ? = 'owner')
+        UNION
+        SELECT json_extract(payload_json,'$.shared_agent.executor_owner_user_id') FROM events
+          WHERE session_id=? AND shared_execution_json='1' AND deleted_at IS NULL AND (visibility='session' OR ?='owner')
       ) ORDER BY users.id
-    `).all(sessionId, sessionId, role) as unknown as Array<{ user_id: string; avatar_id: string | null }>;
+    `).all(sessionId, sessionId, role, sessionId, role) as unknown as Array<{ user_id: string; avatar_id: string | null }>;
     return rows.map((row) => ({ user_id: row.user_id, avatar_id: AvatarIdSchema.safeParse(row.avatar_id).data ?? null }));
   }
 
@@ -2188,6 +2227,7 @@ export class CollaborationDatabase {
           AND role != 'owner'
       `).run(role, timestamp, userId, projectId);
       if (role === "viewer") {
+        this.fenceSharedExecutionsInsideTransaction({ project_id: projectId, user_id: userId });
         this.sqlite.prepare(`
           UPDATE runtimes SET status = 'revoked'
           WHERE user_id = ? AND session_id IN (SELECT id FROM sessions WHERE project_id = ?)
@@ -2235,6 +2275,7 @@ export class CollaborationDatabase {
       (SELECT id FROM sessions WHERE project_id=?) AND role != 'owner'`).run(userId, projectId);
     this.sqlite.prepare(`UPDATE runtimes SET status='revoked' WHERE user_id=? AND session_id IN
       (SELECT id FROM sessions WHERE project_id=?)`).run(userId, projectId);
+    this.fenceSharedExecutionsInsideTransaction({ project_id: projectId, user_id: userId });
     this.touchProject(projectId);
   }
 
@@ -2271,6 +2312,7 @@ export class CollaborationDatabase {
       if (!row || (row.session_owner_user_id !== actor.user_id && row.project_owner_user_id !== actor.user_id)) {
         throw notFound("Session");
       }
+      this.fenceSharedExecutionsInsideTransaction({ session_id: sessionId });
       const result = this.sqlite.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
       if (Number(result.changes) !== 1) throw notFound("Session");
       this.touchProject(row.project_id);
@@ -3003,7 +3045,7 @@ export class CollaborationDatabase {
                last_seen_at DESC, id ASC
     `).all(sessionId, userId) as unknown as RuntimeRow[];
     const now = this.clock().getTime();
-    return rows.map((row) => mapRuntimeRow(row, now));
+    return rows.map((row) => ({ ...mapRuntimeRow(row, now), ...this.runtimeSharingCapability(row.id) }));
   }
 
   membershipRole(sessionId: string, userId: string): MembershipRole | null {
@@ -3037,6 +3079,7 @@ export class CollaborationDatabase {
         ON CONFLICT(session_id, user_id) DO UPDATE SET role = excluded.role, updated_at = excluded.updated_at
       `).run(sessionId, userId, role, timestamp, timestamp);
       if (role === "viewer") {
+        this.fenceSharedExecutionsInsideTransaction({ project_id: session.project_id, user_id: userId });
         this.sqlite.prepare(`
           UPDATE runtimes SET status = 'revoked'
           WHERE user_id = ? AND session_id IN (SELECT id FROM sessions WHERE project_id = ?)
@@ -3189,7 +3232,7 @@ export class CollaborationDatabase {
           ? "summary_invalidated" : "request";
         const digest = this.eventReceiptDigest(event);
         this.sqlite.prepare("INSERT INTO deleted_event_receipts(event_id,input_digest) VALUES(?,?)").run(row.id, digest);
-        this.sqlite.prepare("UPDATE events SET payload_json=?,runtime_provenance_json=NULL,deleted_at=?,deleted_reason=?,content_revision=? WHERE id=?")
+        this.sqlite.prepare("UPDATE events SET payload_json=?,runtime_provenance_json=NULL,shared_execution_json=NULL,deleted_at=?,deleted_reason=?,content_revision=? WHERE id=?")
           .run('{"content":"[Message deleted]"}', now, reason, revision, row.id);
       }
       this.sqlite.prepare("UPDATE sessions SET content_revision=? WHERE id=?").run(revision, sessionId);
@@ -3258,6 +3301,12 @@ export class CollaborationDatabase {
   }
 
   private invalidateContextExecutions(sessionId: string, revision: number, now: string): void {
+    // Shared native projections remain outside session ACLs; erase their derived
+    // capsules atomically and retain only the content-free executor cleanup fence.
+    this.sqlite.prepare(`UPDATE agent_share_jobs SET status=CASE WHEN status IN ('queued','running') THEN 'cancelled' ELSE status END,
+      cleanup_pending=CASE WHEN status='running' THEN 1 ELSE cleanup_pending END,error_code='context_changed',
+      finished_at=COALESCE(finished_at,?),lease_expires_at=NULL,content='',context_json='{}'
+      WHERE session_id=? AND content_revision<?`).run(now, sessionId, revision);
     const pending = this.sqlite.prepare(`SELECT e.* FROM events e
       WHERE e.session_id=? AND e.type='agent_request' AND e.content_revision < ? AND e.deleted_at IS NULL
       AND NOT EXISTS(SELECT 1 FROM events r WHERE r.reply_to_event_id=e.id AND r.type='agent_response' AND r.deleted_at IS NULL)`)
@@ -3427,6 +3476,8 @@ export class CollaborationDatabase {
 
   appendEvent(actor: Actor, sessionId: string, input: AppendEventInput, provenance: RuntimeProvenance | null): CanonicalEvent {
     this.assertActiveDevice(actor);
+    if (input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)
+      && input.payload.shared_agent !== undefined) throw forbidden("Shared Agent metadata requires the dedicated broker");
     if (input.type === "message_deleted") throw forbidden("Message deletion requires its dedicated browser endpoint");
     rejectHistorySummaryMetadata(input.payload);
     return this.transaction(() => {
@@ -3928,6 +3979,7 @@ export class CollaborationDatabase {
     provider: string;
     model: string;
     execution_profiles?: RuntimeExecutionProfile[] | undefined;
+    sharing_capability?: SharedExecutionCapability | undefined;
     context_deletion_version?: number | undefined;
     local_session_id: string;
     capture_fidelity: CaptureFidelity;
@@ -3953,14 +4005,93 @@ export class CollaborationDatabase {
         status = 'online',
         last_seen_at = excluded.last_seen_at
     `).run(runtimeId, input.session_id, actor.user_id, input.device_id, input.purpose ?? "execution", input.harness, input.provider, input.model, executionProfiles, input.context_deletion_version ?? 0, input.local_session_id, input.capture_fidelity, timestamp, timestamp);
-    return this.getRuntimeByIdentity(input.device_id, input.harness, input.local_session_id);
+    const registered = this.getRuntimeByIdentity(input.device_id, input.harness, input.local_session_id);
+    if (input.sharing_capability) {
+      const capability = SharedExecutionCapabilitySchema.parse(input.sharing_capability);
+      this.sqlite.prepare(`INSERT INTO agent_share_runtime_capabilities(runtime_id,capability_json,availability,updated_at)
+        VALUES(?,?,'offline',?) ON CONFLICT(runtime_id) DO UPDATE SET capability_json=excluded.capability_json,updated_at=excluded.updated_at`)
+        .run(registered.id, JSON.stringify(capability), timestamp);
+    } else this.sqlite.prepare("DELETE FROM agent_share_runtime_capabilities WHERE runtime_id=?").run(registered.id);
+    return this.getRuntime(registered.id);
   }
 
   getRuntime(runtimeId: string): RuntimeRecord {
     const row = this.sqlite.prepare("SELECT id, session_id, user_id, device_id, purpose, harness, provider, model, execution_profiles_json, context_deletion_version, local_session_id, capture_fidelity, status, last_seen_at FROM runtimes WHERE id = ?")
       .get(runtimeId) as unknown as RuntimeRow | undefined;
     if (!row) throw notFound("Runtime");
-    return mapRuntimeRow(row);
+    return { ...mapRuntimeRow(row), ...this.runtimeSharingCapability(runtimeId) };
+  }
+
+  private runtimeSharingCapability(runtimeId: string): Pick<RuntimeRecord, "sharing_capability"> {
+    const row = this.sqlite.prepare("SELECT capability_json FROM agent_share_runtime_capabilities WHERE runtime_id=?").get(runtimeId);
+    if (!row) return {};
+    const parsed = SharedExecutionCapabilitySchema.safeParse(JSON.parse(String(row.capability_json)));
+    return parsed.success ? { sharing_capability: parsed.data } : {};
+  }
+
+  /** Called from existing device/member/deletion transactions; no session ACL is relaxed. */
+  private fenceSharedExecutionsInsideTransaction(scope: { project_id?: string; user_id?: string; device_id?: string; session_id?: string }) {
+    const clauses: string[] = [], values: string[] = [];
+    if (scope.project_id) { clauses.push("project_id=?"); values.push(scope.project_id); }
+    if (scope.user_id) { clauses.push("(owner_user_id=? OR requester_user_id=?)"); values.push(scope.user_id, scope.user_id); }
+    if (scope.device_id) { clauses.push("(owner_device_id=? OR requester_device_id=?)"); values.push(scope.device_id, scope.device_id); }
+    if (scope.session_id) { clauses.push("(session_id=? OR source_runtime_id IN (SELECT id FROM runtimes WHERE session_id=?))"); values.push(scope.session_id, scope.session_id); }
+    if (!clauses.length) throw new Error("A shared execution fence requires an exact scope");
+    this.sqlite.prepare(`UPDATE agent_share_jobs SET status=CASE WHEN status IN ('queued','running') THEN 'cancelled' ELSE status END,
+      cleanup_pending=CASE WHEN status='running' THEN 1 ELSE cleanup_pending END,error_code='access_changed',
+      finished_at=COALESCE(finished_at,?),lease_expires_at=NULL,content='',context_json='{}' WHERE ${clauses.join(" AND ")}`)
+      .run(this.now(), ...values);
+    const grants: string[] = [], grantValues: string[] = [];
+    if (scope.project_id) { grants.push("project_id=?"); grantValues.push(scope.project_id); }
+    if (scope.user_id) { grants.push("owner_user_id=?"); grantValues.push(scope.user_id); }
+    if (scope.device_id) { grants.push("owner_device_id=?"); grantValues.push(scope.device_id); }
+    if (scope.session_id) { grants.push("source_runtime_id IN (SELECT id FROM runtimes WHERE session_id=?)"); grantValues.push(scope.session_id); }
+    this.sqlite.prepare(`UPDATE agent_shares SET enabled=0,revision=revision+1,disabled_reason='access_changed',updated_at=?
+      WHERE enabled=1 AND ${grants.join(" AND ")}`).run(this.now(), ...grantValues);
+  }
+
+  /** Internal broker only. Caller owns the same grant/quota/canonical SQLite transaction. */
+  appendSharedBrokerEventInsideTransaction(jobId: string, input: AppendEventInput, provenance: RuntimeProvenance | null = null,
+    terminalControl = false): CanonicalEvent {
+    const job = this.sqlite.prepare("SELECT * FROM agent_share_jobs WHERE id=?").get(jobId);
+    if (!job || !["agent_request", "agent_progress", "agent_response"].includes(input.type)
+      || input.visibility !== "session" || input.runtime_id) throw forbidden("Invalid shared execution publication");
+    const sessionId = String(job.session_id), userId = String(job.requester_user_id);
+    const actor: Actor = { user_id: userId, device_id: String(job.requester_device_id), display_name: String(job.requester_display_name) };
+    if (!terminalControl) {
+      this.assertActiveDevice(actor);
+      const session = this.requireWritableSessionInsideTransaction(actor, sessionId);
+      if (session.state !== "active" || Number(job.content_revision) !== (session.content_revision ?? 0)) throw conflict("Shared request authorization changed");
+      const raw = input.payload && typeof input.payload === "object" && !Array.isArray(input.payload) ? input.payload : {};
+      const metadata = SharedAgentMetadataSchema.parse(raw.shared_agent);
+      if (metadata.job_id !== job.id || metadata.share_id !== job.share_id || metadata.share_revision !== job.share_revision
+        || metadata.executor_owner_user_id !== job.owner_user_id) throw forbidden("Invalid broker provenance");
+      if (input.type === "agent_request") {
+        if (input.event_id !== job.request_event_id || job.status !== "queued") throw forbidden("Invalid broker reservation");
+        if (input.reply_to_event_id) {
+          const quote = this.getEvent(sessionId, input.reply_to_event_id);
+          if (quote.deleted) throw new ApiError(409, "message_deleted", "The quoted message was deleted; select another message");
+          if (quote.visibility !== "session") throw forbidden("Shared requests cannot quote private history");
+        }
+        if (raw.mentions !== undefined) {
+          const mentions = MessageMentionsSchema.safeParse(raw.mentions), content = raw.content;
+          if (!mentions.success || typeof content !== "string") throw conflict("Invalid message mentions");
+          let previousEnd = 0;
+          for (const mention of mentions.data) {
+            const user = this.sqlite.prepare("SELECT display_name FROM users WHERE id=?").get(mention.user_id);
+            if (!user || !this.membershipRole(sessionId, mention.user_id) || mention.start < previousEnd || mention.end <= mention.start
+              || content.slice(mention.start, mention.end) !== `@${String(user.display_name)}`) throw conflict("Mention must match a current session member and its exact text range");
+            previousEnd = mention.end;
+          }
+        }
+      } else if (input.reply_to_event_id !== job.request_event_id || job.status !== "running") throw forbidden("Shared execution is not active");
+    } else if (input.type !== "agent_response" || input.reply_to_event_id !== job.request_event_id || provenance !== null
+      || !["cancelled", "timed_out", "failed"].includes(String(job.status))) throw forbidden("Invalid shared cancellation terminal");
+    const existing = this.findByIdempotencyKey(sessionId, input.idempotency_key);
+    if (existing) return this.requireIdempotencyMatch(existing, userId, input.type, input.payload, input.reply_to_event_id ?? null, "session", provenance?.runtime_id ?? null);
+    const proof = terminalControl ? undefined
+      : SharedAgentMetadataSchema.parse((input.payload as Record<string, JsonValue>).shared_agent);
+    return this.appendInsideTransaction(userId, sessionId, input, provenance, terminalControl ? "shared-terminal" : undefined, proof);
   }
 
   heartbeatRuntime(actor: Actor, runtimeId: string): RuntimeRecord {
@@ -3979,6 +4110,8 @@ export class CollaborationDatabase {
     return this.transaction((): AgentClaimOutcome => {
       const event = this.getEvent(sessionId, requestEventId);
       if (event.type !== "agent_request") throw conflict("Only agent_request events can be claimed");
+      if (event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+        && event.payload.shared_agent !== undefined) throw forbidden("Shared requests require the dedicated execution broker");
       this.assertRequestContextCurrent(sessionId, requestEventId);
       if (this.sqlite.prepare("SELECT 1 FROM local_turn_commits WHERE request_event_id = ?").get(requestEventId)) {
         throw agentRequestAlreadyCompleted();
@@ -4141,6 +4274,10 @@ export class CollaborationDatabase {
   }
 
   private assertRuntimeClaimSlotAvailable(runtimeId: string, requestEventId: string, now: string): void {
+    const shared = this.sqlite.prepare(`SELECT 1 FROM agent_share_jobs j JOIN runtimes r ON r.id=? JOIN sessions s ON s.id=r.session_id
+      WHERE j.owner_device_id=r.device_id AND j.project_id=s.project_id AND json_extract(j.profile_json,'$.harness')=r.harness
+        AND (j.status='running' OR j.cleanup_pending=1) LIMIT 1`).get(runtimeId);
+    if (shared) throw runtimeBusy();
     const active = this.sqlite.prepare(`
       SELECT request_event_id FROM agent_request_claims
       WHERE runtime_id = ? AND status = 'claimed' AND request_event_id != ? AND lease_expires_at > ?
@@ -5443,7 +5580,7 @@ export class CollaborationDatabase {
       INSERT INTO event_storage_usage(session_id, actor_user_id, bytes)
       SELECT session_id, actor_user_id,
         SUM(length(CAST(payload_json AS BLOB))
-          + COALESCE(length(CAST(runtime_provenance_json AS BLOB)), 0) + 512)
+          + COALESCE(length(CAST(runtime_provenance_json AS BLOB)), 0) + COALESCE(length(CAST(shared_execution_json AS BLOB)),0) + 512)
       FROM events GROUP BY session_id, actor_user_id
     `);
   }
@@ -5569,7 +5706,8 @@ export class CollaborationDatabase {
     sessionId: string,
     input: Omit<AppendEventInput, "visibility"> & { visibility?: EventVisibility },
     provenance: RuntimeProvenance | null,
-    lifecycleAllowance?: "pause" | "hosted-terminal" | "message-delete" | "context-delete",
+    lifecycleAllowance?: "pause" | "hosted-terminal" | "message-delete" | "context-delete" | "shared-terminal",
+    sharedProof?: SharedAgentMetadata,
   ): CanonicalEvent {
     const session = this.requireSession(sessionId);
     const sequence = session.next_sequence + 1;
@@ -5588,11 +5726,23 @@ export class CollaborationDatabase {
       payload: input.payload,
       runtime_provenance: provenance,
       content_revision: session.content_revision ?? 0,
+      ...(sharedProof ? { shared_execution: sharedProof } : {}),
     };
     const payloadJson = JSON.stringify(event.payload);
     const provenanceJson = event.runtime_provenance === null ? null : JSON.stringify(event.runtime_provenance);
-    const eventBytes = Buffer.byteLength(payloadJson) + (provenanceJson === null ? 0 : Buffer.byteLength(provenanceJson)) + 512;
-    if (eventBytes > this.maxEventBytes && !["hosted-terminal", "message-delete", "context-delete"].includes(lifecycleAllowance ?? "")) throw storageQuotaExceeded("event", this.maxEventBytes);
+    // One private, server-written version marker authenticates this namespace.
+    // Public metadata derives from its canonical payload, not a second content cache.
+    const sharedProofJson = sharedProof ? "1" : null;
+    const eventBytes = Buffer.byteLength(payloadJson) + (provenanceJson === null ? 0 : Buffer.byteLength(provenanceJson))
+      + (sharedProofJson === null ? 0 : Buffer.byteLength(sharedProofJson)) + 512;
+    if (eventBytes > this.maxEventBytes && !["hosted-terminal", "message-delete", "context-delete", "shared-terminal"].includes(lifecycleAllowance ?? "")) throw storageQuotaExceeded("event", this.maxEventBytes);
+    if (lifecycleAllowance === "shared-terminal") {
+      const job = input.reply_to_event_id ? this.sqlite.prepare("SELECT status,error_code,response_event_id FROM agent_share_jobs WHERE request_event_id=? AND requester_user_id=?")
+        .get(input.reply_to_event_id, actorUserId) : undefined;
+      if (eventBytes > 1024 || provenance !== null || input.type !== "agent_response" || !job || job.response_event_id !== null
+        || stableJson(input.payload) !== stableJson({ content: "This shared Agent request ended.", status: "failed",
+          outcome: String(job.status), error: { code: String(job.error_code) } })) throw forbidden("Invalid shared terminal allowance");
+    }
     if (lifecycleAllowance === "context-delete" && (eventBytes > 1024 || provenance !== null || input.type !== "agent_response"
       || !input.reply_to_event_id || input.visibility !== "session" || stableJson(input.payload) !== stableJson({ content: "Shared history changed. Start a new Agent request with the current history.", status: "failed", error: { code: "context_changed" } }))) throw conflict("Invalid context deletion terminal");
     if (lifecycleAllowance === "message-delete" && (eventBytes > 1024 || provenance !== null || input.type !== "message_deleted"
@@ -5626,10 +5776,10 @@ export class CollaborationDatabase {
     // Exactly one fixed, <=1 KiB failed terminal per accepted job. It is charged
     // normally; subsequent ordinary writes cannot use this control allowance.
     this.enforceEventStorageQuota(sessionId, actorUserId, eventBytes, lifecycleAllowance === "pause",
-      lifecycleAllowance === "hosted-terminal" || lifecycleAllowance === "message-delete" || lifecycleAllowance === "context-delete");
+      lifecycleAllowance === "hosted-terminal" || lifecycleAllowance === "message-delete" || lifecycleAllowance === "context-delete" || lifecycleAllowance === "shared-terminal");
     this.sqlite.prepare(`
-      INSERT INTO events(id, session_id, sequence, idempotency_key, type, actor_user_id, actor_display_name, created_at, visibility, reply_to_event_id, payload_json, runtime_provenance_json, content_revision)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO events(id, session_id, sequence, idempotency_key, type, actor_user_id, actor_display_name, created_at, visibility, reply_to_event_id, payload_json, runtime_provenance_json, content_revision,shared_execution_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)
     `).run(
       event.id,
       event.session_id,
@@ -5644,6 +5794,7 @@ export class CollaborationDatabase {
       payloadJson,
       provenanceJson,
       event.content_revision ?? 0,
+      sharedProofJson,
     );
     this.sqlite.prepare(`
       INSERT INTO event_storage_usage(session_id, actor_user_id, bytes) VALUES (?, ?, ?)

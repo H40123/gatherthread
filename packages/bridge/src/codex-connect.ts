@@ -1,5 +1,7 @@
 import { resolveDeviceCredential } from "./device-credential.js";
-import { createHash } from "node:crypto";
+import { CodexSharedAgentExecutor, type SharedAgentExecutor } from "./shared-agent-executor.js";
+import { SharedAgentJobController } from "./shared-agent-controller.js";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -323,6 +325,12 @@ export async function runCodexConnectCli(
         process.stdout.write("Preflight complete; no session runtime was registered and no Agent request was claimed.\n");
         return;
       }
+      const sharedExecutorFactory = () => new CodexSharedAgentExecutor({ command: codexCommand,
+        workspacePath, privateStateRoot: path.join(stateRoot, "shared-execution"), env });
+      const sharedProbe = sharedExecutorFactory();
+      const sharingCapability = await sharedProbe.preflight();
+      await sharedProbe.close();
+      if (sharingCapability) harness.descriptor.sharingCapability = sharingCapability;
       const desktopReveal = await revealCodexDesktopProject({
         enabled: parsed.createWorkspace,
         command: codexCommand,
@@ -359,6 +367,7 @@ export async function runCodexConnectCli(
         project: selected,
         stateRoot,
         harness,
+        ...(sharingCapability ? { sharedExecutorFactory } : {}),
         signal: shutdown.signal,
         token,
         hookSocketPath,
@@ -851,12 +860,20 @@ export async function initializeProjectSession(options: {
       localSessionId: binding.localSessionId,
       captureFidelity: descriptor.captureFidelity,
       capabilities: descriptor.capabilities,
+      ...(descriptor.sharingCapability === undefined ? {} : { sharingCapability: descriptor.sharingCapability }),
       ...(options.harness instanceof CodexProjectHarness ? { contextDeletionVersion: 1 as const } : {}),
       purpose: "execution",
     },
     transcriptRoots: {},
   });
   await bridge.connect();
+  // Re-registration can reuse a native source ID. Fence a previous process's
+  // grant before history materialization or an ordinary long-running turn.
+  if (descriptor.sharingCapability && bridge.runtime && options.session.projectId) {
+    const sharing = options.api.agentSharingApi?.();
+    if (!sharing) throw new Error("This connection cannot establish the shared source startup fence");
+    await sharing.reportSourceAvailability(options.session.projectId, bridge.runtime.id, "offline", randomUUID());
+  }
   const initializingHeartbeatStop = new AbortController();
   const initializingHeartbeat = runManagedSessionHeartbeats({
     managed: new Map([[options.session.id, { bridge, executor: binding.executor, lastHeartbeatAt: Date.now() }]]),
@@ -1031,10 +1048,12 @@ export async function runProjectConnector(options: {
   codeSync?: ProjectCodeSync;
   githubCodeSync?: ProjectCodeSync;
   hookRelay?: Pick<CodexHookRelayServer, "start" | "close">;
+  sharedExecutorFactory?: () => SharedAgentExecutor;
 }): Promise<void> {
   const hooksEnabled = options.hookMode !== "disabled";
   const projectHookSpoolEnabled = options.hookMode === "project";
   const managed = new Map<string, ManagedSession>();
+  const sharedControllers = new Map<string, SharedAgentJobController>();
   const discoveries = new Map<string, Promise<ManagedSession>>();
   const activeLocalRuns = new Set<string>();
   const discoverySessionIds = new Set<string>();
@@ -1151,6 +1170,7 @@ export async function runProjectConnector(options: {
   let visibleSessions: SessionSummary[] = [];
   let nextSnapshotPollAt = 0;
   let authoritativeAclLoaded = false;
+  const sharedPreflightRetryAt = new Map<string, number>();
   const heartbeatStop = new AbortController();
   const heartbeat = runManagedSessionHeartbeats({
     managed,
@@ -1160,6 +1180,29 @@ export async function runProjectConnector(options: {
   try {
   while (!options.signal.aborted) {
     const now = Date.now();
+    if (options.sharedExecutorFactory) {
+      const currentRuntimes = new Set([...managed.values()].map(current => current.bridge.runtime?.id).filter(Boolean));
+      for (const runtimeId of sharedPreflightRetryAt.keys()) if (!currentRuntimes.has(runtimeId)) sharedPreflightRetryAt.delete(runtimeId);
+      for (const [runtimeId, controller] of sharedControllers) {
+        if (!currentRuntimes.has(runtimeId)) { await controller.stop(); sharedControllers.delete(runtimeId); }
+      }
+      for (const current of managed.values()) {
+        const runtime = current.bridge.runtime;
+        if (!runtime?.sharingCapability || sharedControllers.has(runtime.id) || (sharedPreflightRetryAt.get(runtime.id) ?? 0) > now) continue;
+        const executor = options.sharedExecutorFactory();
+        if (!await executor.preflight()) {
+          await executor.close?.();
+          await options.api.agentSharingApi().reportSourceAvailability(options.project.id, runtime.id, "unsupported", randomUUID());
+          sharedPreflightRetryAt.set(runtime.id, now + 30000); continue;
+        }
+        sharedPreflightRetryAt.delete(runtime.id);
+        const controller = new SharedAgentJobController({ projectId: options.project.id, sourceRuntimeId: runtime.id,
+          privateStateRoot: path.join(options.stateRoot, "shared-control", runtime.id),
+          ownerDeviceId: options.actorDeviceId, api: options.api.agentSharingApi(), executor, signal: options.signal,
+          onError: error => retryReporter.retrying(`${runtime.id}:sharing`, error) });
+        sharedControllers.set(runtime.id, controller); controller.start();
+      }
+    }
     if (now >= nextRefreshAt) {
       const refresh = await refreshProjectSessionPermissions({
         loadSessions: () => options.api.listProjectSessions(options.project.id),
@@ -1277,6 +1320,7 @@ export async function runProjectConnector(options: {
     await waitForConnectorPoll(1_000, options.signal);
   }
   } finally {
+    await Promise.allSettled([...sharedControllers.values()].map(controller => controller.stop()));
     heartbeatStop.abort();
     await heartbeat;
     options.localSync?.clear();

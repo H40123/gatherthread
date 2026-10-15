@@ -132,7 +132,8 @@ export class LocalBridge {
       if (event.sessionId !== runtime.sessionId) {
         throw new Error("Collaboration API returned an event for a different session");
       }
-      if (event.type === "agent_request" && !event.deleted) {
+      if (event.type === "agent_request" && !event.deleted
+        && !(event.payload !== null && typeof event.payload === "object" && !Array.isArray(event.payload) && "shared_agent" in event.payload)) {
         const shouldExecute = event.actorId === runtime.userId
           && (executor.shouldExecute === undefined || await executor.shouldExecute(event, runtime));
         if (shouldExecute) {
