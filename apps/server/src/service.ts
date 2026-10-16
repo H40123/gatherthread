@@ -200,6 +200,7 @@ export class CollaborationService {
         provider: runtime.provider,
         model: runtime.model,
         ...(runtime.execution_profiles === undefined ? {} : { execution_profiles: runtime.execution_profiles }),
+        ...(runtime.sharing_capability === undefined ? {} : { sharing_capability: runtime.sharing_capability }),
         status: runtime.status,
         last_seen_at: runtime.last_seen_at,
         context_deletion_version: runtime.context_deletion_version ?? 0,
@@ -623,7 +624,7 @@ export class CollaborationService {
       runtime_provenance: {
         ...provenance,
         device_id: "private",
-        runtime_id: "private",
+        ...(provenance.runtime_id === undefined ? {} : { runtime_id: "private" }),
         local_session_id: "private",
       },
     };
@@ -631,5 +632,15 @@ export class CollaborationService {
 
   private publish(event: CanonicalEvent): void {
     for (const listener of this.eventListeners) listener(event);
+  }
+
+  /** Fan-out follows the broker's committed quota/grant/canonical transaction. */
+  publishSharedAgentEvents(events: readonly CanonicalEvent[]): void {
+    for (const event of events) this.publish(event);
+  }
+
+  /** The sharing broker uses the same canonical session write checks as normal requests. */
+  requireSharedAgentWrite(actor: Actor, sessionId: string) {
+    return this.requireWrite(actor, sessionId);
   }
 }

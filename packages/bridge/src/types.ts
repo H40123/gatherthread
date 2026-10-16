@@ -6,7 +6,8 @@ import type {
   LiveOutputState,
   LivePlanStep,
 } from "@gatherthread/adapters";
-import type { HistoryContext } from "@gatherthread/protocol";
+import type { HistoryContext, SharedExecutionCapability, SharedAgentMetadata, AgentShare, AgentShareJob, SharedAgentRequestInput, CanonicalEvent as ProtocolCanonicalEvent } from "@gatherthread/protocol";
+import type { SharedAgentControlApi } from "./shared-agent-controller.js";
 export type { HistoryContext, HistoryContextItem } from "@gatherthread/protocol";
 
 export type CanonicalEventType =
@@ -45,6 +46,8 @@ export interface CanonicalEvent {
   timestamp: string;
   payload: unknown;
   runtime?: RuntimeProvenance;
+  /** Authenticated, server-owned proof; payload.shared_agent is not a substitute. */
+  sharedExecution?: SharedAgentMetadata;
   contentRevision?: number;
   deleted?: { deletedAt: string; reason: "author" | "request" | "summary_invalidated" };
 }
@@ -165,6 +168,7 @@ export interface RuntimeRegistration {
   capabilities?: readonly string[];
   purpose?: "execution" | "snapshot_connector";
   contextDeletionVersion?: 1;
+  sharingCapability?: SharedExecutionCapability;
 }
 
 export interface RuntimeExecutionProfile {
@@ -229,6 +233,12 @@ export interface HarnessProgressUpdate {
 }
 
 export interface CollaborationApi {
+  agentSharingApi?(): SharedAgentControlApi;
+  agentSharingRequestApi?(): {
+    list(projectId: string): Promise<{ shares: AgentShare[] }>;
+    start(sessionId: string, input: SharedAgentRequestInput): Promise<{ event: ProtocolCanonicalEvent; job: AgentShareJob; replayed: boolean }>;
+    cancel(sessionId: string, requestEventId: string, input: { idempotency_key: string }): Promise<{ job: AgentShareJob; replayed: boolean }>;
+  };
   listSessions(): Promise<SessionSummary[]>;
   listProjects?(): Promise<ProjectSummary[]>;
   listProjectSessions?(projectId: string): Promise<SessionSummary[]>;

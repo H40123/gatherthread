@@ -2,7 +2,10 @@ import { avatarImage } from "./avatars.js?v=20261012-content-1";
 import { HostedGithubStatusSchema, HostedGithubAuthorizationSchema, HostedGithubConnectionSchema, HostedGithubDisconnectionSchema,
   HostedGithubTaskSchema, HostedGithubTaskListSchema, HostedAgentAcceptedSchema, HostedAgentPausedSchema,
   ProjectInvitationPreviewSchema, DeleteMessageResultSchema, CloudApiStatusSchema, CloudApiSavedSchema,
-  HostedAgentSelectionSchema } from "@gatherthread/protocol";
+  HostedAgentSelectionSchema,
+  SaveAgentShareInputSchema, ControlAgentShareInputSchema, SharedAgentRequestInputSchema,
+  AgentSharesResponseSchema, AgentShareResponseSchema, SharedAgentRequestAcceptedSchema, AgentShareSourcesResponseSchema,
+  ClaimAgentShareJobInputSchema, AgentShareJobResponseSchema } from "@gatherthread/protocol";
 import {
   createIdempotencyKey,
   isExecutionRuntime,
@@ -18,6 +21,41 @@ const PERSONAL_API_RESPONSE_ERROR = "Personal API response is invalid. Refresh a
 async function hostedResponse(schema, request, errorMessage = "Cloud GitHub response is invalid. Refresh and try again.") {
   const parsed = schema.safeParse(await request);
   if (!parsed.success) throw new Error(errorMessage);
+  return parsed.data;
+}
+
+function sharingInput(schema, input) {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) throw new ApiError("Shared Agent input is invalid. Review the settings and try again.", { status: 422, code: "validation_error" });
+  return parsed.data;
+}
+
+async function sharingResponse(schema, request, { projectId, sessionId, shareId, shareRevision, executionProfile } = {}) {
+  let body;
+  try { body = await request; }
+  catch (error) {
+    throw new ApiError("Shared Agent request failed. Refresh and try again.", {
+      status: error instanceof ApiError ? error.status : 0,
+      code: error instanceof ApiError && /^[a-z][a-z0-9_]{0,79}$/u.test(error.code) ? error.code : "network_error",
+    });
+  }
+  const parsed = schema.safeParse(body);
+  if (!parsed.success || (projectId && (parsed.data.share?.project_id !== undefined && parsed.data.share.project_id !== projectId
+    || parsed.data.shares?.some(share => share.project_id !== projectId)))
+    || (shareId && parsed.data.share && parsed.data.share.id !== shareId)
+    || (sessionId && (parsed.data.event?.session_id !== sessionId || parsed.data.job?.session_id !== sessionId
+      || parsed.data.event?.type !== "agent_request" || parsed.data.job?.request_event_id !== parsed.data.event?.id
+      || parsed.data.job?.id !== parsed.data.event?.payload?.shared_agent?.job_id
+      || parsed.data.job?.share_id !== shareId || parsed.data.job?.share_revision !== shareRevision
+      || parsed.data.event?.payload?.shared_agent?.share_id !== shareId
+      || parsed.data.event?.payload?.shared_agent?.share_revision !== shareRevision
+      || parsed.data.event?.shared_execution?.job_id !== parsed.data.job?.id
+      || parsed.data.event?.shared_execution?.share_id !== shareId
+      || parsed.data.event?.shared_execution?.share_revision !== shareRevision
+      || JSON.stringify(parsed.data.event?.shared_execution?.execution_profile) !== JSON.stringify(parsed.data.job?.execution_profile)
+      || executionProfile && JSON.stringify(executionProfile) !== JSON.stringify(parsed.data.job?.execution_profile)))) {
+    throw new ApiError("Shared Agent response is invalid. Refresh and try again.", { status: 502, code: "invalid_agent_share_response" });
+  }
   return parsed.data;
 }
 
@@ -43,8 +81,9 @@ export class ApiError extends Error {
 }
 
 export class HttpCollaborationApi {
-  constructor({ baseUrl = "" } = {}) {
+  constructor({ baseUrl = "", sharingDeadlineMs = 8000 } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
+    this.sharingDeadlineMs = sharingDeadlineMs;
     this.actors = new Map();
     this.sessionHeads = new Map();
   }
@@ -399,6 +438,7 @@ export class HttpCollaborationApi {
       status: runtime.status,
       lastSeenAt: runtime.last_seen_at,
       ...(runtime.context_deletion_version === undefined ? {} : { contextDeletionVersion: runtime.context_deletion_version }),
+      ...(runtime.sharing_capability === undefined ? {} : { sharingCapability: runtime.sharing_capability }),
       ...(Array.isArray(runtime.execution_profiles) ? {
         executionProfiles: runtime.execution_profiles.map((profile) => ({
           provider: profile.provider,
@@ -578,6 +618,78 @@ export class HttpCollaborationApi {
 
   appendAgentRequest(sessionId, input) {
     return this.#append(sessionId, "agent_request", input);
+  }
+
+  async sharingRequest(path, { signal, ...options } = {}) {
+    const controller = new AbortController();
+    let timer, rejectAbort;
+    const aborted = new Promise((_, reject) => { rejectAbort = reject; });
+    const abort = () => {
+      rejectAbort(new ApiError("Shared Agent request interrupted.", { code: "request_aborted" }));
+      controller.abort();
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      if (signal?.aborted) { abort(); return await aborted; }
+      return await Promise.race([this.request(path, { ...options, signal: controller.signal }), aborted,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new ApiError("Shared Agent acknowledgement timed out.", { code: "request_timeout" }));
+            controller.abort();
+          }, this.sharingDeadlineMs);
+        })]);
+    } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
+  }
+
+  listAgentShares(projectId, { signal } = {}) {
+    return sharingResponse(AgentSharesResponseSchema,
+      this.sharingRequest(`/v1/projects/${encodeURIComponent(projectId)}/agent-shares`, { signal }), { projectId });
+  }
+
+  async listAgentSharingSources(projectId, { signal } = {}) {
+    const result = await sharingResponse(AgentShareSourcesResponseSchema,
+      this.sharingRequest(`/v1/projects/${encodeURIComponent(projectId)}/agent-sharing-sources`, { signal }));
+    return result.runtimes.map(runtime => ({ id: runtime.id, sessionId: runtime.session_id, projectId, deviceId: runtime.device_id,
+      purpose: runtime.purpose, harness: runtime.harness, provider: runtime.provider, model: runtime.model, status: runtime.status,
+      ...(runtime.sharing_capability ? { sharingCapability: runtime.sharing_capability } : {}),
+      ...(runtime.sharing_availability ? { sharingAvailability: runtime.sharing_availability } : {}),
+      ...(runtime.execution_profiles ? { executionProfiles: runtime.execution_profiles.map(profile => ({ provider: profile.provider,
+        model: profile.model, reasoningEfforts: profile.reasoning_efforts ?? [],
+        ...(profile.default_reasoning_effort ? { defaultReasoningEffort: profile.default_reasoning_effort } : {}) })) } : {}) }));
+  }
+
+  saveAgentShare(projectId, input, { signal } = {}) {
+    return sharingResponse(AgentShareResponseSchema,
+      this.sharingRequest(`/v1/projects/${encodeURIComponent(projectId)}/agent-shares`, {
+        method: "POST", body: JSON.stringify(sharingInput(SaveAgentShareInputSchema, input)), signal,
+      }), { projectId, shareId: input.share_id });
+  }
+
+  controlAgentShare(projectId, shareId, input, { signal } = {}) {
+    return sharingResponse(AgentShareResponseSchema,
+      this.sharingRequest(`/v1/projects/${encodeURIComponent(projectId)}/agent-shares/${encodeURIComponent(shareId)}/control`, {
+        method: "POST", body: JSON.stringify(sharingInput(ControlAgentShareInputSchema, input)), signal,
+      }), { projectId, shareId });
+  }
+
+  startSharedAgentRequest(sessionId, input, { signal } = {}) {
+    const body = sharingInput(SharedAgentRequestInputSchema, input);
+    return sharingResponse(SharedAgentRequestAcceptedSchema,
+      this.sharingRequest(`/v1/sessions/${encodeURIComponent(sessionId)}/shared-agent-requests`, {
+        method: "POST", body: JSON.stringify(body), signal,
+      }), { sessionId, shareId: body.share_id, shareRevision: body.share_revision, executionProfile: body.execution_profile });
+  }
+
+  cancelSharedAgentRequest(sessionId, requestId, input, { signal } = {}) {
+    return sharingResponse(AgentShareJobResponseSchema,
+      this.sharingRequest(`/v1/sessions/${encodeURIComponent(sessionId)}/shared-agent-requests/${encodeURIComponent(requestId)}/cancel`, {
+        method: "POST", body: JSON.stringify(sharingInput(ClaimAgentShareJobInputSchema, input)), signal,
+      })).then(result => {
+        if (result.job.session_id !== sessionId || result.job.request_event_id !== requestId) {
+          throw new ApiError("Shared Agent response is invalid. Refresh and try again.", { status: 502, code: "invalid_agent_share_response" });
+        }
+        return result;
+      });
   }
 
   getHostedGithubStatus(projectId) { return hostedResponse(HostedGithubStatusSchema, this.request(`/v1/projects/${encodeURIComponent(projectId)}/hosted-github`)); }
@@ -760,8 +872,9 @@ export class HttpCollaborationApi {
       payload: event.payload,
       ...(event.content_revision === undefined ? {} : { contentRevision: event.content_revision }),
       ...(event.deleted ? { deleted: event.deleted } : {}),
+      ...(event.shared_execution ? { sharedExecution: event.shared_execution } : {}),
       provenance: provenance ? {
-        username,
+        username: event.shared_execution?.executor_owner_display_name ?? username,
         runtimeId: provenance.runtime_id,
         harness: provenance.harness,
         provider: provenance.provider,
@@ -784,6 +897,8 @@ const users = {
 };
 
 export class MockCollaborationApi {
+  async listAgentShares() { return { shares: [] }; }
+  async listAgentSharingSources() { return []; }
   async getCloudApi() { return { enabled: false, providers: [], configurations: [] }; }
   async getHostedAgentStatus() { return { enabled: false }; }
   async getHostedGithubStatus() { return { enabled: false }; }

@@ -5,6 +5,8 @@ import net from "node:net";
 import path from "node:path";
 import { redactText } from "@gatherthread/adapters";
 import { parseHistoryContext, validateContextReadInput } from "./http-client.js";
+import { AgentSharesResponseSchema, SharedAgentRequestInputSchema, SharedAgentRequestAcceptedSchema,
+  AgentShareJobResponseSchema, IdSchema, IdempotencyKeySchema, type AgentShare, type SharedAgentRequestInput } from "@gatherthread/protocol";
 import type {
   AgentRequestClaim,
   AppendEventInput,
@@ -64,6 +66,9 @@ const USER_METHODS = new Set([
   "readEvents",
   "readContext",
   "appendEvent",
+  "listSharedAgents",
+  "startSharedAgent",
+  "cancelSharedAgentRequest",
   "getLocalSyncStatus",
   "setLocalAutoUpload",
   "uploadLocalTurns",
@@ -224,7 +229,9 @@ export class LocalConnectorApiRelayServer {
       }
       if (!USER_METHODS.has(request.method)) throw new Error("Local method is not available");
       const result = await this.#invokeUserMethod(request.method, request.params);
-      socket.end(`${JSON.stringify({ id, result } satisfies RelayResponse)}\n`);
+      const response = `${JSON.stringify({ id, result } satisfies RelayResponse)}\n`;
+      if (Buffer.byteLength(response) > MAX_FRAME_BYTES) throw new Error("Local connector response is too large");
+      socket.end(response);
     } catch (error) {
       const safe = redactText(error instanceof Error ? error.message : "Local connector request failed");
       socket.end(`${JSON.stringify({ id, error: safe } satisfies RelayResponse)}\n`);
@@ -247,6 +254,16 @@ export class LocalConnectorApiRelayServer {
     if (method === "listSessions") {
       requireParameterCount(params, 0);
       return listProjectSessions.call(this.#api, this.#projectId);
+    }
+    if (method === "listSharedAgents") {
+      requireParameterCount(params, 1);
+      if (IdSchema.parse(params[0]) !== this.#projectId) throw new Error("Project is not routed by this connector");
+      const api = this.#api.agentSharingRequestApi?.();
+      if (!api) throw new Error("Shared Agent requests are unavailable on this connector; no ordinary Agent fallback was used");
+      const listed = AgentSharesResponseSchema.parse(await api.list(this.#projectId));
+      if (listed.shares.some(share => share.project_id !== this.#projectId)) throw new Error("Shared Agent response scope mismatch");
+      return { shares: listed.shares.filter(share => share.source_runtime_id === undefined && share.allowed_user_ids === undefined)
+        .map(publicSharedAgent) };
     }
     const sessionId = requiredLocalString(params[0], "session ID");
     const sessions = await listProjectSessions.call(this.#api, this.#projectId);
@@ -279,6 +296,24 @@ export class LocalConnectorApiRelayServer {
         throw new Error("Local user relay accepts only chat or agent request events");
       }
       return this.#api.appendEvent(sessionId, event);
+    }
+    if (method === "startSharedAgent") {
+      requireParameterCount(params, 2);
+      const api = this.#api.agentSharingRequestApi?.();
+      if (!api) throw new Error("Shared Agent requests are unavailable on this connector; no ordinary Agent fallback was used");
+      const input = SharedAgentRequestInputSchema.parse(params[1]);
+      return acceptedSharedAgentResult(await api.start(sessionId, input), sessionId, input);
+    }
+    if (method === "cancelSharedAgentRequest") {
+      requireParameterCount(params, 3);
+      const api = this.#api.agentSharingRequestApi?.();
+      if (!api) throw new Error("Shared Agent requests are unavailable on this connector; no ordinary Agent fallback was used");
+      const requestId = IdSchema.parse(params[1]), raw = params[2];
+      if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).some(key => key !== "idempotency_key")) throw new Error("Invalid shared request cancellation");
+      const key = IdempotencyKeySchema.parse((raw as Record<string, unknown>).idempotency_key);
+      const result = AgentShareJobResponseSchema.parse(await api.cancel(sessionId, requestId, { idempotency_key: key }));
+      if (result.job.session_id !== sessionId || result.job.request_event_id !== requestId) throw new Error("Shared Agent response scope mismatch");
+      return result;
     }
     if (method === "getLocalSyncStatus") {
       requireParameterCount(params, 1);
@@ -371,6 +406,28 @@ export class LocalConnectorCollaborationClient implements CollaborationApi {
 
   async appendEvent(sessionId: string, event: AppendEventInput): Promise<CanonicalEvent> {
     return this.#callConnection(await this.#sessionRoute(sessionId), "appendEvent", [sessionId, event]);
+  }
+  agentSharingRequestApi() {
+    return {
+      list: async (projectId: string) => {
+        const result = AgentSharesResponseSchema.parse(await this.#callConnection(
+          await this.#projectRoute(IdSchema.parse(projectId)), "listSharedAgents", [projectId]));
+        if (result.shares.some(share => share.project_id !== projectId)) throw new Error("Shared Agent response scope mismatch");
+        return { shares: result.shares.filter(share => share.source_runtime_id === undefined && share.allowed_user_ids === undefined).map(publicSharedAgent) };
+      },
+      start: async (sessionId: string, input: SharedAgentRequestInput) => {
+        const body = SharedAgentRequestInputSchema.parse(input);
+        return acceptedSharedAgentResult(await this.#callConnection(await this.#sessionRoute(IdSchema.parse(sessionId)),
+          "startSharedAgent", [sessionId, body]), sessionId, body);
+      },
+      cancel: async (sessionId: string, requestEventId: string, input: { idempotency_key: string }) => {
+        const result = AgentShareJobResponseSchema.parse(await this.#callConnection(
+          await this.#sessionRoute(IdSchema.parse(sessionId)), "cancelSharedAgentRequest", [sessionId, IdSchema.parse(requestEventId),
+            { idempotency_key: IdempotencyKeySchema.parse(input.idempotency_key) }]));
+        if (result.job.session_id !== sessionId || result.job.request_event_id !== requestEventId) throw new Error("Shared Agent response scope mismatch");
+        return result;
+      },
+    };
   }
 
   async getLocalSyncStatus(sessionId: string): Promise<LocalConversationSyncStatus> {
@@ -557,6 +614,20 @@ export class LocalConnectorCollaborationClient implements CollaborationApi {
     // connector. Expiry proves ownership only of this registration record.
     await unlink(connection.registrationPath).catch(() => undefined);
   }
+}
+
+function acceptedSharedAgentResult(raw: unknown, sessionId: string, input: SharedAgentRequestInput) {
+  const result = SharedAgentRequestAcceptedSchema.parse(raw), { event, job } = result, proof = event.shared_execution;
+  if (event.session_id !== sessionId || job.session_id !== sessionId || job.request_event_id !== event.id
+    || event.type !== "agent_request" || event.idempotency_key !== input.idempotency_key || event.actor_user_id !== job.requester_user_id
+    || job.share_id !== input.share_id || job.share_revision !== input.share_revision
+    || proof?.job_id !== job.id || proof.share_id !== input.share_id || proof.share_revision !== input.share_revision
+    || JSON.stringify(proof.execution_profile) !== JSON.stringify(job.execution_profile)) throw new Error("Shared Agent response scope mismatch");
+  return result;
+}
+function publicSharedAgent(share: AgentShare) {
+  const { source_runtime_id: _source, owner_device_id: _device, allowed_user_ids: _allowlist, total_usage: _total, ...publicFields } = share;
+  return publicFields;
 }
 
 class LocalConnectorUnavailableError extends Error {}

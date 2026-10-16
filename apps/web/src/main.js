@@ -1,6 +1,7 @@
-import { renderAvatar, isAgentReply, eventAuthorLabel } from "./avatars.js?v=20261012-content-1";
+import { renderAvatar, isAgentReply, eventAuthorLabel, eventExecutionOwner } from "./avatars.js?v=20261012-content-1";
 import { mountAvatarSettings } from "./avatar-settings.js?v=20261012-content-1";
 import { mountCloudGithub } from "./cloud-github-view.js?v=20261012-content-1";
+import { mountSharedAgents } from "./shared-agent-view.js?v=20261012-content-1";
 import { mountDeviceAuthorization } from "./device-authorization.js";
 import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261012-content-1";
 import { mountAccountDevices } from "./account-devices.js";
@@ -191,6 +192,10 @@ const LOCAL_SYNC_REQUEST_KINDS = new Set([
   "local_turn_upload",
 ]);
 let selectedCodexLocalRuntimeId = "";
+let sharedComposerActive = false;
+let sharedComposerScope = "";
+let sharingSourceRuntimes = [];
+let pendingSharedAgentIntent = null;
 
 const element = (id) => document.getElementById(id);
 const authView = element("auth-view");
@@ -263,8 +268,9 @@ function renderCurrentAvatar() {
 }
 
 function renderEventAvatar(node, event) {
-  return renderAvatar(document, node, { userId: event.actor.id, username: event.actor.username,
-    avatarId: state.avatarProfiles.get(event.actor.id) ?? null,
+  const owner = eventExecutionOwner(event);
+  return renderAvatar(document, node, { userId: owner.id, username: owner.username,
+    avatarId: state.avatarProfiles.get(owner.id) ?? null,
     agent: isAgentReply(event), harness: event.provenance?.harness ?? "" });
 }
 
@@ -323,6 +329,7 @@ const agentRequestControl = mountAgentRequestControl({
     scope: `${authenticationGeneration}:${selectedSessionGeneration}:${state.project?.id}:${state.session?.id}:${state.sync.contentRevision ?? 0}`,
     writable: canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase, kind: "human_chat" }).allowed,
     sending: Boolean(pendingMessageSend?.()),
+    requestLabel: currentProjectHarness() === "shared" ? "Request shared Agent" : "Request my agent",
     cloudProfiles: hostedAgentStatus.profiles,
   }),
   confirmResume: () => !state.settings.composer.confirmAgentRequest
@@ -438,6 +445,20 @@ const cloudCodeConsent = mountCloudCodeConsent({
   } : null,
 });
 element("project-code-dialog").addEventListener("close", () => void cloudCodeConsent.refresh());
+const sharedAgentsUi = mountSharedAgents({ document, api, localizer,
+  hostButton: element("agent-sharing-button"), pickerHost: element("shared-agent-profile-fields"),
+  confirm: message => window.confirm(message), makeKey: () => createIdempotencyKey("agent-share"),
+  onChange: () => renderComposerPermissions(),
+  getContext: () => ({
+    scope: `${authenticationGeneration}:${selectedSessionGeneration}:${state.currentUser?.id}:${state.project?.id}`,
+    projectId: state.project?.id, sessionId: state.session?.id, sessionMode: state.session?.mode,
+    userId: state.currentUser?.id, ownRuntimes: sharingSourceRuntimes.some(runtime => runtime.projectId === state.project?.id)
+      ? sharingSourceRuntimes.filter(runtime => runtime.projectId === state.project?.id) : state.executionRuntimes,
+    devices: state.devices, members: state.projectMembers,
+    writable: Boolean(state.currentUser && state.project && ["owner", "participant"].includes(state.project.role)),
+  }),
+});
+
 const onboarding = mountOnboarding({
   document,
   getContext: () => ({
@@ -675,7 +696,7 @@ sync.subscribe((snapshot) => {
   if (connectionTransition.notify) notifyConnectionLost();
   if (snapshot.phase === "live" && snapshot.events.length > previousCount && previousCount > 0) {
     const latest = snapshot.events.at(-1);
-    announce(`${eventLabel(latest.type)} from ${latest.actor.username}`);
+    announce(`${eventLabel(latest.type)} from ${latest.sharedExecution ? eventAuthorLabel(latest, localizer.t) : latest.actor.username}`);
     maybeNotifyAgentCompletion(latest);
   }
 });
@@ -1762,7 +1783,7 @@ function startDshRuntimePolling() {
   const generation = dshRuntimePollGeneration;
   const poll = async () => {
     if (generation !== dshRuntimePollGeneration || !state.session) return;
-    await Promise.allSettled([refreshDshRuntimes(), refreshHostedAgentStatus()]);
+    await Promise.allSettled([refreshDshRuntimes(), refreshHostedAgentStatus(), sharedAgentsUi.refresh()]);
     if (generation !== dshRuntimePollGeneration || !state.session) return;
     dshRuntimePollTimer = setTimeout(poll, mockEnabled ? 350 : 5_000);
     dshRuntimePollTimer.unref?.();
@@ -1783,14 +1804,16 @@ async function refreshDshRuntimes({ sessionId = state.session?.id, generation = 
   const load = {};
   dshRuntimeLoadInFlight = load;
   try {
-    const [runtimesResult, devicesResult] = await Promise.allSettled([
+    const [runtimesResult, devicesResult, sharingSourcesResult] = await Promise.allSettled([
       api.listSessionRuntimes(sessionId),
       api.listDevices(),
+      state.project && api.listAgentSharingSources ? api.listAgentSharingSources(state.project.id, { signal: AbortSignal.timeout(8000) }) : Promise.resolve([]),
     ]);
     if (generation !== selectedSessionGeneration || state.session?.id !== sessionId) return;
     if (runtimesResult.status === "rejected") throw runtimesResult.reason;
     state.executionRuntimes = runtimesResult.value;
     state.devices = devicesResult.status === "fulfilled" ? devicesResult.value : [];
+    sharingSourceRuntimes = sharingSourcesResult.status === "fulfilled" ? sharingSourcesResult.value : [];
     if (state.project && projectAgentHarness(state.settings, state.project.id) === DSH_HARNESS) {
       const storedProfile = projectDshProfile(state.settings, state.project.id);
       const resolved = resolveDshRuntime(state.executionRuntimes, state.devices, storedProfile);
@@ -2310,7 +2333,11 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     const bubbleRole = eventBubbleRole(event, state.currentUser?.id ?? null);
     if (bubbleRole === "self") article.classList.add("event-bubble-self");
     if (bubbleRole === "agent") article.classList.add("event-bubble-agent");
-    const failedResponse = isFailedAgentResponse(event);
+    const sharedRequest = event.type === "agent_response" && event.replyTo
+      ? events.find(candidate => candidate.id === event.replyTo && candidate.sharedExecution) : undefined;
+    const sharedCancelled = sharedRequest && event.payload?.outcome === "cancelled";
+    const sharedStatus = sharedRequest && !event.sharedExecution && !event.deleted && !event.contentUnavailable;
+    const failedResponse = isFailedAgentResponse(event) && !sharedCancelled;
     if (failedResponse) article.classList.add("event-agent_response-failed");
     const timedOutResponse = isTimedOutAgentResponse(event);
     if (timedOutResponse) article.classList.add("event-agent_response-timed-out");
@@ -2318,6 +2345,7 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     renderEventAvatar(avatar, event);
     actor.id = `event-${event.id}-actor`;
     actor.textContent = eventAuthorLabel(event, localizer.t);
+    if (sharedStatus) { actor.textContent = localizer.t("Shared Agent status"); avatar.hidden = true; }
     type.className = "event-type";
     type.textContent = localizer.t(eventLabel(event.type));
     sequence.className = "event-sequence";
@@ -2335,9 +2363,10 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     header.append(identity, sequence, timeButton);
     const sourceControl = historySummaryUi.sourceControl(event);
     if (sourceControl) identity.prepend(sourceControl);
-    const content = event.deleted ? localizer.t(event.deleted.reason === "author"
+    const canonicalContent = event.deleted ? localizer.t(event.deleted.reason === "author"
       ? "Message deleted" : "Unavailable because its source was deleted")
       : event.contentUnavailable ? localizer.t("Refreshing history…") : eventContent(event);
+    const content = sharedCancelled ? localizer.t("Shared Agent request cancelled.") : canonicalContent;
     const quoted = messageActions.quoted(event, events);
     article.append(header);
     if (quoted) article.append(quoted);
@@ -2359,7 +2388,9 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
       // offer the only action that can help: run the same request again.
       const notice = document.createElement("p");
       notice.className = "agent-failure-notice";
-      notice.textContent = localizer.t(timedOutResponse
+      notice.textContent = localizer.t(sharedRequest && timedOutResponse
+        ? "This shared Agent request timed out. Continue starts a new round with the original task and saved context."
+        : timedOutResponse
         ? "This Cloud Agent request timed out. Continue starts a new round with the original task and saved context."
         : "This Agent request failed before it produced an answer.");
       article.append(notice);
@@ -2368,7 +2399,7 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
         const retry = document.createElement("button");
         retry.className = "text-button agent-retry-button";
         retry.type = "button";
-        const continuing = timedOutResponse && request.payload?.execution_profile?.harness === "opencode";
+        const continuing = timedOutResponse && (request.payload?.execution_profile?.harness === "opencode" || Boolean(request.sharedExecution));
         retry.textContent = localizer.t(continuing ? "Continue" : "Retry Agent request");
         retry.dataset.continueCloud = String(continuing);
         retry.setAttribute("data-action", "retry-agent-request");
@@ -2589,7 +2620,9 @@ function renderProgressEntryContent(entry) {
 function renderAgentPendingStatus(request, progressEvents = []) {
   const member = state.session?.members.find((candidate) => candidate.userId === request.actor.id);
   const cloud = request.payload?.execution_profile?.harness === "opencode";
-  const online = cloud || isExecutionRuntime(member?.runtime);
+  const shared = request.sharedExecution;
+  const sharedStarted = shared && progressEvents.some(event => event.sharedExecution?.job_id === shared.job_id);
+  const online = cloud || (shared ? sharedStarted : isExecutionRuntime(member?.runtime));
   const status = document.createElement("div");
   const dots = document.createElement("span");
   const label = document.createElement("span");
@@ -2608,7 +2641,8 @@ function renderAgentPendingStatus(request, progressEvents = []) {
   const runtime = member?.runtime;
   const agentName = runtime?.harness || "Agent";
   if (streamed) label.className = "agent-streamed-line";
-  label.textContent = streamed ? `${agentName}: ${localizer.t("Working")}` : cloud ? localizer.t("Cloud Agent is working…") : online
+  label.textContent = shared ? localizer.t(online ? "Shared Agent is responding…" : "Shared Agent request is queued.")
+    : streamed ? `${agentName}: ${localizer.t("Working")}` : cloud ? localizer.t("Cloud Agent is working…") : online
     ? `${agentName} is responding…`
     : `${agentName} request is queued until the local runtime reconnects.`;
   status.append(dots, label);
@@ -3053,16 +3087,43 @@ function renderComposerPermissions() {
   codeSyncUi.updateContext();
   cloudCodeConsent.updateContext();
   cloudGithubUi.updateContext();
+  sharedAgentsUi.updateContext();
   const common = { session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase };
   const chat = canAppend({ ...common, kind: "human_chat" });
   const harness = currentProjectHarness();
   const resolution = harness === DSH_HARNESS ? currentDshResolution() : currentCodexResolution();
   const cloud = harness === "cloud";
+  const shared = harness === "shared";
+  const sharedChoice = sharedAgentsUi.selected();
+  const sharedIntentScope = `${authenticationGeneration}:${state.currentUser?.id}:${state.session?.id}:${state.sync.contentRevision ?? 0}`;
+  if (pendingSharedAgentIntent?.scope !== sharedIntentScope) pendingSharedAgentIntent = null;
+  if (pendingSharedAgentIntent) {
+    const intent = pendingSharedAgentIntent;
+    const accepted = state.sync.events.find(event => event.type === "agent_request" && event.actor?.id === state.currentUser?.id
+      && event.sessionId === intent.sessionId && event.idempotencyKey === intent.input.idempotency_key
+      && event.sharedExecution?.share_id === intent.input.share_id
+      && event.sharedExecution?.share_revision === intent.input.share_revision);
+    if (accepted) {
+      intent.accepted = true;
+      pendingSharedAgentIntent = null;
+      if (pendingMessageSend?.sharedIntent === intent) {
+        pendingMessageSend.restore(); pendingMessageSend = null;
+      }
+      if (messageInput.value === intent.draft && JSON.stringify(messageActions.metadata()) === intent.metadataFingerprint) {
+        messageInput.value = ""; messageActions.sent();
+      }
+    }
+  }
+  element("shared-agent-recover").hidden = !pendingSharedAgentIntent;
+  element("shared-agent-pending-status").hidden = !pendingSharedAgentIntent;
   const cloudProfile = currentCloudProfile();
-  const contextNotice = cloud ? "" : agentContextUpdateReason(resolution.runtime, state.sync.contentRevision ?? 0);
+  const contextNotice = cloud || shared ? "" : agentContextUpdateReason(resolution.runtime, state.sync.contentRevision ?? 0);
   const codeSubmission = cloud ? cloudCodeConsent.submission() : null;
-  const agentAllowed = chat.allowed && !contextNotice && (cloud ? CLOUD_AGENT_ENTRY_ENABLED && cloudProfile?.available === true && codeSubmission.allowed : resolution.runtime !== null);
-  const agentReason = chat.allowed ? (contextNotice || (cloud ? localizer.t(codeSubmission.reason) || cloudStatusText(cloudProfile) : resolution.reason)) : chat.reason;
+  const agentAllowed = chat.allowed && !contextNotice && (shared ? sharedChoice?.available === true && !pendingSharedAgentIntent
+    : cloud ? CLOUD_AGENT_ENTRY_ENABLED && cloudProfile?.available === true && codeSubmission.allowed : resolution.runtime !== null);
+  const agentReason = chat.allowed ? (contextNotice || (shared ? localizer.t(pendingSharedAgentIntent
+    ? "Confirm the previous shared request before sending a new task." : "Choose an available shared Agent.")
+    : cloud ? localizer.t(codeSubmission.reason) || cloudStatusText(cloudProfile) : resolution.reason)) : chat.reason;
   const sending = Boolean(pendingMessageSend?.());
   sendChatButton.disabled = sending || !chat.allowed;
   sendAgentButton.disabled = sending || !agentAllowed;
@@ -3077,7 +3138,7 @@ function renderComposerPermissions() {
     )
     : null;
   element("agent-target-label").textContent = agentAllowed
-    ? cloud ? cloudStatusText(cloudProfile) : harness === DSH_HARNESS
+    ? shared ? sharedChoice.label : cloud ? cloudStatusText(cloudProfile) : harness === DSH_HARNESS
       ? `${resolution.runtime.deviceName} · ${dshSelection.provider} · ${dshSelection.model}${dshSelection.reasoningEffort ? ` · ${dshSelection.reasoningEffort}` : ""}`
       : `${resolution.runtime.harness} · ${resolution.runtime.provider} · ${agentModelSelect.value}`
     : agentReason;
@@ -3095,6 +3156,8 @@ function renderComposerPermissions() {
 
 function historySummaryExecutionProfile() {
   if (!state.session || !state.project) return null;
+  // Sharing grants execution only; they do not grant native history/snapshot authority.
+  if (currentProjectHarness() === "shared") return null;
   if (currentProjectHarness() === "cloud") {
     const profile = currentCloudProfile();
     return CLOUD_AGENT_ENTRY_ENABLED && hostedAgentStatus.enabled && profile
@@ -3118,6 +3181,7 @@ async function sendMessage(kind) {
   // Enter-to-request never turns into an implicit pause/resume operation.
   if (kind === "agent_request" && agentRequestControl.action() !== "request") return;
   if (kind === "agent_request" && currentProjectHarness() === "cloud") kind = "hosted_agent";
+  if (kind === "agent_request" && currentProjectHarness() === "shared") kind = "shared_agent";
   if (kind === "hosted_agent" && !CLOUD_AGENT_ENTRY_ENABLED) {
     sendError.textContent = localizer.t("Cloud Agent · coming later");
     return;
@@ -3132,6 +3196,10 @@ async function sendMessage(kind) {
   const button = kind === "human_chat" ? sendChatButton : sendAgentButton;
   if (button.disabled || pendingMessageSend?.()) return;
   sendError.textContent = "";
+  if (kind === "shared_agent" && (state.session.mode === "solo" || state.settings.composer.confirmAgentRequest)
+    && !window.confirm(sharedAgentsUi.disclosure(state.session.mode))) {
+    messageInput.focus(); return;
+  }
   if ((kind === "agent_request" || kind === "hosted_agent") && state.settings.composer.confirmAgentRequest
     && !window.confirm(kind === "hosted_agent"
       ? localizer.t("Start OpenCode in the cloud? The request and selected GT Cloud code will be sent for model inference.")
@@ -3150,12 +3218,29 @@ async function sendMessage(kind) {
   pendingMessageSend = isCurrent;
   renderComposerPermissions();
   button.textContent = "Sending…";
+  let sharedAttempt = null;
   try {
     const leading = messageInput.value.length - messageInput.value.trimStart().length;
     const input = { content, idempotencyKey: createIdempotencyKey(kind), replyTo: metadata.replyTo,
       mentions: metadata.mentions.map((mention) => ({ ...mention, start: mention.start - leading, end: mention.end - leading })) };
     if (kind === "human_chat") await api.appendHumanChat(sessionId, input);
-    else if (kind === "hosted_agent") {
+    else if (kind === "shared_agent") {
+      const choice = sharedAgentsUi.selected();
+      if (!choice?.available) throw new Error(localizer.t("Choose an available shared Agent."));
+      const intent = { scope: `${authenticationGeneration}:${state.currentUser?.id}:${sessionId}:${contentRevision}`, sessionId,
+        input: { share_id: choice.target.share_id, share_revision: choice.target.share_revision,
+          execution_profile: { harness: choice.target.harness, provider: choice.target.provider, model: choice.target.model,
+            ...(choice.target.reasoning_effort ? { reasoning_effort: choice.target.reasoning_effort } : {}) },
+          content, content_revision: contentRevision, solo_transfer_ack: state.session.mode === "solo", idempotency_key: input.idempotencyKey,
+          ...(input.replyTo ? { reply_to_event_id: input.replyTo } : {}), ...(input.mentions.length ? { mentions: input.mentions } : {}) },
+        draft, metadataFingerprint };
+      pendingSharedAgentIntent = intent;
+      sharedAttempt = intent;
+      isCurrent.sharedIntent = intent;
+      await api.startSharedAgentRequest(sessionId, intent.input);
+      if (pendingSharedAgentIntent === intent) pendingSharedAgentIntent = null;
+      void sharedAgentsUi.refresh();
+    } else if (kind === "hosted_agent") {
       const submission = cloudCodeConsent.submission();
       if (!submission.allowed) throw new Error(localizer.t(submission.reason));
       const includeCode = submission.includeCode;
@@ -3184,13 +3269,14 @@ async function sendMessage(kind) {
         });
       await api.appendAgentRequest(sessionId, { ...input, contentRevision, executionProfile });
     }
-    if (isCurrent() && messageInput.value === draft && JSON.stringify(messageActions.metadata()) === metadataFingerprint) {
+    if (isCurrent() && !sharedAttempt?.accepted && messageInput.value === draft && JSON.stringify(messageActions.metadata()) === metadataFingerprint) {
       messageInput.value = "";
       messageActions.sent();
       messageInput.focus();
     }
   } catch (error) {
-    if (isCurrent()) sendError.textContent = error.message ?? "The event was not accepted.";
+    if (kind === "shared_agent" && pendingSharedAgentIntent === sharedAttempt && error.status >= 400 && error.status < 500) pendingSharedAgentIntent = null;
+    if (isCurrent() && !sharedAttempt?.accepted) sendError.textContent = error.message ?? "The event was not accepted.";
   } finally {
     if (pendingMessageSend === isCurrent) {
       pendingMessageSend = null;
@@ -3199,6 +3285,25 @@ async function sendMessage(kind) {
     }
   }
 }
+
+element("shared-agent-recover").addEventListener("click", async () => {
+  const intent = pendingSharedAgentIntent, isCurrent = captureWorkspaceScope();
+  if (!intent || intent.scope !== `${authenticationGeneration}:${state.currentUser?.id}:${state.session?.id}:${state.sync.contentRevision ?? 0}`) return;
+  const button = element("shared-agent-recover"); button.disabled = true; sendError.textContent = "";
+  try {
+    await api.startSharedAgentRequest(intent.sessionId, intent.input);
+    if (!isCurrent() || pendingSharedAgentIntent !== intent) return;
+    pendingSharedAgentIntent = null;
+    if (messageInput.value === intent.draft && JSON.stringify(messageActions.metadata()) === intent.metadataFingerprint) {
+      messageInput.value = ""; messageActions.sent();
+    }
+  } catch (error) {
+    if (isCurrent() && pendingSharedAgentIntent === intent) {
+      if (error.status >= 400 && error.status < 500) pendingSharedAgentIntent = null;
+      sendError.textContent = error.message ?? localizer.t("Shared Agent request failed. Refresh and try again.");
+    }
+  } finally { if (isCurrent()) { button.disabled = false; renderComposerPermissions(); } }
+});
 
 /**
  * Re-run a failed request. The recorded execution profile is replayed verbatim,
@@ -3240,7 +3345,22 @@ async function retryAgentRequest(requestId, button, continuing = false) {
       await cloudGithubUi.openTask(request.payload.github_task_id);
       return;
     }
-    if (request.payload?.execution_profile?.harness === "opencode") {
+    if (request.payload?.shared_agent) {
+      const authoritative = currentRequest(); if (!authoritative) return;
+      const shared = authoritative.payload.shared_agent;
+      const owner = authoritative.sharedExecution?.executor_owner_display_name ?? shared.executor_owner_display_name ?? localizer.t("Shared device");
+      if (state.session.mode === "solo" && !window.confirm(localizer.t("Solo disclosure: this task and its conversation context will be sent to {name}'s device.").replace("{name}", owner))) return;
+      if (!currentRequest()) return;
+      retryAgentRequestKeys.set(retryScope, retryKey);
+      await api.startSharedAgentRequest(sessionId, { share_id: shared.share_id, share_revision: shared.share_revision,
+        execution_profile: shared.execution_profile,
+        content: eventContent(authoritative), content_revision: contentRevision,
+        solo_transfer_ack: state.session.mode === "solo", idempotency_key: retryKey,
+        ...(authoritative.replyTo ? { reply_to_event_id: authoritative.replyTo } : {}),
+        ...(authoritative.payload.mentions?.length ? { mentions: authoritative.payload.mentions } : {}) });
+      if (continuing) acceptedContinuation = true;
+      void sharedAgentsUi.refresh();
+    } else if (request.payload?.execution_profile?.harness === "opencode") {
       if (!CLOUD_AGENT_ENTRY_ENABLED) throw new Error(localizer.t("Cloud Agent · coming later"));
       const selection = request.payload?.profile_id?.startsWith("api-")
         ? await api.getHostedAgentSelection(sessionId, request.id) : undefined;
@@ -3657,6 +3777,7 @@ function applyVisualSettings(settings) {
   }
   root.lang = normalized.general.locale;
   localizer.apply(normalized.general.locale);
+  if (localeChanged) sharedAgentsUi.refreshLanguage();
   if (localeChanged) accountDevices.refreshLanguage();
   if (localeChanged) personalCloudApi.refreshLanguage();
   if (localeChanged) cloudCodeConsent.refreshLanguage();
@@ -3764,6 +3885,7 @@ function currentProjectProfile(settings = state.settings) {
 }
 
 function currentProjectHarness(settings = state.settings) {
+  if (settings === state.settings && sharedComposerActive && sharedComposerScope === `${authenticationGeneration}:${selectedSessionGeneration}:${state.project?.id}`) return "shared";
   return state.project ? projectAgentHarness(settings, state.project.id) : "codex";
 }
 
@@ -3776,18 +3898,11 @@ function renderDshRuntimeOptions(select, settings = state.settings) {
   const resolution = currentDshResolution(settings);
   select.replaceChildren();
   if (resolution.choices.length === 0) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "No connected DSH runtime";
-    select.append(option);
+    select.setAttribute("title", localizer.t("No connected DSH runtime"));
     select.disabled = true;
     return;
   }
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = resolution.runtime ? "Choose a DSH runtime" : resolution.reason;
-  placeholder.selected = resolution.runtime === null;
-  select.append(placeholder);
+  select.setAttribute("title", localizer.t(resolution.runtime ? "Choose a DSH runtime" : resolution.reason));
   for (const runtime of resolution.choices) {
     const option = document.createElement("option");
     option.value = runtime.id;
@@ -3797,6 +3912,7 @@ function renderDshRuntimeOptions(select, settings = state.settings) {
     select.append(option);
   }
   select.disabled = false;
+  if (!resolution.runtime) select.selectedIndex = -1;
 }
 
 function dshStoredProjectProfile(runtime, selection) {
@@ -3868,7 +3984,16 @@ function renderAgentProfileControls() {
     option.selected = enabledHarness === harness;
     agentHarnessSelect.append(option);
   }
-  agentHarnessSelect.value = harness;
+  for (const choice of sharedAgentsUi.agents()) {
+    const option = document.createElement("option"); option.value = choice.key;
+    option.textContent = `${choice.label}${choice.available ? "" : ` · ${localizer.t("Unavailable")}`}`;
+    option.disabled = !choice.available; agentHarnessSelect.append(option);
+  }
+  if (harness === "shared" && !sharedAgentsUi.agents().some(choice => choice.key === sharedAgentsUi.selectionKey())) {
+    const option = document.createElement("option"); option.value = sharedAgentsUi.selectionKey();
+    option.textContent = localizer.t("Unavailable"); option.disabled = true; agentHarnessSelect.append(option);
+  }
+  agentHarnessSelect.value = harness === "shared" ? sharedAgentsUi.selectionKey() : harness;
   renderModelOptions(agentModelSelect, profile.model, state.settings);
   const hasEffortChoice = updateEffortControl(agentModelSelect, agentEffortSelect, profile.effort, state.settings);
   renderDshRuntimeOptions(agentDshRuntimeSelect, state.settings);
@@ -3888,6 +4013,7 @@ function renderAgentProfileControls() {
   element("codex-agent-profile-fields").hidden = harness !== "codex";
   element("dsh-agent-profile-fields").hidden = harness !== DSH_HARNESS;
   element("cloud-agent-profile-fields").hidden = harness !== "cloud" || !CLOUD_AGENT_ENTRY_ENABLED;
+  element("shared-agent-profile-fields").hidden = harness !== "shared";
   renderCloudModelOptions(agentCloudModelSelect, state.project ? projectCloudProfile(state.settings, state.project.id) : null);
   if (harness !== DSH_HARNESS) element("agent-request-profile").dataset.layout = "codex";
 }
@@ -3913,6 +4039,10 @@ function updateComposerAgentProfile(changed) {
 
 function updateComposerHarness() {
   if (!state.project) return;
+  const sharedChoice = sharedAgentsUi.agents().find(choice => choice.key === agentHarnessSelect.value);
+  sharedComposerActive = Boolean(sharedChoice);
+  sharedComposerScope = `${authenticationGeneration}:${selectedSessionGeneration}:${state.project.id}`;
+  if (sharedComposerActive) { sharedAgentsUi.select(sharedChoice.key); renderComposerPermissions(); return; }
   if (agentHarnessSelect.value === "cloud" && !CLOUD_AGENT_ENTRY_ENABLED) {
     renderComposerPermissions();
     return;
@@ -4486,7 +4616,7 @@ function maybeNotifyAgentCompletion(event) {
   const content = eventContent(event);
   try {
     new Notification("GatherThread · Agent completed", {
-      body: content ? content.slice(0, 180) : `${event.actor.username}'s Agent completed.`,
+      body: content ? content.slice(0, 180) : event.sharedExecution ? eventAuthorLabel(event, localizer.t) : `${event.actor.username}'s Agent completed.`,
       tag: `gatherthread-agent-${event.id}`,
     });
   } catch {

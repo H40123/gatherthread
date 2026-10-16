@@ -1,4 +1,5 @@
 import type { CaptureFidelity, HarnessName } from "@gatherthread/adapters";
+import type { SharedExecutionCapability } from "@gatherthread/protocol";
 import type {
   CollaborationApi,
   HarnessExecutor,
@@ -23,6 +24,7 @@ export interface ProjectHarnessDescriptor {
   executionProfiles?: readonly RuntimeExecutionProfile[];
   captureFidelity: CaptureFidelity;
   capabilities: readonly string[];
+  sharingCapability?: SharedExecutionCapability;
 }
 
 export interface ProjectHarnessPreflight {

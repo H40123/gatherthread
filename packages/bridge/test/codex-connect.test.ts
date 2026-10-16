@@ -849,6 +849,23 @@ test("explicit workspace skips Desktop reveal and reveal failures or timeouts re
   assert.match(warning, new RegExp(workspacePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
+test("shared source startup publishes OFF before ordinary projection or publishing can block", async () => {
+  const stateRoot = await mkdtemp(path.join(tmpdir(), "gatherthread-source-startup-"));
+  const order: string[] = [];
+  const api = projectApi([], order);
+  const unused = async (): Promise<never> => { throw new Error("Native execution is not part of this startup fence test"); };
+  api.agentSharingApi = () => ({ listShares: unused, listJobs: unused, claim: unused, renewLease: unused,
+    progress: unused, complete: unused, abortAck: unused, reportAvailability: unused, reportSourceAvailability: async (project, runtime, state) => {
+    assert.equal(project, "project-1"); assert.equal(runtime, "runtime-1"); assert.equal(state, "offline"); order.push("shared-off");
+  } });
+  const harness = projectHarness({ order, project() {}, activate() { order.push("activate"); }, prepare() { order.push("prepare"); return 0; } });
+  harness.descriptor.sharingCapability = { version: 1, isolated: true, project_only: true, cancellation: true, liveness_watchdog: true };
+  await initializeProjectSession({ api, actorDeviceId: "device-1", stateRoot, harness, session: session("owner", "multi") });
+  assert.ok(order.indexOf("register") < order.indexOf("shared-off"));
+  assert.ok(order.indexOf("shared-off") < order.indexOf("prepare"));
+  assert.ok(order.indexOf("shared-off") < order.indexOf("activate"));
+});
+
 test("new binding materializes through the authoritative cursor before one-time activation and resumes after failure", async () => {
   const stateRoot = await mkdtemp(path.join(tmpdir(), "gatherthread-connect-order-"));
   const order: string[] = [];

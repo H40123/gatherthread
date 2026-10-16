@@ -241,3 +241,63 @@ An OTP is bound to its browser, mailbox and the account's password version at is
 ### Avatar profile boundary
 
 Only the signed-in account can assign its official avatar through the browser-only self route. Browser Origin, admission, body limit, strict allowlist, active device checks and existing write rate limits apply; native Agent credentials cannot edit a human account's avatar. No file upload, remote image URL, executable image source or user-provided SVG is accepted. Catalog assets are reviewed application resources with initials on failed/unknown images. Session profile reads disclose IDs/avatars only for current project members or readable historical authors, after session authorization; avatar changes do not grant roles or rewrite history. The isolated example keeps its catalog and mutable selections inside the static memory-only sandbox.
+
+## Native Agent sharing preview boundary
+
+Sharing is a project-scoped grant to other current project writers, never an
+account/device credential transfer or general session write grant. Only the
+owner's authenticated browser may save/enable/disable it. The server rejects
+self-allowlists, viewers, foreign-project sources/members and non-execution
+runtimes. Acceptance, claim, lease, progress and completion recheck the exact
+grant revision, current native device, owner/requester membership, writable
+session, history revision, model/effort. A Solo
+transfer additionally requires explicit disclosure acknowledgment. Initial
+browser expiry alone does not revoke a long-lived native grant; owner membership,
+the native device and manual switch remain authoritative.
+
+Native sharing requires complete version-1 isolation/project-only/cancellation/
+liveness-watchdog capability, deletion-aware context and successful native probes.
+The POSIX file facade uses directory descriptors and no-follow opens; it rejects
+traversal, symbolic/hard links, credential/control directories and oversized
+operations. It exposes only list/read/write within the verified project root.
+Codex requires supported local file authentication, a fresh private native home
+outside that root, and a passing native sandbox probe. A blind private auth copy
+stays outside tool roots and is removed with that home; it is never parsed into
+the prompt or sent to GatherThread. DSH uses a fresh scoped SDK Agent and the
+existing native credential service with enforced tool guards/model selection.
+Neither path inherits owner conversations, instructions, Hooks, skills, MCP,
+shell, browser or network tools. Provider transport remains native; this is not
+offline inference. Agent availability follows its connection, source capability
+and execution leases; desktop locking alone does not revoke sharing. No graphical
+session observer, Swift toolchain or OS event subscription is required. Windows
+confinement remains unverified and refuses sharing. Linux native acceptance is
+a separate gate. No claim is made about subscription refresh support.
+
+Quota reservation and canonical acceptance are one SQLite write transaction.
+Daily usage survives grant edits and interrupted calls; unused reserved time and
+the native serial slot release only after confirmed exit. Disable/offline,
+lost authority, deadline or lease loss fence publication and cancel pending work.
+Running work must abort; unconfirmed cleanup retains capacity. A separate bounded
+native watchdog runs during long calls. Confirmed native exit also writes a
+bounded private stop-receipt outbox (0700 directory, 0600 metadata-only files,
+atomic durable replacement). Reconnect resends only these proved stopped
+executions; it never acknowledges unknown orphan work. Receipts contain no task
+body, history or provider credentials and are removed after acknowledgment.
+Reconnect/startup commits OFF before READY;
+READY and old idempotent READY receipts never re-enable grants. Capacity limits
+retain emergency Stop capacity and a persistent source barrier when availability
+receipts are full.
+
+The private capsule contains only the authorized public derived context; private
+history and raw native tool/hidden-reasoning content are excluded. The requester
+remains canonical author; only the readonly server-origin `shared_execution`
+proof may identify the execution owner. Untrusted `payload.shared_agent` alone
+cannot authorize attribution. Borrowers and user-facing MCP omit source/device
+IDs, allowlists and aggregate usage. Native controls remain separate from user
+tools. Author erasure invalidates in-flight work and scrubs private copies under
+the existing content-revision fence. Settled jobs with confirmed cleanup and
+grant-action receipts expire after 14 days; bounded source safety receipts and
+barriers retain their runtime lifetime. Canonical proof survives private job
+cleanup but is cleared/anonymized by applicable erasure/account deletion.
+See [ADR-0056](adr/0056-project-scoped-native-agent-sharing.md) and the
+[wire contract](INTERFACE_CONTRACTS.md#native-agent-sharing-preview-contract).

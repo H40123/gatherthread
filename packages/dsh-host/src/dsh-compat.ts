@@ -14,6 +14,7 @@ import type {
 } from "./types.js";
 import { hasCompletedDshLocalTurn } from "./connector.js";
 import { parseDshAssistantStreamFrame } from "./live-event-mapper.js";
+import { DshSharedAgentExecutor } from "./shared-agent-executor.js";
 
 /** Exact upstream surface verified by the isolated Host and SDK PoCs. */
 export const DSH_COMPATIBILITY = Object.freeze({
@@ -961,6 +962,8 @@ export function createDshHostFacade(options: DshCompatibilityOptions): DshHostFa
   };
 
   return {
+    createSharedExecutor: () => new DshSharedAgentExecutor({ context: options.context, workspacePath: options.workspacePath,
+      ...(options.moduleImporter === undefined ? {} : { moduleImporter: options.moduleImporter }) }),
     get sessionId() { return nativeSessionId; },
     ...(options.contextBinding === undefined ? {} : { contextDeletionVersion: 1 as const }),
     resetCanonicalContext(revision) {

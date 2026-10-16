@@ -355,6 +355,10 @@ export interface CodexAppServerClientOptions {
   threadStartTimeoutMs?: number;
   turnTimeoutMs?: number;
   maxMessageBytes?: number;
+  /** Dedicated shared-call process group; ordinary project clients keep their existing lifecycle. */
+  isolatedProcessGroup?: boolean;
+  /** Explicit shared-only dynamic tools. Omitted for ordinary native clients. */
+  dynamicToolCall?: (input: { threadId: string; turnId: string; callId: string; namespace: string | null; tool: string; arguments: unknown }) => Promise<{ success: boolean; contentItems: Array<{ type: "inputText"; text: string }> }>;
 }
 
 export interface CodexAppServerExecutorOptions {
@@ -448,7 +452,9 @@ export class CodexAppServerClient {
   readonly #notifications = new Set<(notification: JsonRpcNotification) => void>();
   readonly #threadTokenUsage = new Map<string, CodexThreadTokenUsage>();
   readonly #failureListeners = new Set<(error: Error) => void>();
+  readonly #dynamicCalls = new Set<Promise<void>>();
   #child: ChildProcessWithoutNullStreams | undefined;
+  #isolatedProcessGroupId: number | undefined;
   #startPromise: Promise<void> | undefined;
   #stdoutBuffer = Buffer.alloc(0);
   #stderr = "";
@@ -462,6 +468,7 @@ export class CodexAppServerClient {
 
   constructor(options: CodexAppServerClientOptions) {
     if (!options.command.trim()) throw new Error("Codex command must be non-empty");
+    if (options.isolatedProcessGroup && process.platform === "win32") throw new Error("Shared Codex process-group isolation is unsupported on Windows");
     this.#options = {
       ...options,
       env: withoutGatherThreadCredentials(options.env ?? process.env),
@@ -1023,6 +1030,10 @@ export class CodexAppServerClient {
     for (const listener of this.#failureListeners) listener(closingError);
     this.#child = undefined;
     try {
+      if (this.#isolatedProcessGroupId !== undefined) {
+        await terminateOwnedProcessGroup(this.#isolatedProcessGroupId);
+        this.#isolatedProcessGroupId = undefined;
+      }
       if (child && child.exitCode === null && child.signalCode === null) {
         await new Promise<void>((resolve) => {
           let settled = false;
@@ -1040,6 +1051,9 @@ export class CodexAppServerClient {
           child.kill("SIGTERM");
         });
       }
+      // Shared file-tool callbacks must reach their actual subprocess exit;
+      // killing the native RPC process alone is not a cleanup acknowledgment.
+      await Promise.allSettled([...this.#dynamicCalls]);
     } finally {
       // A client is an operation-scoped App Server owner. Reset all process
       // lifecycle state so the next projection can start a fresh child after
@@ -1075,9 +1089,11 @@ export class CodexAppServerClient {
       cwd: this.#options.cwd,
       env: this.#options.env,
       shell: false,
+      detached: this.#options.isolatedProcessGroup === true,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.#child = child;
+    if (this.#options.isolatedProcessGroup && child.pid !== undefined) this.#isolatedProcessGroupId = child.pid;
     child.stdout.on("data", (chunk: Buffer) => this.#consumeStdout(chunk));
     child.stderr.on("data", (chunk: Buffer) => {
       this.#stderr = `${this.#stderr}${chunk.toString("utf8")}`.slice(-4_096);
@@ -1144,6 +1160,20 @@ export class CodexAppServerClient {
     }
     if (typeof message.method !== "string") return;
     if (typeof message.id === "number" || typeof message.id === "string") {
+      if (message.method === "item/tool/call" && this.#options.dynamicToolCall !== undefined) {
+        const input = isObject(message.params) ? message.params : undefined;
+        if (this.#dynamicCalls.size >= 16 || !input || typeof input.threadId !== "string" || typeof input.turnId !== "string"
+          || typeof input.callId !== "string" || typeof input.tool !== "string" || (input.namespace !== null && typeof input.namespace !== "string")) {
+          this.#fail(new Error("Codex emitted an invalid shared dynamic tool request")); return;
+        }
+        const id = message.id;
+        const work = this.#options.dynamicToolCall({ threadId: input.threadId, turnId: input.turnId, callId: input.callId,
+          namespace: input.namespace, tool: input.tool, arguments: input.arguments })
+          .then(result => { if (this.#child?.stdin.writable) this.#respondToServerRequest(id, result); })
+          .catch(() => { if (this.#child?.stdin.writable) this.#respondToServerRequest(id,
+            { success: false, contentItems: [{ type: "inputText", text: "Shared project tool operation refused." }] }); });
+        this.#dynamicCalls.add(work); void work.finally(() => this.#dynamicCalls.delete(work)); return;
+      }
       if (message.method === "mcpServer/elicitation/request") {
         this.#respondToServerRequest(message.id, {
           action: "decline",
@@ -1199,11 +1229,35 @@ export class CodexAppServerClient {
     for (const listener of this.#failureListeners) listener(error);
     const child = this.#child;
     if (child && child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
-      const force = setTimeout(() => child.kill("SIGKILL"), 5_000);
+      if (this.#isolatedProcessGroupId !== undefined) {
+        try { process.kill(-this.#isolatedProcessGroupId, "SIGTERM"); } catch { /* close() verifies cleanup independently. */ }
+      } else child.kill("SIGTERM");
+      const groupId = this.#isolatedProcessGroupId;
+      const force = setTimeout(() => {
+        if (groupId !== undefined) {
+          if (this.#isolatedProcessGroupId === groupId) try { process.kill(-groupId, "SIGKILL"); } catch { /* close() still owns confirmation. */ }
+        } else child.kill("SIGKILL");
+      }, 5_000);
       force.unref();
-      child.once("close", () => clearTimeout(force));
+      if (groupId === undefined) child.once("close", () => clearTimeout(force));
     }
+  }
+}
+
+async function terminateOwnedProcessGroup(groupId: number): Promise<void> {
+  if (!Number.isSafeInteger(groupId) || groupId < 1 || groupId === process.pid) throw new Error("Invalid isolated native process group");
+  const alive = () => {
+    try { process.kill(-groupId, 0); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw new Error("Shared native process cleanup could not be verified"); }
+  };
+  if (!alive()) return;
+  try { process.kill(-groupId, "SIGTERM"); } catch { if (!alive()) return; }
+  const forceAt = Date.now() + 5000, finishAt = forceAt + 2000;
+  let forced = false;
+  while (alive()) {
+    if (!forced && Date.now() >= forceAt) { process.kill(-groupId, "SIGKILL"); forced = true; }
+    if (Date.now() >= finishAt) throw new Error("Shared native process cleanup could not be confirmed");
+    await new Promise<void>(resolve => setTimeout(resolve, 20));
   }
 }
 
@@ -3804,7 +3858,7 @@ async function scrubCodexExecutionStates(
 }
 
 function isAlreadyPresentLocalOutput(event: CanonicalEvent, runtimeId: string): boolean {
-  return event.runtime?.runtimeId === runtimeId
+  return event.sharedExecution === undefined && event.runtime?.runtimeId === runtimeId
     && ["agent_progress", "agent_response", "tool_call", "tool_result"].includes(event.type);
 }
 

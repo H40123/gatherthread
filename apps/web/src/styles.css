@@ -1,6 +1,7 @@
 @import "katex/dist/katex.min.css";
 @import "driver.js/dist/driver.css";
 @import "./onboarding.css";
+@import "./shared-agent.css";
 
 :root {
   color-scheme: light;

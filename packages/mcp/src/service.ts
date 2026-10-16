@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { redactText, redactValue } from "@gatherthread/adapters";
 import { parseHistoryContext, validateContextReadInput } from "@gatherthread/bridge";
+import { AgentSharesResponseSchema, SharedAgentRequestInputSchema, SharedAgentRequestAcceptedSchema,
+  AgentShareJobResponseSchema, IdSchema, type AgentShare, type SharedAgentRequestInput } from "@gatherthread/protocol";
 import type {
   CollaborationApi,
   LocalConversationSyncControl,
@@ -133,6 +135,31 @@ const RUNTIME_TOOL_DEFINITIONS = [
   }, ["session_id", "capture_fidelity", "content"], MUTATING_TOOL_ANNOTATIONS),
 ] as const;
 
+const SHARING_TOOL_DEFINITIONS = [
+  tool("collaboration_list_shared_agents", "List another member's authorized shared Codex/DSH Agents in this project, including exact grant revision, model and remaining limits. Sharing management and native execution controls are not exposed", {
+    project_id: stringSchema("Project identifier"),
+  }, ["project_id"]),
+  tool("collaboration_request_shared_agent", "Request another member's explicitly shared Agent. This consumes that member's compute and your sharing allowance. Send the captured content_revision without refreshing it on retry. Solo tasks and public conversation context go to the owner's device: set solo_transfer_ack=true only after the human has explicitly agreed to that transfer. This bounded standalone call does not grant recursive execution or sharing management", {
+    session_id: stringSchema("Writable session identifier"), share_id: stringSchema("Exact authorized share identifier"),
+    share_revision: integerSchema("Current revision returned by collaboration_list_shared_agents", 1),
+    execution_profile: { type: "object", additionalProperties: false, properties: {
+      harness: { type: "string", enum: ["codex", "deepseek-harness"] }, provider: stringSchema("Advertised provider"),
+      model: stringSchema("Model from execution_profiles"), reasoning_effort: stringSchema("Advertised reasoning effort")
+    }, required: ["harness", "provider", "model"] },
+    content: { ...stringSchema("Visible task sent to the sharing member's device"), minLength: 1, maxLength: 16000 },
+    content_revision: integerSchema("Captured revision from the context/history used to prepare this task", 0),
+    solo_transfer_ack: { type: "boolean", description: "Explicit human acknowledgement of transfer from Solo to the owner's device; default false" },
+    idempotency_key: idempotencySchema(), reply_to_event_id: stringSchema("Optional same-session public event to quote"),
+    mentions: { type: "array", maxItems: 32, items: { type: "object", additionalProperties: false,
+      properties: { user_id: stringSchema("Current project member"), start: integerSchema("UTF-16 start offset", 0), end: integerSchema("UTF-16 end offset", 1) },
+      required: ["user_id", "start", "end"] } },
+  }, ["session_id", "share_id", "share_revision", "content", "content_revision", "idempotency_key"], MUTATING_TOOL_ANNOTATIONS),
+  tool("collaboration_cancel_shared_agent_request", "Cancel your own exact shared-Agent request, including queued work. Running work is fenced and its slot stays reserved until the native executor confirms exit. This cannot close someone else's sharing hotspot", {
+    session_id: stringSchema("Writable session identifier"), request_event_id: stringSchema("Your canonical shared-Agent request event ID"),
+    idempotency_key: idempotencySchema(),
+  }, ["session_id", "request_event_id", "idempotency_key"], MUTATING_TOOL_ANNOTATIONS),
+] as const;
+
 export class CollaborationMcpService {
   readonly #api: CollaborationApi;
   readonly #serverName: string;
@@ -150,7 +177,8 @@ export class CollaborationMcpService {
     this.#allowProviderRequestCapture = options.allowProviderRequestCapture === true;
     this.#toolProfile = options.toolProfile ?? "user";
     this.#localSync = options.localSync;
-    this.#toolDefinitions = this.#toolProfile === "runtime" ? RUNTIME_TOOL_DEFINITIONS : USER_TOOL_DEFINITIONS;
+    this.#toolDefinitions = this.#toolProfile === "runtime" ? RUNTIME_TOOL_DEFINITIONS
+      : [...USER_TOOL_DEFINITIONS, ...(options.api.agentSharingRequestApi ? SHARING_TOOL_DEFINITIONS : [])];
     this.#toolNames = new Set(this.#toolDefinitions.map(({ name }) => name));
   }
 
@@ -241,6 +269,32 @@ export class CollaborationMcpService {
       case "collaboration_request_agent":
         result = await this.#appendVisibleMessage(args, "agent_request");
         break;
+      case "collaboration_list_shared_agents": {
+        if (Object.keys(args).some(key => key !== "project_id")) throw new Error("Shared Agent listing accepts only project_id");
+        const projectId = IdSchema.parse(args.project_id);
+        const listed = AgentSharesResponseSchema.parse(await this.#requireSharingApi().list(projectId));
+        if (listed.shares.some(share => share.project_id !== projectId)) throw new Error("Shared Agent response scope mismatch");
+        result = { shares: listed.shares.filter(share => share.source_runtime_id === undefined && share.allowed_user_ids === undefined)
+          .map(publicSharedAgent) };
+        break;
+      }
+      case "collaboration_request_shared_agent": {
+        const { session_id: sessionId, ...body } = args;
+        const input = SharedAgentRequestInputSchema.parse(body);
+        if (JSON.stringify(redactValue(input)) !== JSON.stringify(input)) throw new Error("Remove credentials from a shared Agent task before sending it");
+        const target = IdSchema.parse(sessionId);
+        result = acceptedSharedAgentResult(await this.#requireSharingApi().start(target, input), target, input);
+        break;
+      }
+      case "collaboration_cancel_shared_agent_request": {
+        if (Object.keys(args).some(key => !["session_id", "request_event_id", "idempotency_key"].includes(key))) throw new Error("Unknown shared request cancellation field");
+        const sessionId = IdSchema.parse(args.session_id), requestId = IdSchema.parse(args.request_event_id),
+          key = requiredIdempotencyKey(args, "idempotency_key");
+        const cancelled = AgentShareJobResponseSchema.parse(await this.#requireSharingApi().cancel(sessionId, requestId, { idempotency_key: key }));
+        if (cancelled.job.session_id !== sessionId || cancelled.job.request_event_id !== requestId) throw new Error("Shared Agent response scope mismatch");
+        result = cancelled;
+        break;
+      }
       case "collaboration_get_connection_status":
         result = await this.#connectionStatus(requiredString(args, "project_id"));
         break;
@@ -292,6 +346,11 @@ export class CollaborationMcpService {
   #requireLocalSync(): LocalConversationSyncControl {
     if (!this.#localSync) throw new Error("Local conversation upload controls require an active local connector");
     return this.#localSync;
+  }
+  #requireSharingApi() {
+    const api = this.#api.agentSharingRequestApi?.();
+    if (!api) throw new Error("Shared Agent requests require a compatible authorized connector; no ordinary Agent fallback was used");
+    return api;
   }
 
   async #connectionStatus(projectId: string): Promise<unknown> {
@@ -429,6 +488,21 @@ export class CollaborationMcpService {
     if (!operation) throw new Error(`The configured collaboration API does not support ${name}`);
     return operation.bind(this.#api) as NonNullable<CollaborationApi[K]>;
   }
+}
+
+function acceptedSharedAgentResult(raw: unknown, sessionId: string, input: SharedAgentRequestInput) {
+  const result = SharedAgentRequestAcceptedSchema.parse(raw), { event, job } = result, proof = event.shared_execution;
+  if (event.session_id !== sessionId || job.session_id !== sessionId || job.request_event_id !== event.id
+    || event.type !== "agent_request" || event.idempotency_key !== input.idempotency_key || event.actor_user_id !== job.requester_user_id
+    || job.share_id !== input.share_id || job.share_revision !== input.share_revision
+    || proof?.job_id !== job.id || proof.share_id !== input.share_id || proof.share_revision !== input.share_revision
+    || JSON.stringify(proof.execution_profile) !== JSON.stringify(job.execution_profile)
+    || input.execution_profile && JSON.stringify(input.execution_profile) !== JSON.stringify(job.execution_profile)) throw new Error("Shared Agent response scope mismatch");
+  return result;
+}
+function publicSharedAgent(share: AgentShare) {
+  const { source_runtime_id: _source, owner_device_id: _device, allowed_user_ids: _allowlist, total_usage: _total, ...publicFields } = share;
+  return publicFields;
 }
 
 function tool(

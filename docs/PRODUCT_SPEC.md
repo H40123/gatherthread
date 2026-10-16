@@ -216,6 +216,58 @@ The macOS primary package is a DMG with an adjacent Applications drag target and
 
 ### Account avatars
 
-The Web Settings → Profile picker selects an official catalog image or the initials fallback. Selection is account-wide across projects, Solo/Multi sessions and devices. Save avatar persists the selection separately from browser preferences; canceling an unsaved selection does not change the account. The current-account entry, members and chat history show current avatars, including retained messages from members who have left. Historical display names remain frozen. Human chat and Agent requests use the user's avatar; Agent replies (including summaries) combine the reply owner's avatar with a small robot badge and a localized “{name}'s Agent” label. Ownership comes from the authenticated event actor, never a name match or the requester's identity. Deleted accounts use a neutral fallback.
+The Web Settings → Profile picker selects an official catalog image or the initials fallback. Selection is account-wide across projects, Solo/Multi sessions and devices. Save avatar persists the selection separately from browser preferences; canceling an unsaved selection does not change the account. The current-account entry, members and chat history show current avatars, including retained messages from members who have left. Historical display names remain frozen. Human chat and Agent requests use the user's avatar; Agent replies (including summaries) combine the reply owner's avatar with a small robot badge and a localized “{name}'s Agent” label. Ordinary reply ownership comes from the authenticated event actor, never a name match. Verified shared-native replies use the server's execution-owner proof for the executor avatar and label while retaining the requester as canonical author. Deleted accounts use a neutral fallback.
 
 The first catalog contains six original temporary animal images; the team can replace reviewed image sources while preserving stable IDs. Images are shipped with the app, including the isolated example. User uploads, arbitrary image URLs and native Codex/DSH UI avatars are outside this version. Current-session metadata refreshes with the existing five-second member refresh; selected avatars appear immediately after a successful save in the same browser. The example remains memory-only.
+
+## Share my native Agent (local implementation preview)
+
+Agent sharing opens a list of the owner's connected native Codex/DSH Agents,
+one row per exact source. Each row shows its name, recipient avatar stack (with
+ellipsis overflow) or an add-recipient hint, and a compact green Start / red Stop
+button. The rest of the row opens that Agent's settings in the same dialog.
+Each source has one configuration. Recipient and limit changes autosave, with
+pending/saved/error feedback; there is no separate Save button. Start flushes the
+latest valid draft and atomically saves and enables it. Stop remains independent
+of pending reads and cancels existing work. Empty recipient lists save disabled.
+Unsupported/offline sources remain visible; offline configuration can be saved,
+but starting requires a ready supported connection. Recovery never enables it.
+
+The owner selects recipients and combined daily call/time limits. The Web's
+initial totals are 100 calls and 300 minutes, shared by all allowed members,
+without an additional smaller per-member cap. Direct API clients may retain their
+explicit per-member limits (protocol defaults 20 calls / 60 minutes). Each request
+has at most 12 minutes, or the configured total time if smaller. Counters reset
+at UTC midnight. The first version executes each shared Agent serially.
+
+Allowed writers find each owner's Agent directly in the workspace Agent selector
+and independently choose an advertised model and reasoning effort. A grant shares
+the source connection, not an owner-fixed model. Every accepted request freezes its model/effort and grant
+revision; revoked grants or removed models cannot silently substitute a new
+choice. Dropdown hints are not selectable options. No invitation acceptance is
+needed. Cloud Agent sharing and monetary limits remain outside this version.
+
+Accepted calls consume the call allowance even if cancelled. Admission reserves
+the maximum request duration and releases unused time after confirmed exit;
+pending cleanup continues holding time and execution capacity.
+
+Shared Agents can serve the same project's Multi and the requester's own Solo.
+Before a Solo call, the user must confirm that its task and public conversation
+context go to the sharing member's device. The request also uses that member's
+native model account/allowance. This does not give the sharing member ordinary
+write access to the Solo. The execution can list, read and write permitted files
+inside the owner's current project directory through three bounded file tools;
+shell, network tools, other Agents and owner history/skills/Hooks are unavailable.
+
+Turning sharing off, Agent connection loss or an authorization change cancels queued
+requests and stops running shared work; late results are refused. The borrower
+can stop their own request. Automatic recovery retains the allowlist/settings
+but never turns sharing back on: the owner must do so manually. Unsupported
+native versions, authentication or permission probes leave sharing
+unavailable while ordinary Agent connections keep their existing behavior.
+Availability follows the Agent connection and execution leases; desktop locking
+is not a separate trigger. Sharing requires no graphical-session observer or
+Swift toolchain. Windows shared execution is unsupported in this preview.
+Real provider/account and Windows/Linux acceptance remain separate from
+fictional browser fixtures.
+See [ADR-0056](adr/0056-project-scoped-native-agent-sharing.md).

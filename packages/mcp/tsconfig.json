@@ -9,6 +9,7 @@
   "include": ["src/**/*.ts", "test/**/*.ts"],
   "references": [
     { "path": "../adapters" },
-    { "path": "../bridge" }
+    { "path": "../bridge" },
+    { "path": "../protocol" }
   ]
 }

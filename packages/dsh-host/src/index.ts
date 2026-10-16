@@ -23,3 +23,4 @@ export * from "./path-security.js";
 export * from "./project-manager.js";
 export * from "./state-store.js";
 export * from "./types.js";
+export * from "./shared-agent-executor.js";

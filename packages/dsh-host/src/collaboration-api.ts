@@ -51,6 +51,7 @@ export function adaptCollaborationApi(client: CollaborationApi): DshCollaboratio
     throw new Error("GatherThread Collaboration API lacks required session, heartbeat, progress, or local-turn support");
   }
   return {
+    ...(client.agentSharingApi === undefined ? {} : { agentSharingApi: () => client.agentSharingApi!() }),
     listProjectSessions: (projectId) => listProjectSessions.call(client, projectId),
     readEvents: (sessionId, afterSequence, limit) => client.readEvents(sessionId, afterSequence, limit),
     ...(readContext === undefined ? {} : {

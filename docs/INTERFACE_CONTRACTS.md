@@ -353,3 +353,86 @@ A verified reset retains account/project/membership IDs, roles and quotas and at
 - `GET /v1/sessions/:session_id/avatar-profiles` returns `{ data: { profiles: [{ user_id, avatar_id }] } }` after current session membership/device authorization. Profiles cover current project members and historical authors whose events the caller can read, including departed members. No global user lookup is exposed. Unknown catalog IDs fall back to null for presentation.
 - Avatars are a mutable read model; no avatar field or profile-change event is added to the canonical event log. Sequence, replay payloads, frozen `actor_display_name`, history injection and native transcript projection remain unchanged. Web refresh is best-effort on session selection and existing member polling, with account/selection/save fences for late responses. Avatar reads run independently of project/session loading, membership and permission refresh, and realtime connection. HTTP avatar reads have a four-second deadline; one in-flight profile read per active selection prevents overlapping polls. Failed reads retain confirmed presentation and may retry without delaying authoritative access changes.
 - Persistence adds nullable `users.avatar_id`; existing databases migrate additively and default to initials. Account deletion removes the original user's profile; the existing shared-history deletion identity has no avatar. Rollback clients ignore avatar metadata; replacing an image retains its stable ID. The catalog/schema consistency test guards newly added IDs.
+
+## Native Agent sharing preview contract
+
+Strict additive schemas are in `packages/protocol/src/agent-sharing.ts`. All
+routes retain the normal `{data}`/`{error}` envelope, active-device/ACL gates and
+strict snake_case inputs. Browser mutations also require the existing allowed
+Origin/JSON checks. This local preview changes no package or release version.
+
+| Route | Authority and shape |
+| --- | --- |
+| `GET /v1/projects/:project/agent-sharing-sources` | Current project writer; returns only their native execution source metadata, advertised profiles, capability and separate `sharing_availability`. No local session/path/credential is returned. |
+| `GET /v1/projects/:project/agent-shares` | Current member; owner configurations plus grants explicitly allowing this writer. Borrower rows omit `source_runtime_id`, `owner_device_id`, `allowed_user_ids` and `total_usage`. |
+| `POST /v1/projects/:project/agent-shares` | Owner browser only. `{share_id?,source_runtime_id,execution_profile?,enabled?,allowed_user_ids,limits,expected_revision,idempotency_key}`; create uses null revision, update uses the exact positive revision. Omitted enabled retains legacy save-as-disabled behavior; explicit true atomically saves and enables. Empty allowlists require disabled. Web changes autosave with explicit enabled state. |
+| `POST /v1/projects/:project/agent-shares/:share/control` | Owner browser only. `{action:enable\|disable,expected_revision?,idempotency_key}`; enable requires revision. Emergency disable may omit it. |
+| `POST /v1/sessions/:session/shared-agent-requests` | Current writer; 202 `{event,job,replayed}`. `{share_id,share_revision,execution_profile?,content,content_revision,solo_transfer_ack?,reply_to_event_id?,mentions?,idempotency_key}`. Solo defaults to false and must explicitly acknowledge transfer. |
+| `POST /v1/sessions/:session/shared-agent-requests/:request/cancel` | Original requester with current write access; `{idempotency_key}` returns `{job,replayed}`. |
+| `POST /v1/agent-sharing-sources/availability` | Exact independently authorized native device; `{project_id,source_runtime_id,state,idempotency_key}`. States are ready/locked/offline/unsupported. |
+| `POST /v1/agent-shares/:share/availability` | Exact owner native device; `{state,idempotency_key}` applies the same source availability operation. |
+| `GET /v1/agent-share-jobs?project_id=:project` | Owner native device; bounded content-free queued/running/cleanup summaries. No browser Origin or Fetch Metadata is accepted on native controls. |
+| `POST /v1/agent-share-jobs/:job/{claim,lease,progress,complete,abort-ack}` | Exact owner native device/source only. Claim takes a stable key and returns a validated private capsule. Later operations require exact positive `claim_attempt` and a key; output adds observed model/effort. Completion/abort acknowledgment requires literal `executor_stopped:true`. |
+
+`sharing_capability` on runtime registration is strict version 1 with literal
+true `isolated`, `project_only`, `cancellation` and `liveness_watchdog`, plus ordinary
+`context_deletion_version:1`. Native capability registration initially records
+offline; explicit source READY is separate and does not enable a saved grant.
+LOCKED fences all sources on that owner's native device; other non-ready reports
+are source-scoped. Same-key availability retries return current state without
+reapplying an old READY. New enable/save/calls never substitute an unavailable
+source or profile. Limits/defaults and UTC behavior are owned by
+[Product specification](PRODUCT_SPEC.md#share-my-native-agent-local-implementation-preview).
+
+Grants share one exact native source, not a fixed model. Discovery includes its
+current public `execution_profiles` catalog; the legacy `execution_profile` is
+only a default. Borrowers pass their exact selected profile per request, including
+MCP requests. An omitted request profile retains the saved exact legacy default and fails if
+it is no longer advertised; new clients always send their selected profile. Admission and every native lease revalidate the frozen job profile.
+A removed model cancels affected work without disabling other advertised models;
+harness/device/source identity cannot change silently. Explicit disabled saves
+may persist configuration while the source is offline. Stop remains an independent
+control mutation; revision CAS prevents an older autosave from re-enabling it.
+
+Grant and request receipts bind exact input digests. A changed retry conflicts;
+same-key accepted requests do not reserve another call. The capsule pins source,
+device, project, context digest/revision/head, deadline and lease; context and the
+whole capsule are bounded at 256 KiB and 288 KiB respectively. Claims use a
+15-second renewable lease capped by the original deadline. Native shutdown or
+revocation cannot free an unconfirmed execution slot. The browser bounds reads
+and mutation acknowledgments independently; unknown acceptance retains the same
+body/key for explicit recovery before another request. Emergency disable remains
+available during an uncertain enable.
+
+Web sharing reads, sends, recovery and cancel operations each bound the whole
+HTTP exchange (including the response body) to eight seconds and abort their
+own transport. Uncertain retries preserve the original body/key. An uncertain
+enable is displayed as stoppable in both owner switches. Before a first-create
+receipt supplies a grant ID, Stop independently discovers the owner's exact
+source grant and disables it; it never resends enable to discover the ID. If
+acceptance is not yet discoverable, Stop remains explicitly unconfirmed and
+retryable. A newer Stop fences late enable responses. A verified canonical
+request matching the borrower's scope/key/share settles its send intent; Stop
+is available from that request identity without awaiting the send/recovery
+response, and cancel retries retain their independent key.
+
+`CanonicalEvent.shared_execution` is optional readonly broker-origin proof;
+generic event inputs cannot supply it. Request and native-result payloads retain
+server-owned `shared_agent` metadata, but legacy payload text alone is untrusted.
+Shared results keep the requester as canonical actor and expose the owner only
+through verified execution identity. Public provenance omits the ordinary source
+runtime ID; server cancellation/failure markers make no native fidelity claim.
+User MCP exposes only `collaboration_list_shared_agents`,
+`collaboration_request_shared_agent` and `collaboration_cancel_shared_agent_request`,
+through the project-scoped borrower API; it exposes no sharing management or
+native claim/availability controls.
+
+Persistence adds separate grants, allowlists, usage, jobs, receipts, capabilities
+and source barriers, plus an additive canonical origin marker. Existing ordinary
+requests and older events have no shared execution proof. Rollback clients may
+ignore additive output but must not execute broker-owned requests through normal
+claims. All participating server/Web/native clients need the strict shared
+schemas; unsupported native platforms refuse sharing rather than broadening tools.
+Retention, erasure and native permission requirements are owned by
+[Security](SECURITY.md#native-agent-sharing-preview-boundary); the decision is in
+[ADR-0056](adr/0056-project-scoped-native-agent-sharing.md).
