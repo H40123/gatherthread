@@ -404,6 +404,18 @@ and mutation acknowledgments independently; unknown acceptance retains the same
 body/key for explicit recovery before another request. Emergency disable remains
 available during an uncertain enable.
 
+Web sharing reads, sends, recovery and cancel operations each bound the whole
+HTTP exchange (including the response body) to eight seconds and abort their
+own transport. Uncertain retries preserve the original body/key. An uncertain
+enable is displayed as stoppable in both owner switches. Before a first-create
+receipt supplies a grant ID, Stop independently discovers the owner's exact
+source grant and disables it; it never resends enable to discover the ID. If
+acceptance is not yet discoverable, Stop remains explicitly unconfirmed and
+retryable. A newer Stop fences late enable responses. A verified canonical
+request matching the borrower's scope/key/share settles its send intent; Stop
+is available from that request identity without awaiting the send/recovery
+response, and cancel retries retain their independent key.
+
 `CanonicalEvent.shared_execution` is optional readonly broker-origin proof;
 generic event inputs cannot supply it. Request and native-result payloads retain
 server-owned `shared_agent` metadata, but legacy payload text alone is untrusted.

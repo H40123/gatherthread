@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { ApiError, HttpCollaborationApi } from "../src/api.js";
 import { composerAgentAction, mountAgentRequestControl, retryAgentRequestPermission } from "../src/agent-request-control.js";
 import { eventAuthorLabel, eventExecutionOwner } from "../src/avatars.js";
@@ -44,7 +46,7 @@ test("shared API uses exact separate routes with Cookie credentials and no nativ
       ["https://gatherthread.example/v1/sessions/session-b/shared-agent-requests", "POST"],
     ]);
     assert.ok(requests.every(request => request.options.credentials === "include" && !request.options.headers.Authorization));
-    assert.equal(requests[0].options.signal, controller.signal); assert.equal(requests[1].options.signal, undefined);
+    assert.ok(requests.every(request => request.options.signal instanceof AbortSignal));
     assert.deepEqual(JSON.parse(requests[2].options.body), input);
   } finally { globalThis.fetch = previous; }
 });
@@ -138,7 +140,7 @@ test("queued shared requests are immediately stoppable, author-scoped and never 
   const ui = mountAgentRequestControl({ button, targetLabel: label, errorNode: error,
     api: { cancelSharedAgentRequest: async (...args) => { calls.push(args); if (once) { once = false; throw new Error("Lost cancellation ACK"); } },
       pauseAgentRequest: async () => assert.fail("shared cancellation must not use local pause") },
-    getContext: () => ({ scope: "bob:session-b:0", sessionId: "session-b", userId: "bob", events: [request], writable: true }),
+    getContext: () => ({ scope: "bob:session-b:0", sessionId: "session-b", userId: "bob", events: [request], writable: true, sending: true }),
     makeKey: kind => `${kind}-fixture-${++count}`, onChange: () => ui.update() });
   ui.update(); ui.handleClick(); await flush(); ui.handleClick(); await flush();
   assert.equal(calls.length, 2); assert.equal(calls[0][2].idempotency_key, calls[1][2].idempotency_key);
@@ -166,12 +168,14 @@ test("shared pending status follows verified execution progress rather than the 
 });
 function sendFixture({ mode = "solo", approve = true, apiOverride } = {}) {
   const calls = [], confirmations = [], message = { value: input.content, focus() {}, disabled: false };
-  const node = () => ({ disabled: false, childNodes: [], textContent: "", replaceChildren() {}, focus() {}, hidden: false, closest: () => node() });
+  const node = () => ({ disabled: false, dataset: {}, childNodes: [], textContent: "", setAttribute() {},
+    ownerDocument: { createElement: () => ({ setAttribute() {}, textContent: "" }) },
+    replaceChildren() {}, focus() {}, hidden: false, closest: () => node() });
   const nodes = new Map(), el = id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); };
   let metadata = { replyTo: null, mentions: [] };
   let counter = 0;
   const context = vm.createContext({ state: { currentUser: { id: "bob" }, project: { id: "project-a" }, session: { id: "session-b", mode },
-    settings: { composer: { confirmAgentRequest: false } }, sync: { contentRevision: 0 } },
+    settings: { composer: { confirmAgentRequest: false } }, sync: { contentRevision: 0, events: [] } },
     authenticationGeneration: 1, selectedSessionGeneration: 1, workspaceLoadGeneration: 0,
     currentProjectHarness: () => "shared", agentRequestControl: { action: () => "request", update() {} }, messageInput: message,
     sendChatButton: node(), sendAgentButton: node(), sendError: node(), pendingMessageSend: null, pendingSharedAgentIntent: null,
@@ -182,7 +186,7 @@ function sendFixture({ mode = "solo", approve = true, apiOverride } = {}) {
     historySummaryUi: { updateContext() {} }, renderAgentProfileControls() {},
     currentCloudProfile: () => null, agentContextUpdateReason: () => "",
     messageActions: { metadata: () => metadata, sent() {} },
-    sharedAgentsUi: { selected: () => ({ available: true, target: { kind: "shared", share_id: share.id, share_revision: share.revision } }),
+    sharedAgentsUi: { selected: () => ({ available: true, target: { kind: "shared", share_id: share.id, share_revision: share.revision, ...profile } }),
       disclosure: () => "Solo disclosure: task goes to Alice's device.", refresh: async () => {}, updateContext() {} },
     api: { startSharedAgentRequest: async (id, body) => { calls.push([id, body]); if (apiOverride) return apiOverride(id, body); } },
     window: { confirm: value => { confirmations.push(value); return approve; } },
@@ -248,4 +252,131 @@ test("shared acceptance binds the borrower's selected model/effort, independent 
     reasoning_effort: "high", model: profile.model, provider: profile.provider, harness: profile.harness } });
   await assert.rejects(api.startSharedAgentRequest("session-b", { ...input,
     execution_profile: { ...profile, reasoning_effort: "low" } }), safeResponseError);
+});
+
+async function receiptServer(t, handle) {
+  const server = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    handle(request.url, chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined, response);
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+test("partial-202 send and cancel receipts cannot lock canonical Stop; lost cancel retries use one key", async t => {
+  let accept, endSend, cancelSeen; const accepted = new Promise(resolve => { accept = resolve; });
+  const firstCancel = new Promise(resolve => { cancelSeen = resolve; });
+  const cancellations = []; let running = false;
+  const baseUrl = await receiptServer(t, (path, body, response) => {
+    if (path.endsWith("/cancel")) {
+      cancellations.push(body); running = false;
+      if (cancellations.length === 1) { response.writeHead(200, { "content-type": "application/json" }); response.write('{"data":'); cancelSeen(); }
+      else response.end(JSON.stringify({ data: { job: { ...job, status: "cancelled" }, replayed: true } }));
+    } else {
+      running = true; response.writeHead(202, { "content-type": "application/json" }); response.write('{"data":');
+      endSend = () => response.end(JSON.stringify(receipt) + "}"); accept(body);
+    }
+  });
+  const api = new HttpCollaborationApi({ baseUrl, sharingDeadlineMs: 500 });
+  const f = sendFixture({ apiOverride: (id, body) => api.startSharedAgentRequest(id, body) });
+  const context = f.context;
+  const ui = mountAgentRequestControl({ button: context.sendAgentButton, targetLabel: f.el("agent-target-label"), errorNode: context.sendError, api,
+    getContext: () => ({ scope: "bob:session-b:0", sessionId: "session-b", userId: "bob", events: context.state.sync.events,
+      writable: true, sending: Boolean(context.pendingMessageSend?.()) }),
+    makeKey: () => "cancel-lost-ack-stable-key", onChange: () => context.renderComposerPermissions() });
+  context.agentRequestControl = ui;
+  const sending = context.sendMessage("agent_request"), body = await accepted;
+  assert.equal(Boolean(context.pendingMessageSend?.()), true);
+  context.state.sync.events = [{ id: event.id, sessionId: event.session_id, type: "agent_request", actor: { id: "bob" },
+    idempotencyKey: body.idempotency_key, payload: event.payload, sharedExecution: shared }];
+  context.renderComposerPermissions();
+  assert.equal(context.pendingSharedAgentIntent, null); assert.equal(context.pendingMessageSend, null);
+  assert.equal(context.sendAgentButton.dataset.agentAction, "stop"); assert.equal(context.sendAgentButton.disabled, false);
+  assert.equal(f.message.value, ""); f.message.value = "A newer draft";
+  ui.handleClick(); await firstCancel;
+  assert.equal(running, false, "cancel transport proceeds before original send response ends");
+  await sending;
+  for (let index = 0; context.sendAgentButton.disabled && index < 100; index++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(context.sendAgentButton.disabled, false, "cancel acknowledgement has its own deadline");
+  ui.handleClick();
+  for (let index = 0; cancellations.length < 2 && index < 100; index++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(cancellations.length, 2); assert.deepEqual(cancellations[0], cancellations[1]);
+  await flush(); endSend();
+  assert.equal(f.message.value, "A newer draft"); assert.equal(context.pendingSharedAgentIntent, null);
+  assert.equal(running, false, "late original receipt cannot resume execution");
+});
+
+test("send and same-key recovery both time out on a partial body without creating another intent", async t => {
+  const starts = [];
+  const baseUrl = await receiptServer(t, (_path, body, response) => {
+    starts.push(body); response.writeHead(202, { "content-type": "application/json" }); response.write('{"data":');
+  });
+  const api = new HttpCollaborationApi({ baseUrl, sharingDeadlineMs: 200 });
+  const f = sendFixture({ apiOverride: (id, body) => api.startSharedAgentRequest(id, body) });
+  await f.context.sendMessage("agent_request");
+  const intent = f.context.pendingSharedAgentIntent; assert.ok(intent); assert.equal(f.el("shared-agent-recover").disabled, false);
+  f.message.value = "Keep this new draft";
+  await f.context.recoverSharedRequest();
+  assert.equal(f.context.pendingSharedAgentIntent, intent); assert.equal(starts.length, 2); assert.deepEqual(starts[0], starts[1]);
+  assert.equal(f.el("shared-agent-recover").disabled, false); assert.equal(f.message.value, "Keep this new draft");
+});
+
+test("external abort bounds a sharing body read and does not reuse a caller's AbortSignal", async t => {
+  let received; const ready = new Promise(resolve => { received = resolve; });
+  const baseUrl = await receiptServer(t, (_path, _body, response) => {
+    response.writeHead(200, { "content-type": "application/json" }); response.write('{"data":'); received();
+  });
+  const api = new HttpCollaborationApi({ baseUrl }), controller = new AbortController();
+  const reading = api.listAgentShares("project-a", { signal: controller.signal }); await ready; controller.abort();
+  await assert.rejects(reading, error => error.code === "request_aborted" && error.status === 0);
+});
+
+test("canonical acceptance during recovery fences its late failure without clearing a newer draft", async () => {
+  let failRecovery, count = 0;
+  const f = sendFixture({ apiOverride: () => ++count === 1 ? Promise.reject(new Error("Lost receipt"))
+    : new Promise((_resolve, reject) => { failRecovery = reject; }) });
+  await f.context.sendMessage("agent_request");
+  const intent = f.context.pendingSharedAgentIntent, recovery = f.context.recoverSharedRequest(); await flush();
+  f.message.value = "New draft while recovering";
+  const canonical = { id: event.id, sessionId: event.session_id, type: "agent_request", actor: { id: "bob" },
+    idempotencyKey: intent.input.idempotency_key, payload: event.payload, sharedExecution: shared };
+  for (const invalid of [{ ...canonical, actor: { id: "alice" } }, { ...canonical, sessionId: "another-session" },
+    { ...canonical, idempotencyKey: "different-key" }, { ...canonical, sharedExecution: undefined },
+    { ...canonical, sharedExecution: { ...shared, share_revision: 2 } }]) {
+    f.context.state.sync.events = [invalid]; f.context.renderComposerPermissions();
+    assert.equal(f.context.pendingSharedAgentIntent, intent, "only matching server-origin identity settles the intent");
+  }
+  f.context.state.sync.events = [canonical]; f.context.renderComposerPermissions();
+  assert.equal(f.context.pendingSharedAgentIntent, null);
+  failRecovery(new Error("Late recovery failure")); await recovery;
+  assert.equal(f.context.sendError.textContent, ""); assert.equal(f.message.value, "New draft while recovering");
+});
+
+test("canonical terminal confirmation releases Stop without waiting for its lost HTTP receipt", async () => {
+  let reject, events = [{ id: event.id, actor: { id: "bob" }, type: "agent_request", payload: event.payload }];
+  const doc = { createElement: () => ({ setAttribute() {}, textContent: "" }) };
+  const button = { ownerDocument: doc, disabled: false, dataset: {}, attributes: {},
+    setAttribute(key, value) { this.attributes[key] = value; }, replaceChildren() {} }, error = {};
+  const ui = mountAgentRequestControl({ button, targetLabel: {}, errorNode: error,
+    api: { cancelSharedAgentRequest: () => new Promise((_resolve, fail) => { reject = fail; }) },
+    getContext: () => ({ scope: "bob:session-b:0", sessionId: "session-b", userId: "bob", events, writable: true }),
+    makeKey: () => "stop-terminal-fixture-key", onChange: () => ui.update() });
+  ui.update(); ui.handleClick(); await flush(); assert.equal(button.disabled, true);
+  events = [...events, { id: "cancelled-a", type: "agent_response", replyTo: event.id, payload: { outcome: "cancelled" } }];
+  ui.update(); assert.equal(button.attributes["aria-busy"], "false"); assert.equal(button.dataset.agentAction, "request");
+  // In the app the composer supplies the request action's enabled state.
+  reject(new Error("Late lost cancellation receipt")); await flush();
+  assert.equal(error.textContent, ""); assert.equal(ui.action(), "request");
+});
+
+test("a late successful send receipt cannot clear a new draft identical to the already accepted task", async () => {
+  let resolve; const f = sendFixture({ apiOverride: () => new Promise(done => { resolve = done; }) });
+  const sending = f.context.sendMessage("agent_request"); await flush();
+  const intent = f.context.pendingSharedAgentIntent;
+  f.context.state.sync.events = [{ id: event.id, sessionId: event.session_id, type: "agent_request", actor: { id: "bob" },
+    idempotencyKey: intent.input.idempotency_key, payload: event.payload, sharedExecution: shared }];
+  f.context.renderComposerPermissions(); assert.equal(f.message.value, "");
+  f.message.value = input.content; resolve(); await sending;
+  assert.equal(f.message.value, input.content, "canonical confirmation already consumed the original draft exactly once");
 });

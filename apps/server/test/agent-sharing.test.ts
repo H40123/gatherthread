@@ -505,6 +505,21 @@ test("late autosaves and accepted start retries cannot reopen an explicitly stop
     assert.equal(replay.replayed, true); assert.equal(replay.share.enabled, false);
   } finally { f.close(); }
 });
+test("borrower lost-cancel retries and late request acceptance retain one cancelled job and reject native output", () => {
+  const f = fixture(); try {
+    const share = f.enable(f.save().id), requestKey = "accepted-request-lost-receipt";
+    const started = f.start(share.id, f.peer, f.session, requestKey); f.claim(started.job.id);
+    const cancel = { idempotency_key: "borrower-lost-cancel-receipt" };
+    f.sharing.cancelRequest(f.peer, f.session.id, started.event.id, cancel);
+    const stopped = f.sharing.cancelRequest(f.peer, f.session.id, started.event.id, cancel);
+    assert.equal(stopped.replayed, true); assert.equal(stopped.job.status, "cancelled");
+    const late = f.start(share.id, f.peer, f.session, requestKey);
+    assert.equal(late.replayed, true); assert.equal(late.event.id, started.event.id); assert.equal(late.job.status, "cancelled");
+    assert.equal(f.sharing.store.usage(f.sharing.store.row(share.id), f.peer.user_id).calls, 1);
+    assert.throws(() => f.complete(started.job.id), code("agent_share_lease_expired"));
+    assert.equal(f.sharing.store.job(started.job.id).status, "cancelled");
+  } finally { f.close(); }
+});
 test("borrower model discovery never publishes credential-shaped native catalog labels", () => {
   const f = fixture(); try {
     const share = f.enable(f.save().id), sensitive = { provider: "fixture", model: "password=fictional-test-only" };

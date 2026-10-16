@@ -3097,6 +3097,23 @@ function renderComposerPermissions() {
   const sharedChoice = sharedAgentsUi.selected();
   const sharedIntentScope = `${authenticationGeneration}:${state.currentUser?.id}:${state.session?.id}:${state.sync.contentRevision ?? 0}`;
   if (pendingSharedAgentIntent?.scope !== sharedIntentScope) pendingSharedAgentIntent = null;
+  if (pendingSharedAgentIntent) {
+    const intent = pendingSharedAgentIntent;
+    const accepted = state.sync.events.find(event => event.type === "agent_request" && event.actor?.id === state.currentUser?.id
+      && event.sessionId === intent.sessionId && event.idempotencyKey === intent.input.idempotency_key
+      && event.sharedExecution?.share_id === intent.input.share_id
+      && event.sharedExecution?.share_revision === intent.input.share_revision);
+    if (accepted) {
+      intent.accepted = true;
+      pendingSharedAgentIntent = null;
+      if (pendingMessageSend?.sharedIntent === intent) {
+        pendingMessageSend.restore(); pendingMessageSend = null;
+      }
+      if (messageInput.value === intent.draft && JSON.stringify(messageActions.metadata()) === intent.metadataFingerprint) {
+        messageInput.value = ""; messageActions.sent();
+      }
+    }
+  }
   element("shared-agent-recover").hidden = !pendingSharedAgentIntent;
   element("shared-agent-pending-status").hidden = !pendingSharedAgentIntent;
   const cloudProfile = currentCloudProfile();
@@ -3219,6 +3236,7 @@ async function sendMessage(kind) {
         draft, metadataFingerprint };
       pendingSharedAgentIntent = intent;
       sharedAttempt = intent;
+      isCurrent.sharedIntent = intent;
       await api.startSharedAgentRequest(sessionId, intent.input);
       if (pendingSharedAgentIntent === intent) pendingSharedAgentIntent = null;
       void sharedAgentsUi.refresh();
@@ -3251,14 +3269,14 @@ async function sendMessage(kind) {
         });
       await api.appendAgentRequest(sessionId, { ...input, contentRevision, executionProfile });
     }
-    if (isCurrent() && messageInput.value === draft && JSON.stringify(messageActions.metadata()) === metadataFingerprint) {
+    if (isCurrent() && !sharedAttempt?.accepted && messageInput.value === draft && JSON.stringify(messageActions.metadata()) === metadataFingerprint) {
       messageInput.value = "";
       messageActions.sent();
       messageInput.focus();
     }
   } catch (error) {
     if (kind === "shared_agent" && pendingSharedAgentIntent === sharedAttempt && error.status >= 400 && error.status < 500) pendingSharedAgentIntent = null;
-    if (isCurrent()) sendError.textContent = error.message ?? "The event was not accepted.";
+    if (isCurrent() && !sharedAttempt?.accepted) sendError.textContent = error.message ?? "The event was not accepted.";
   } finally {
     if (pendingMessageSend === isCurrent) {
       pendingMessageSend = null;
@@ -3280,7 +3298,7 @@ element("shared-agent-recover").addEventListener("click", async () => {
       messageInput.value = ""; messageActions.sent();
     }
   } catch (error) {
-    if (isCurrent()) {
+    if (isCurrent() && pendingSharedAgentIntent === intent) {
       if (error.status >= 400 && error.status < 500) pendingSharedAgentIntent = null;
       sendError.textContent = error.message ?? localizer.t("Shared Agent request failed. Refresh and try again.");
     }

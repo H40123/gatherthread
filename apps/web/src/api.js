@@ -81,8 +81,9 @@ export class ApiError extends Error {
 }
 
 export class HttpCollaborationApi {
-  constructor({ baseUrl = "" } = {}) {
+  constructor({ baseUrl = "", sharingDeadlineMs = 8000 } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
+    this.sharingDeadlineMs = sharingDeadlineMs;
     this.actors = new Map();
     this.sessionHeads = new Map();
   }
@@ -619,14 +620,35 @@ export class HttpCollaborationApi {
     return this.#append(sessionId, "agent_request", input);
   }
 
+  async sharingRequest(path, { signal, ...options } = {}) {
+    const controller = new AbortController();
+    let timer, rejectAbort;
+    const aborted = new Promise((_, reject) => { rejectAbort = reject; });
+    const abort = () => {
+      rejectAbort(new ApiError("Shared Agent request interrupted.", { code: "request_aborted" }));
+      controller.abort();
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      if (signal?.aborted) { abort(); return await aborted; }
+      return await Promise.race([this.request(path, { ...options, signal: controller.signal }), aborted,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new ApiError("Shared Agent acknowledgement timed out.", { code: "request_timeout" }));
+            controller.abort();
+          }, this.sharingDeadlineMs);
+        })]);
+    } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
+  }
+
   listAgentShares(projectId, { signal } = {}) {
     return sharingResponse(AgentSharesResponseSchema,
-      this.request(`/v1/projects/${encodeURIComponent(projectId)}/agent-shares`, { signal }), { projectId });
+      this.sharingRequest(`/v1/projects/${encodeURIComponent(projectId)}/agent-shares`, { signal }), { projectId });
   }
 
   async listAgentSharingSources(projectId, { signal } = {}) {
     const result = await sharingResponse(AgentShareSourcesResponseSchema,
-      this.request(`/v1/projects/${encodeURIComponent(projectId)}/agent-sharing-sources`, { signal }));
+      this.sharingRequest(`/v1/projects/${encodeURIComponent(projectId)}/agent-sharing-sources`, { signal }));
     return result.runtimes.map(runtime => ({ id: runtime.id, sessionId: runtime.session_id, projectId, deviceId: runtime.device_id,
       purpose: runtime.purpose, harness: runtime.harness, provider: runtime.provider, model: runtime.model, status: runtime.status,
       ...(runtime.sharing_capability ? { sharingCapability: runtime.sharing_capability } : {}),
@@ -638,14 +660,14 @@ export class HttpCollaborationApi {
 
   saveAgentShare(projectId, input, { signal } = {}) {
     return sharingResponse(AgentShareResponseSchema,
-      this.request(`/v1/projects/${encodeURIComponent(projectId)}/agent-shares`, {
+      this.sharingRequest(`/v1/projects/${encodeURIComponent(projectId)}/agent-shares`, {
         method: "POST", body: JSON.stringify(sharingInput(SaveAgentShareInputSchema, input)), signal,
       }), { projectId, shareId: input.share_id });
   }
 
   controlAgentShare(projectId, shareId, input, { signal } = {}) {
     return sharingResponse(AgentShareResponseSchema,
-      this.request(`/v1/projects/${encodeURIComponent(projectId)}/agent-shares/${encodeURIComponent(shareId)}/control`, {
+      this.sharingRequest(`/v1/projects/${encodeURIComponent(projectId)}/agent-shares/${encodeURIComponent(shareId)}/control`, {
         method: "POST", body: JSON.stringify(sharingInput(ControlAgentShareInputSchema, input)), signal,
       }), { projectId, shareId });
   }
@@ -653,14 +675,14 @@ export class HttpCollaborationApi {
   startSharedAgentRequest(sessionId, input, { signal } = {}) {
     const body = sharingInput(SharedAgentRequestInputSchema, input);
     return sharingResponse(SharedAgentRequestAcceptedSchema,
-      this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/shared-agent-requests`, {
+      this.sharingRequest(`/v1/sessions/${encodeURIComponent(sessionId)}/shared-agent-requests`, {
         method: "POST", body: JSON.stringify(body), signal,
       }), { sessionId, shareId: body.share_id, shareRevision: body.share_revision, executionProfile: body.execution_profile });
   }
 
   cancelSharedAgentRequest(sessionId, requestId, input, { signal } = {}) {
     return sharingResponse(AgentShareJobResponseSchema,
-      this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/shared-agent-requests/${encodeURIComponent(requestId)}/cancel`, {
+      this.sharingRequest(`/v1/sessions/${encodeURIComponent(sessionId)}/shared-agent-requests/${encodeURIComponent(requestId)}/cancel`, {
         method: "POST", body: JSON.stringify(sharingInput(ClaimAgentShareJobInputSchema, input)), signal,
       })).then(result => {
         if (result.job.session_id !== sessionId || result.job.request_event_id !== requestId) {

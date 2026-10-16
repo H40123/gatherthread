@@ -192,12 +192,19 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
       .replace("{calls}", () => String(value.calls)).replace("{call_limit}", () => String(calls))
       .replace("{minutes}", () => String(Math.ceil((value.seconds_used + value.seconds_reserved) / 60))).replace("{minute_limit}", () => String(seconds / 60));
   }
-  function setToggle(node, share, ready) {
-    const stopping = Boolean(share?.enabled);
+  function stopTarget(share, sourceId) {
+    const pending = mutation ?? attempt;
+    return Boolean(share?.enabled || pending?.sourceId === sourceId
+      && (pending.kind === "control" || pending.kind === "save" && pending.input.enabled));
+  }
+  function setToggle(node, share, ready, sourceId) {
+    const stopping = stopTarget(share, sourceId);
     node.textContent = t(stopping ? "Stop sharing" : "Start sharing"); node.dataset.enabled = String(stopping);
     node.setAttribute("aria-pressed", String(stopping));
-    const canStopPending = share && (mutation?.kind === "save" && mutation.input.enabled || attempt?.kind === "save" && attempt.input.enabled);
-    node.disabled = !getContext()?.writable || Boolean(mutation || attempt) && !canStopPending || !stopping && !ready;
+    const stoppingNow = mutation?.kind === "control";
+    const pending = mutation ?? attempt;
+    node.disabled = !getContext()?.writable || stoppingNow || Boolean(pending) && (!stopping || pending.sourceId !== sourceId)
+      || !stopping && !ready;
   }
   function updateControls() {
     const c = getContext(); button.disabled = !c?.projectId || !c?.userId;
@@ -210,7 +217,7 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
       : t("This connection does not support project-confined shared execution. Update or choose another connection.");
     back.disabled = Boolean(mutation || attempt); refreshButton.disabled = readBusy;
     retry.hidden = !attempt; retry.disabled = Boolean(mutation);
-    setToggle(toggle, selected, ready); editorState(); renderPicker();
+    setToggle(toggle, selected, ready, source.value); editorState(); renderPicker();
   }
   function renderOwnList() {
     const focused = doc.activeElement?.dataset?.sourceId; let restore;
@@ -231,10 +238,10 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
       edit.append(details, avatars); edit.setAttribute("aria-label", `${choice.label} · ${t("Sharing recipients")}`);
       edit.disabled = Boolean(mutation || attempt) || !c?.writable;
       edit.addEventListener("click", () => beginEdit(choice.key));
-      const smallToggle = btn("", undefined, "sharing-toggle sharing-toggle-compact"); setToggle(smallToggle, share, sourceReady(choice));
-      smallToggle.setAttribute("aria-label", `${t(share?.enabled ? "Stop sharing" : "Start sharing")} · ${choice.label}`);
+      const smallToggle = btn("", undefined, "sharing-toggle sharing-toggle-compact"); setToggle(smallToggle, share, sourceReady(choice), choice.key);
+      smallToggle.setAttribute("aria-label", `${smallToggle.textContent} · ${choice.label}`);
       smallToggle.addEventListener("click", () => {
-        if (share?.enabled) stopSharing(share);
+        if (stopTarget(share, choice.key)) stopSharing(share, choice.key);
         else { beginEdit(choice.key); if (allowedIds().length) startSharing(); else { setStatus("Choose sharing recipients to start."); membersField.focus?.(); } }
       });
       row.append(edit, smallToggle); ownList.append(row); if (choice.key === focused) restore = edit;
@@ -339,8 +346,19 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
     const active = () => current(gen, c) && epoch === mutationEpoch && mutation === intent;
     mutation = intent; mutationController = controller; setStatus(intent.kind === "save" ? "Saving sharing settings…" : "Updating sharing…"); setError(""); updateControls(); renderOwnList();
     try {
-      const result = await bounded(signal => intent.kind === "save" ? api.saveAgentShare(c.projectId, intent.input, { signal })
-        : api.controlAgentShare(c.projectId, intent.shareId, intent.input, { signal }), controller);
+      const result = await bounded(async signal => {
+        if (intent.kind === "save") return api.saveAgentShare(c.projectId, intent.input, { signal });
+        // A create can already be accepted without its response (and ID) reaching
+        // the browser. Discover by exact owner/source; never retry enable to stop.
+        if (!intent.shareId) {
+          const result = await api.listAgentShares(c.projectId, { signal });
+          if (!active() || signal.aborted) throw Object.assign(new Error("Sharing stopped waiting"), { uncertain: true });
+          intent.shareId = result.shares.find(share => share.owner_user_id === c.userId
+            && share.source_runtime_id === intent.sourceId)?.id;
+          if (!intent.shareId) throw Object.assign(new Error("Sharing acceptance is not confirmed"), { uncertain: true });
+        }
+        return api.controlAgentShare(c.projectId, intent.shareId, intent.input, { signal });
+      }, controller);
       if (!active() || controller.signal.aborted) return;
       const share = result.share; shares = [...shares.filter(item => item.id !== share.id), share]; loaded = true; attempt = null;
       if (source.value === share.source_runtime_id) {
@@ -361,9 +379,13 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
     }
   }
   function startSharing() { requestedStart = true; saveDraft(); }
-  function stopSharing(share = selected) {
-    if (!share) return;
-    void perform({ kind: "control", shareId: share.id, input: { action: "disable", idempotency_key: makeKey("agent-share-disable") } });
+  function stopSharing(share = selected, sourceId = source.value) {
+    if (!sourceId) return;
+    // An unconfirmed disable is retried with the same key and resolved identity.
+    const previous = mutation ?? attempt;
+    const intent = previous?.kind === "control" && previous.sourceId === sourceId ? previous
+      : { kind: "control", sourceId, shareId: share?.id, input: { action: "disable", idempotency_key: makeKey("agent-share-disable") } };
+    void perform(intent);
   }
   async function open() {
     updateContext(); if (button.disabled) return;
@@ -388,7 +410,7 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
   editor.addEventListener("submit", event => { event.preventDefault(); startSharing(); });
   source.addEventListener("change", () => beginEdit(source.value));
   for (const input of [callsInput, minutesInput]) input.addEventListener("input", markDirty);
-  toggle.addEventListener("click", () => selected?.enabled ? stopSharing() : startSharing());
+  toggle.addEventListener("click", () => stopTarget(selected, source.value) ? stopSharing() : startSharing());
   retry.addEventListener("click", () => { if (attempt && !mutation) void perform(attempt); });
   back.addEventListener("click", () => { if (mutation || attempt) return; if (dirty) saveDraft();
     if (dirty && !mutation) return;

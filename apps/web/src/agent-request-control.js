@@ -90,12 +90,19 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
     const current = view();
     if (resumeIntent?.scope !== current.scope) resumeIntent = null;
     if (stopIntent?.scope !== current.scope) stopIntent = null;
+    if (operation?.scope === current.scope && operation.action === "stop"
+      && current.events.some(event => event.type === "agent_response" && targetId(event) === operation.requestId)) {
+      operation.confirmed = true;
+      operation = null;
+    }
     const busy = operation?.scope === current.scope;
     const labels = { request: current.requestLabel ?? "Request my agent", wait: "Waiting for Agent…", pause: "Pause Agent", resume: "Resume Agent", stop: "Stop shared Agent" };
     const label = busy ? operation.action === "stop" ? "Stopping…" : operation.action === "pause" ? "Pausing…" : "Resuming…" : labels[current.action];
     // Reuse the same stable button and keep its accessible name meaningful.
-    // Sending owns the button until its HTTP write settles.
-    if (!current.sending) {
+    // A canonical shared request is independently stoppable even while its
+    // original send/recovery HTTP response is still incomplete.
+    const independentStop = current.action === "stop";
+    if (!current.sending || independentStop) {
       const icon = button.ownerDocument.createElement("span");
       icon.setAttribute("aria-hidden", "true");
       icon.textContent = current.action === "stop" ? "■" : current.action === "pause" ? "Ⅱ" : current.action === "resume" ? "▶" : "✦";
@@ -105,7 +112,7 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
     button.dataset.agentAction = current.action;
     button.setAttribute("aria-busy", String(busy));
     if (current.action !== "request") {
-      button.disabled = busy || current.sending || !current.writable || current.action === "wait";
+      button.disabled = busy || current.sending && !independentStop || !current.writable || current.action === "wait";
       targetLabel.textContent = t(current.action === "stop" ? "Stops your shared request and cancels queued work; your draft stays here." : current.action === "resume"
         ? "Starts a new request with latest history, using the original Agent and model."
         : current.action === "wait" ? current.cloud ? "Cloud Agent is working…" : "Waiting for your Agent to start this request."
@@ -125,7 +132,7 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
     if (current.action === "request") return false;
     if (button.disabled || operation?.scope === current.scope || !current.writable) return true;
     if (current.action === "resume" && !confirmResume(current.request)) return true;
-    const pending = { scope: current.scope, action: current.action };
+    const pending = { scope: current.scope, action: current.action, requestId: current.request?.id };
     operation = pending;
     errorNode.textContent = "";
     onChange();
@@ -157,7 +164,7 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
           await api.appendAgentRequest(current.sessionId, { ...resumeAgentRequestInput(source, key), contentRevision });
         }
       } catch (error) {
-        if (getContext().scope === current.scope) errorNode.textContent = t(error.message ?? "Unable to control this Agent request. Try again.");
+        if (getContext().scope === current.scope && !pending.confirmed) errorNode.textContent = t(error.message ?? "Unable to control this Agent request. Try again.");
       } finally {
         if (operation === pending) operation = null;
         if (getContext().scope === current.scope) onChange();

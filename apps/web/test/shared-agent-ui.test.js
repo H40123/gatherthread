@@ -200,3 +200,55 @@ test("invalid unsaved fields stay editable when Back is clicked", async () => {
   f.el("back").click(); assert.equal(f.el("editor").hidden, false); assert.equal(f.el("overview").hidden, true);
   assert.equal(f.calls.length, 0); f.ui.clear();
 });
+
+for (const existing of [false, true]) for (const expired of [false, true]) {
+  test(`uncertain enable is independently stoppable: ${existing ? "saved grant" : "first create"}, ${expired ? "lost receipt" : "in-flight receipt"}`, async () => {
+    let release, accepted;
+    const f = fixture({ initial: existing ? [{ ...grant, enabled: false }] : [], deadline: 5, autosave: 1000,
+      overrides: { saveAgentShare: async (_project, input) => {
+        f.calls.push(["save", _project, structuredClone(input)]);
+        accepted = { ...grant, id: input.share_id ?? "accepted-new-share", revision: existing ? 2 : 1, enabled: true };
+        f.shares = [accepted]; return new Promise(resolve => { release = resolve; });
+      } } });
+    await openEditor(f); if (!existing) checkBob(f);
+    f.el("toggle").click(); await flush();
+    if (expired) { await wait(); assert.equal(f.el("retry").hidden, false); }
+    assert.equal(f.el("toggle").textContent, "Stop sharing"); assert.equal(f.el("toggle").disabled, false);
+    const rowToggle = f.el("list").children[0].children[1];
+    assert.equal(rowToggle.textContent, "Stop sharing"); assert.equal(rowToggle.disabled, false);
+    // Exercise both action dispatchers, including the row with no saved ID.
+    (expired ? rowToggle : f.el("toggle")).click(); await flush();
+    const stopped = f.calls.find(call => call[0] === "control");
+    assert.equal(stopped[2], accepted.id); assert.equal(stopped[3].action, "disable");
+    release({ share: { ...accepted, enabled: true } }); await flush();
+    assert.equal(f.el("toggle").textContent, "Start sharing"); assert.equal(f.el("state").textContent, "Sharing is off");
+    f.ui.clear();
+  });
+}
+
+test("first-create Stop stays recoverable until acceptance is discoverable and never retries the enable", async () => {
+  let release; const f = fixture({ autosave: 1000, overrides: {
+    saveAgentShare: async (_p, input) => { f.calls.push(["save", _p, input]); return new Promise(resolve => { release = resolve; }); },
+  } });
+  await openEditor(f); checkBob(f); f.el("toggle").click(); await flush();
+  f.el("toggle").click(); await flush();
+  assert.equal(f.el("retry").hidden, false); assert.equal(f.el("toggle").textContent, "Stop sharing");
+  assert.equal(f.calls.filter(call => call[0] === "control").length, 0, "missing grant must not be reported as stopped");
+  f.shares = [{ ...grant, id: "late-accepted-create" }]; release({ share: { ...grant, id: "late-accepted-create" } }); await flush();
+  f.el("toggle").click(); await flush();
+  assert.equal(f.calls.filter(call => call[0] === "save").length, 1, "Stop discovery never resubmits an enable");
+  assert.equal(f.calls.find(call => call[0] === "control")[2], "late-accepted-create");
+  assert.equal(f.el("toggle").textContent, "Start sharing"); f.ui.clear();
+});
+
+test("lost owner Stop acknowledgement retries the same disable key", async () => {
+  const f = fixture({ initial: [grant] }), control = f.api.controlAgentShare; let drop = true;
+  f.api.controlAgentShare = async (...args) => { const result = await control(...args);
+    if (drop) { drop = false; throw new Error("Lost disable receipt"); } return result; };
+  await openEditor(f); f.el("toggle").click(); await flush();
+  assert.equal(f.el("toggle").textContent, "Stop sharing"); assert.equal(f.el("toggle").disabled, false);
+  f.el("toggle").click(); await flush();
+  const controls = f.calls.filter(call => call[0] === "control");
+  assert.equal(controls.length, 2); assert.equal(controls[0][3].idempotency_key, controls[1][3].idempotency_key);
+  assert.equal(f.el("toggle").textContent, "Start sharing"); f.ui.clear();
+});
