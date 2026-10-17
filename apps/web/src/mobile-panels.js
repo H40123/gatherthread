@@ -132,6 +132,46 @@ export function mountMobilePanels({ document: doc, window: win, t = value => val
   invite.addEventListener("click", () => { if (!ownerInvitations?.hidden) showMembers("invite"); });
   join.addEventListener("click", () => showMembers("join"));
 
+  const memberOptions = new Map();
+  function restoreMemberOptions() {
+    const list = el("member-list");
+    for (const [row, entry] of memberOptions) {
+      // A membership refresh replaces rows. Never resurrect controls belonging
+      // to an earlier project, role or member list.
+      if (row.parentNode !== list) continue;
+      for (const { control, marker } of entry.controls) { marker.after(control); marker.remove(); }
+      entry.details.remove();
+    }
+    memberOptions.clear();
+  }
+  function refreshMemberOptions() {
+    if (!active) return;
+    const list = el("member-list");
+    for (const row of memberOptions.keys()) if (row.parentNode !== list) memberOptions.delete(row);
+    for (const row of list?.children ?? []) {
+      let entry = memberOptions.get(row);
+      if (!entry) {
+        // Only owner-rendered controls can produce an entry. This layer never
+        // creates a role selector, removal action or additional permission.
+        const controls = [row.querySelector(".member-role-select"), row.querySelector(".member-remove-button")].filter(Boolean);
+        if (!controls.length) continue;
+        const details = node("details", "mobile-member-options");
+        const summary = node("summary"); summary.setAttribute("data-i18n-skip", "");
+        details.append(summary);
+        const homes = controls.map(control => {
+          const marker = doc.createComment("mobile member control home"); control.before(marker);
+          details.append(control); return { control, marker };
+        });
+        row.append(details); entry = { details, summary, controls: homes }; memberOptions.set(row, entry);
+      }
+      const caption = t("Manage member");
+      if (entry.summary.textContent !== caption) entry.summary.textContent = caption;
+      const name = row.querySelector(".member-copy")?.querySelector("strong")?.textContent;
+      entry.summary.setAttribute("aria-label", name ? `${caption} · ${name}` : caption);
+      entry.details.hidden = entry.controls.every(({ control }) => control.hidden);
+    }
+  }
+
   // One-column tools use purpose-based groups instead of a dense icon grid.
   const toolsHost = el("mobile-tools-content");
   const toolSections = [];
@@ -165,9 +205,13 @@ export function mountMobilePanels({ document: doc, window: win, t = value => val
     invite.hidden = !ownerInvitations || ownerInvitations.hidden;
     if (memberView === "invite" && invite.hidden) showMembers("home");
     filterSessions();
+    refreshMemberOptions();
   }
   const observer = win.MutationObserver ? new win.MutationObserver(refresh) : null;
   if (el("session-list")) observer?.observe(el("session-list"), { childList: true, subtree: true, characterData: true });
+  // Observe row replacement only. Wrapping controls inside a row must not
+  // recursively retrigger the presentation observer.
+  if (el("member-list")) observer?.observe(el("member-list"), { childList: true });
   if (ownerInvitations) observer?.observe(ownerInvitations, { attributes: true, attributeFilter: ["hidden"] });
   refresh();
   return {
@@ -176,6 +220,7 @@ export function mountMobilePanels({ document: doc, window: win, t = value => val
       if (active === value) return;
       active = value;
       if (!active) {
+        restoreMemberOptions();
         for (const row of el("session-list")?.children ?? []) row.hidden = false;
         for (const { control, marker } of placements) marker.after(control);
       } else {

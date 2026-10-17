@@ -14,8 +14,13 @@ export function mountMobileSettings({ document: doc, window: win, t, isMobile })
   back.dataset.i18nSkip = "";
   dialog.querySelector(".settings-header").prepend(back);
   let selected = null;
+  let wasMobile = false;
   function render() {
     const mobile = isMobile();
+    const enteringMobile = mobile && !wasMobile;
+    const focusedSection = doc.activeElement?.closest?.(".settings-section");
+    if (enteringMobile && dialog.open && MOBILE_SETTINGS_SECTIONS.includes(focusedSection?.id)) selected = focusedSection.id;
+    wasMobile = mobile;
     dialog.dataset.mobileSettings = String(mobile);
     if (!mobile) selected = null;
     dialog.dataset.settingsPage = selected ?? "home";
@@ -29,6 +34,10 @@ export function mountMobileSettings({ document: doc, window: win, t, isMobile })
     for (const section of sections) {
       section.classList.toggle("mobile-setting-unavailable", !MOBILE_SETTINGS_SECTIONS.includes(section.id));
       section.classList.toggle("mobile-setting-selected", selected === section.id);
+    }
+    if (enteringMobile && dialog.open && focusedSection && !MOBILE_SETTINGS_SECTIONS.includes(focusedSection.id)) {
+      navigation.tabIndex = -1;
+      navigation.focus({ preventScroll: true });
     }
   }
   function show(id, focus = true) {

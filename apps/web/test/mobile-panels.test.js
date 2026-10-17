@@ -49,8 +49,15 @@ function fixture() {
   let notify;
   const window = { MutationObserver: class { constructor(callback) { notify = callback; } observe() {} } };
   const panels = mountMobilePanels({ document, window });
+  const addMember = (name, managed = true) => {
+    const row = add("", memberList, "li", "member-row");
+    const copy = add("", row, "span", "member-copy"); add("", copy, "strong").textContent = name;
+    const select = managed ? add("", copy, "select", "member-role-select") : null;
+    const remove = managed ? add("", copy, "button", "member-remove-button") : null;
+    return { row, copy, select, remove };
+  };
   return { document, panels, rail, list, select, projectCreate, sessionCreate, projectActions, memberPanel, memberHeading, memberList, owner, join, joinSection,
-    sessionsHost, membersHost, tools, originalTools, notify: () => notify(), el: document.getElementById };
+    sessionsHost, membersHost, tools, originalTools, addMember, notify: () => notify(), el: document.getElementById };
 }
 
 test("session search is literal, case-insensitive and works with full-width input", () => {
@@ -119,4 +126,44 @@ test("presentation retains existing action handlers instead of duplicating reque
   f.panels.setActive(true); f.sessionCreate.fire("click");
   f.panels.setActive(false); f.sessionCreate.fire("click"); assert.equal(calls, 2);
   assert.equal(f.originalTools.get("project-code-button").parentNode, f.tools);
+});
+
+test("mobile member management folds the owner's original controls and restores their parent and handlers", () => {
+  const f = fixture(), member = f.addMember("Teammate"); let changed = 0, removed = 0;
+  member.select.addEventListener("change", () => changed++); member.remove.addEventListener("click", () => removed++);
+  f.panels.setActive(true);
+  const disclosure = member.row.querySelector(".mobile-member-options");
+  assert.ok(disclosure); assert.equal(disclosure.querySelector("summary").textContent, "Manage member");
+  assert.equal(disclosure.querySelector("summary").getAttribute("aria-label"), "Manage member · Teammate");
+  assert.equal(disclosure.querySelector(".member-role-select"), member.select);
+  assert.equal(disclosure.querySelector(".member-remove-button"), member.remove);
+  member.select.fire("change"); member.remove.fire("click");
+  assert.equal(changed, 1); assert.equal(removed, 1);
+  f.notify(); f.panels.refresh();
+  assert.equal(member.row.children.filter(node => node.classList.contains("mobile-member-options")).length, 1);
+  f.panels.setActive(false);
+  assert.equal(member.select.parentNode, member.copy); assert.equal(member.remove.parentNode, member.copy);
+  assert.equal(member.row.querySelector(".mobile-member-options"), null);
+  member.select.fire("change"); member.remove.fire("click");
+  assert.equal(changed, 2); assert.equal(removed, 2);
+});
+
+test("member refresh cannot retain management from an old owner role or duplicate wrappers", () => {
+  const f = fixture(), old = f.addMember("Old managed row"); f.panels.setActive(true);
+  assert.ok(old.row.querySelector(".mobile-member-options"));
+  old.row.remove(); const current = f.addMember("Current read-only row", false); f.notify();
+  assert.equal(current.row.querySelector(".mobile-member-options"), null);
+  f.panels.setActive(false);
+  assert.equal(old.row.parentNode, null, "switching modes never resurrects a stale owner row");
+  assert.equal(current.row.parentNode, f.memberList);
+  f.panels.setActive(true); f.notify();
+  assert.equal(current.row.querySelector(".mobile-member-options"), null, "nonowners receive no management entry");
+});
+
+test("hidden native member permissions stay hidden in the folded mobile controls", () => {
+  const f = fixture(), member = f.addMember("Unavailable managed row"); member.select.hidden = member.remove.hidden = true;
+  f.panels.setActive(true);
+  const disclosure = member.row.querySelector(".mobile-member-options");
+  assert.equal(disclosure.hidden, true); assert.equal(member.select.hidden, true); assert.equal(member.remove.hidden, true);
+  f.panels.setActive(false); assert.equal(member.select.hidden, true); assert.equal(member.remove.hidden, true);
 });

@@ -396,6 +396,7 @@ function refreshInterfacePresentation() {
 }
 for (const id of ["auth-interface-mode", "settings-interface-mode"]) {
   element(id).addEventListener("change", event => {
+    element("settings-interface-error").hidden = true;
     interfaceMode.setPreference(event.target.value);
     refreshInterfacePresentation();
   });
@@ -4552,6 +4553,7 @@ function handleSettingsControlChange(event) {
 
 async function saveSettings(event) {
   event.preventDefault();
+  element("settings-interface-error").hidden = true;
   const isCurrent = captureWorkspaceScope();
   const deviceId = state.currentUser?.device_id;
   const dialogGeneration = settingsDeviceLoadGeneration;
@@ -4559,6 +4561,7 @@ async function saveSettings(event) {
   element("settings-history-summary-error").textContent = "";
   if (!summaryInstructions.trim() || summaryInstructions.length > 4000) {
     element("settings-history-summary-error").textContent = localizer.t("Summary instructions must contain 1 to 4000 characters.");
+    mobileSettings.open("settings-summaries");
     element("settings-history-summary-instructions").focus();
     return;
   }
@@ -4570,6 +4573,14 @@ async function saveSettings(event) {
   );
   if (contextBytes == null || contextBytes < CONTEXT_BUDGET_MIN_BYTES || contextBytes > CONTEXT_BUDGET_MAX_BYTES) {
     renderContextDiagnostic(settingsPreview);
+    if (mobileWorkspace.isActive()) {
+      mobileSettings.open("settings-general");
+      const message = element("settings-interface-error");
+      message.textContent = localizer.t("Some desktop settings are invalid. Switch to Desktop to correct them, then save again.");
+      message.hidden = false;
+      element("settings-interface-mode").focus();
+      return;
+    }
     element("settings-context-budget").focus();
     return;
   }
@@ -4581,6 +4592,7 @@ async function saveSettings(event) {
   const nextDeviceName = deviceInput.value.trim();
   if (!deviceInput.disabled && (!nextDeviceName || nextDeviceName.length > 120)) {
     deviceStatus.textContent = localizer.t("Choose a device name between 1 and 120 characters.");
+    mobileSettings.open("settings-device");
     deviceInput.focus();
     return;
   }
@@ -4627,10 +4639,12 @@ async function saveSettings(event) {
     if (!isCurrent() || !settingsDialog.open || dialogGeneration !== settingsDeviceLoadGeneration) return;
     if (savingContextPolicy) {
       element("settings-history-context-status").textContent = localizer.t("Unable to save Agent context policy. Retry saving settings.");
+      mobileSettings.open("settings-summaries");
       element("settings-history-context-mode").focus();
       return;
     }
     deviceStatus.textContent = error.message ?? localizer.t("Unable to rename this device.");
+    mobileSettings.open("settings-device");
     if (!deviceInput.disabled) deviceInput.focus();
   } finally {
     if (submit) submit.disabled = false;

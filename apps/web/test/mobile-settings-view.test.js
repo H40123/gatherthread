@@ -30,3 +30,20 @@ test("interface choice is available before login and in General without changing
   assert.match(main, /interfaceMode\.setPreference\(event\.target\.value\)/);
   assert.match(main, /getMode: \(\) => interfaceMode\.getMode\(\)/);
 });
+
+test("script validation and save failures reveal their mobile settings page before focus", async () => {
+  const main = await readFile(new URL("../src/main.js", import.meta.url), "utf8");
+  for (const field of ["settings-history-summary-instructions", "settings-history-context-mode"]) {
+    assert.match(main, new RegExp(`mobileSettings\\.open\\("settings-summaries"\\);\\s+element\\("${field}"\\)\\.focus\\(\\)`));
+  }
+  assert.match(main, /mobileSettings\.open\("settings-device"\);\s+deviceInput\.focus\(\)/);
+  assert.match(main, /mobileSettings\.open\("settings-device"\);\s+if \(!deviceInput\.disabled\) deviceInput\.focus\(\)/);
+  assert.match(main, /if \(mobileWorkspace\.isActive\(\)\) \{\s+mobileSettings\.open\("settings-general"\)/);
+  assert.match(main, /message\.hidden = false;\s+element\("settings-interface-mode"\)\.focus\(\)/);
+});
+
+test("switching to mobile preserves a focused core section or focuses the settings directory", async () => {
+  const source = await readFile(new URL("../src/mobile-settings-view.js", import.meta.url), "utf8");
+  assert.match(source, /enteringMobile && dialog\.open && MOBILE_SETTINGS_SECTIONS\.includes\(focusedSection\?\.id\)\) selected = focusedSection\.id/);
+  assert.match(source, /!MOBILE_SETTINGS_SECTIONS\.includes\(focusedSection\.id\)[\s\S]*navigation\.focus\(\{ preventScroll: true \}\)/);
+});

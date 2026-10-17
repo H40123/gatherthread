@@ -13,6 +13,8 @@ const ZH_CN = Object.freeze({
   "Invite people": "邀请成员",
   "Conversation": "会话",
   "More": "更多",
+  "Manage member": "管理成员",
+  "Some desktop settings are invalid. Switch to Desktop to correct them, then save again.": "部分电脑端设置填写有误，请切换到电脑端修正后再保存。",
   "Choose where your project files are saved.": "选择项目文件的保存位置。",
   "Connect here. Upload, download and merge files on your computer.": "在这里管理连接，上传、下载和合并请在电脑上操作。",
   "Connected on your computer": "电脑已连接的仓库",
