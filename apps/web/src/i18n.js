@@ -2,6 +2,18 @@ import { SHARED_AGENT_ZH_CN } from "./shared-agent-i18n.js";
 import { WORKSPACE_FILES_ZH_CN } from "./workspace-files.js";
 
 const ZH_CN = Object.freeze({
+  "Session creator": "会话创建者",
+  "The session creator can change visibility here without changing project roles.": "会话创建者可在此设置可见性，不影响项目角色。",
+  "Only its creator writes.": "只有创建者能写入。",
+  "Only its creator writes. Session visibility is managed in Members.": "只有创建者能写入。可见范围在成员侧栏中管理。",
+  "Visible in this session": "本会话可见",
+  "Hidden in this session": "本会话不可见",
+  "Visible in this session for {name}": "{name} 是否可见本会话",
+  "Saving visibility…": "正在保存可见性…",
+  "Retry visibility change": "重试保存可见性",
+  "Not confirmed. Retry the same visibility change.": "尚未确认保存结果，请重试同一项修改。",
+  "Unable to change visibility. Refresh members and try again.": "无法修改可见性，请刷新成员列表后重试。",
+  "This server does not support private Solo sessions. Update the server before creating one.": "此服务器尚不支持私密 Solo，请先更新服务器再创建。",
   ...WORKSPACE_FILES_ZH_CN,
   "Open files": "打开文件", "Open members": "打开成员", "Collapse file sidebar": "收起右侧栏", "Show file sidebar": "展开右侧栏", "Resize file workspace": "调整文件工作区宽度", "File contents": "文件内容",
   "File workspace width preset": "文件工作区宽度预设", "Exact file workspace width": "文件工作区精确宽度",

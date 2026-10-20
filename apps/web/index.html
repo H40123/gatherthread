@@ -580,6 +580,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
             </button>
           </div>
+          <p id="session-visibility-note" class="member-visibility-note" hidden>The session creator can change visibility here without changing project roles.</p>
           <ul id="member-list" class="member-list"></ul>
           <section class="invitation-card" aria-labelledby="join-project-title">
             <h3 id="join-project-title">Join another project</h3>
@@ -854,12 +855,12 @@
       <div class="dialog-actions"><button id="code-notice-continue" class="button button-primary" type="button">Got it</button></div>
     </dialog>
 
-    <dialog id="create-session-dialog" class="create-dialog">
+    <dialog id="create-session-dialog" class="create-dialog" aria-labelledby="create-session-title">
       <form id="create-session-form" method="dialog">
         <div class="dialog-heading">
           <div>
             <p class="eyebrow">New workspace</p>
-            <h2>Create a session</h2>
+            <h2 id="create-session-title">Create a session</h2>
           </div>
           <button id="cancel-create-button" class="icon-button" type="button" aria-label="Close">×</button>
         </div>
@@ -873,7 +874,7 @@
           </label>
           <label class="mode-option">
             <input type="radio" name="mode" value="solo" />
-            <span><strong>Solo</strong><small>Only its creator writes; every other project member follows read-only.</small></span>
+            <span><strong>Solo</strong><small>Only its creator writes.</small></span>
           </label>
         </fieldset>
         <p id="create-error" class="form-error" role="alert"></p>

@@ -61,4 +61,6 @@ Current account guidance (2026-10-08): `main` uses verified-email registration a
 | [0053](0053-persistent-project-cloud-code-choice.md) | Remember the project's Cloud Agent code choice | accepted implementation decision | 2026-10-13 |
 | [0056](0056-project-scoped-native-agent-sharing.md) | Project-scoped native Agent sharing | proposed / local implementation preview | 2026-10-15 |
 | [0057](0057-explicit-browser-interface-and-mobile-navigation.md) | Explicit browser interface and mobile navigation | proposed / local implementation | 2026-10-18 |
+| [0058](0058-solo-session-visibility.md) | Choose a Solo conversation's read audience at creation | superseded by ADR-0060 | 2026-10-20 |
 | [0059](0059-right-file-workspace.md) | Right file workspace with provider-scoped personal-branch editing | proposed / local implementation | 2026-10-18 |
+| [0060](0060-per-member-session-visibility.md) | Manage Solo and Multi visibility per project member | proposed / local implementation | 2026-10-20 |

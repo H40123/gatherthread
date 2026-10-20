@@ -4,6 +4,8 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 ## [Unreleased]
 
+- Add creator-managed per-member conversation visibility for both Solo and Multi in Members, keeping the creation dialog to name and mode. Server read/discovery checks, immediate socket/ticket revocation and durable execution fences enforce hide/show without changing project roles. Preserve existing private audiences and legacy defaults, with additive SQLite migration, revision CAS and exact retry recovery. Downgrading to a server without these authorization boundaries is unsupported. Local implementation only; no version or publication change.
+
 - Simplify the conversation header to Summaries and Session options. Group summary generation, original/summary display and version history; replace the persistent mentions inbox button with an unread corner jump that clears only after the message is visible. Keep bounded account/project-scoped read IDs across same-tab reloads without storing message content. Update desktop/mobile guides and keyboard paths.
 
 - Add a right-hand file workspace with a project tree, independently closeable function/file tabs, a new-tab picker and open-tab list, code editing, Markdown source/preview, PDF/raster previews, saved changes and branch history. The flush sidebar keeps only new-tab and More controls above the content; its small header toggle hides the panel without closing tabs or drafts. Reorder tabs and safely close groups of tabs. Browse teammate branches read-only; manage and save files on your own GT Cloud or authorized GitHub branch with stale-version protection and recoverable retries. See [ADR-0059](docs/adr/0059-right-file-workspace.md).

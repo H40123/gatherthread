@@ -31,6 +31,8 @@ Completion or skipping is stored only in the parent browser, scoped by origin, a
 
 ## Project collaboration boundary
 
+Per-member conversation visibility additionally restricts the project-wide session rules below, for both Solo and Multi; see **Session visibility**.
+
 A project groups related sessions and is the stable membership, invitation, and local-agent binding boundary. Creating a project atomically creates only its owner membership; an owner or participant then creates an eligible first session explicitly. Existing sessions named `General` are preserved, but new and historical projects are never backfilled with one. A project invitation grants access to the project's current and future sessions. The project owner can rename the project, creates and renames `multi` sessions, switches their own sessions between `solo` and `multi`, and can change every other member between `participant` and `viewer`. Owners and participants create and rename only their own personal `solo` sessions. A participant or viewer may leave another person's project, immediately losing its sessions and runtime access; an owner cannot leave their own project without deleting it. If the departing member has a cloud Git branch, the remover must explicitly delete that branch or wait for the owner to review and merge its exact head to project main, then select the merged resolution. The owner may decline a merge; the member may delete their own branch and exit. Removal and branch release are one transaction, without changing local Git. A session creator or project owner may permanently delete that session's cloud copy; only the project owner may delete the whole cloud project. Neither operation deletes local workspaces or Agent conversations.
 
 One collaborator maps the project to one local working directory and harness configuration. Sessions inside that project keep independent canonical histories, cursors, native agent conversations, and local compaction.
@@ -39,11 +41,21 @@ One collaborator maps the project to one local working directory and harness con
 
 ### Solo
 
-The Solo creator is the only member allowed to write or submit agent requests while that creator still has a non-viewer project role. Every other member, including the project owner for a participant-created Solo, can read the complete shared event history and approved context snapshots but cannot mutate it.
+The Solo creator is the only visible member allowed to write or submit agent requests while retaining a non-viewer project role. Other visible members, including the project owner, can read but cannot write. Read access is managed through Session visibility below.
+
+Existing private Solos keep their initial creator-only audience unless their creator explicitly grants an individual project member access. Mode conversion preserves these member decisions and the initial audience; it does not broaden visibility.
 
 ### Multi
 
-Project owners and participants can append human chat and agent requests. A human chat event is shared and included in future context hydration but does not trigger a local agent. An agent request is assigned to the initiating user's registered local runtime. The resulting response is appended to the same canonical history. Viewers remain read only.
+Visible project owners and participants can append human chat and agent requests. A human chat event is shared and included in future context hydration but does not trigger a local agent. An agent request is assigned to the initiating user's registered local runtime. The resulting response is appended to the same canonical history. Visible project viewers remain read only.
+
+### Session visibility
+
+For both Solo and Multi, the conversation's immutable creator can independently show or hide it from each other current project member in the Members sidebar (or Manage member in the mobile Members page), while retaining a non-viewer project role. Project ownership alone does not grant this control or bypass a denial. The creator cannot hide themselves. The creation dialog contains only name and mode; new Web sessions use the existing project-visible default, including future project members unless an individual override applies. Existing private defaults remain private for new members. Hidden sessions disappear from discovery and visible counts; metadata, content, context, snapshots, execution and realtime access are denied on the server.
+
+Showing a member grants only the rights already allowed by their project role and the conversation mode, not a role promotion. Hiding closes their live connection, invalidates unused realtime tickets, revokes session runtimes, fences pending jobs/claims and prevents pre-denial requests from running or publishing even after a later regrant. Regrant does not restart work. Already delivered local/provider copies cannot be recalled. Project-file, GT Cloud, GitHub and separately consented shared-executor access remain independent. A project owner can still delete an entire project without gaining read access to its hidden conversations.
+
+Conflicting updates require refreshing members; an uncertain acknowledgement offers an exact retry instead of accepting another change. See [ADR-0060](adr/0060-per-member-session-visibility.md) and [the interface contract](INTERFACE_CONTRACTS.md#session-member-visibility).
 
 ## Mobile workspace
 

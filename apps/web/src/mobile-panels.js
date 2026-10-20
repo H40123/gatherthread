@@ -106,7 +106,7 @@ export function mountMobilePanels({ document: doc, window: win, t = value => val
   el("project-select")?.addEventListener("change", () => { search.value = ""; showSessions("home"); filterSessions(); });
 
   // Members: overview first; creating an invitation and joining another project
-  // are distinct pages. The original owner-only visibility remains authoritative.
+  // are distinct pages. The original role/creator checks remain authoritative.
   // Keep mobile member pages inside their workspace tab, not beside the file
   // tabs. The original membership controls still move and retain their IDs.
   const membersHost = el("file-workspace-host") ? el("member-panel") : el("mobile-members-content");
@@ -125,6 +125,7 @@ export function mountMobilePanels({ document: doc, window: win, t = value => val
   const originalMemberPanel = el("member-panel");
   const ownerInvitations = el("owner-invitations");
   remember(originalMemberPanel?.querySelector(".member-heading"), membersHeading);
+  remember(el("session-visibility-note"), membersList);
   remember(el("member-list"), membersList);
   remember(ownerInvitations, invitePage);
   remember(el("accept-invitation-form")?.closest(".invitation-card"), joinPage);
@@ -158,9 +159,9 @@ export function mountMobilePanels({ document: doc, window: win, t = value => val
     for (const row of list?.children ?? []) {
       let entry = memberOptions.get(row);
       if (!entry) {
-        // Only owner-rendered controls can produce an entry. This layer never
-        // creates a role selector, removal action or additional permission.
-        const controls = [row.querySelector(".member-role-select"), row.querySelector(".member-remove-button")].filter(Boolean);
+        // Only authorized controls can produce an entry. This layer never
+        // creates a role selector, removal/visibility action or permission.
+        const controls = [row.querySelector(".member-role-select"), row.querySelector(".member-remove-button"), row.querySelector(".member-session-visibility")].filter(Boolean);
         if (!controls.length) continue;
         const details = node("details", "mobile-member-options");
         const summary = node("summary"); summary.setAttribute("data-i18n-skip", "");
