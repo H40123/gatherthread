@@ -63,3 +63,5 @@ Current account guidance (2026-10-08): `main` uses verified-email registration a
 | [0057](0057-explicit-browser-interface-and-mobile-navigation.md) | Explicit browser interface and mobile navigation | proposed / local implementation | 2026-10-18 |
 | [0058](0058-dsh-desktop-profile-and-version-gated-plugin-layer.md) | Gate the DSH plugin layer by release and serve desktop from the same package | proposed / local implementation | 2026-10-18 |
 | [0059](0059-right-file-workspace.md) | Right file workspace with provider-scoped personal-branch editing | proposed / local implementation | 2026-10-18 |
+| [0060](0060-per-member-session-visibility.md) | Manage Solo and Multi visibility per project member | proposed / local implementation | 2026-10-20 |
+| [0061](0061-solo-session-visibility.md) | Choose a Solo conversation's read audience at creation | superseded by ADR-0060 | 2026-10-20 |

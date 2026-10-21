@@ -12,6 +12,7 @@ import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?
 import { mountFileWorkspace } from "./workspace-files.js";
 import { mountSessionToolbar } from "./session-toolbar.js";
 import { mountInterfaceMode } from "./interface-mode.js";
+import { createSessionVisibilityController } from "./session-visibility.js?v=20261018-tabs-2";
 import { mountMobileSettings } from "./mobile-settings-view.js";
 import { mountMobileCodeView } from "./mobile-code-view.js";
 import { mountRegistration } from "./registration.js";
@@ -2049,6 +2050,7 @@ function renderSessionHeader() {
   element("delete-session-button").hidden = !mayDelete;
   element("session-subtitle").textContent = `${session.description} · You are ${membership?.role ?? "viewer"}`;
   element("session-access-note").hidden = session.mode !== "solo";
+  element("session-access-note").textContent = localizer.t("Only its creator writes. Session visibility is managed in Members.");
   sessionToolbar.refresh();
   renderWorkspaceContext();
 }
@@ -2091,13 +2093,34 @@ function updateSessionName(sessionId, name) {
   updateSessionMetadata(sessionId, { name });
 }
 
+const sessionVisibility = createSessionVisibilityController({ api,
+  getContext: () => ({ userId:state.currentUser?.id, projectId:state.project?.id, sessionId:state.session?.id,
+    canManage:state.session?.ownerUserId === state.currentUser?.id && ["owner","participant"].includes(state.project?.role) }),
+  onSaved: result => {
+    state.session.members = state.session.members.map(member => ({ ...member,
+      ...(typeof member.sessionVisible === "boolean" ? {visibilityRevision:result.revision} : {}),
+      ...(member.userId === result.user_id ? {sessionVisible:result.visible} : {}),
+    }));
+  },
+  onMembers: members => { state.session = {...state.session,members};
+    const visibleCount = members.filter(m => m.sessionVisible !== false).length;
+    state.sessions = state.sessions.map(s => s.id === state.session.id ? {...s,memberCount:visibleCount} : s);
+    renderSessionList(); renderMembers();
+  },
+  onChange: () => renderMembers(),
+});
+
 function renderMembers() {
   const list = element("member-list");
+  const focusedVisibilityUserId = list.contains(document.activeElement) ? document.activeElement?.dataset.visibilityUserId : null;
+  element("session-visibility-note").hidden = state.session?.ownerUserId !== state.currentUser?.id
+    || !["owner","participant"].includes(state.project?.role);
   list.replaceChildren();
   const sessionMembers = state.session?.members ?? [];
   const members = state.projectMembers.map((projectMember) => {
     const sessionMember = sessionMembers.find((member) => member.userId === projectMember.userId);
-    return sessionMember ? { ...projectMember, runtime: sessionMember.runtime } : projectMember;
+    return sessionMember ? { ...projectMember, runtime: sessionMember.runtime,
+      sessionVisible:sessionMember.sessionVisible, visibilityRevision:sessionMember.visibilityRevision } : projectMember;
   });
   for (const member of members) {
     const item = document.createElement("li");
@@ -2112,6 +2135,10 @@ function renderMembers() {
     const name = document.createElement("strong");
     name.textContent = member.username;
     details.append(name);
+    if (member.userId === state.session?.ownerUserId) {
+      const creator = document.createElement("small"); creator.className="member-session-creator";
+      creator.textContent=localizer.t("Session creator"); details.append(creator);
+    }
     if (state.project?.role === "owner" && member.role !== "owner") {
       const roleSelect = document.createElement("select");
       roleSelect.className = "member-role-select";
@@ -2138,6 +2165,39 @@ function renderMembers() {
       details.append(role);
     }
 
+    if (state.session?.ownerUserId === state.currentUser?.id && member.userId !== state.currentUser.id
+      && ["owner","participant"].includes(state.project?.role) && typeof member.sessionVisible === "boolean"
+      && Number.isSafeInteger(member.visibilityRevision)) {
+      const control = document.createElement("div");
+      control.className = "member-session-visibility";
+      const label = document.createElement("label"), toggle = document.createElement("input"), caption = document.createElement("span");
+      const pending = sessionVisibility.pending(), failure = sessionVisibility.error();
+      toggle.type = "checkbox"; toggle.setAttribute("role","switch");
+      toggle.id = `member-session-visible-${member.userId}`;
+      toggle.dataset.visibilityUserId = member.userId;
+      toggle.checked = pending?.userId === member.userId ? pending.input.visible : member.sessionVisible;
+      toggle.disabled = Boolean(pending);
+      toggle.setAttribute("aria-label",localizer.t("Visible in this session for {name}").replace("{name}", () => member.username));
+      caption.textContent = localizer.t(toggle.checked ? "Visible in this session" : "Hidden in this session");
+      toggle.addEventListener("change", () => {
+        const sessionId=state.session?.id, userId=state.currentUser?.id;
+        void sessionVisibility.change(member,toggle.checked).finally(()=>restoreVisibilityFocus(member.userId,sessionId,userId));
+      });
+      label.append(toggle,caption); control.append(label);
+      if (pending?.userId === member.userId || failure?.userId === member.userId) {
+        const status = document.createElement("small"); status.setAttribute("role","status");
+        status.textContent = localizer.t(pending?.busy ? "Saving visibility…" : failure?.message ?? ""); control.append(status);
+        if (pending && !pending.busy) {
+          const retry = document.createElement("button"); retry.type="button"; retry.className="text-button";
+          retry.textContent=localizer.t("Retry visibility change"); retry.addEventListener("click",()=>{
+            const sessionId=state.session?.id,userId=state.currentUser?.id;
+            void sessionVisibility.retry().finally(()=>restoreVisibilityFocus(member.userId,sessionId,userId));
+          }); control.append(retry);
+        }
+      }
+      details.append(control);
+    }
+
     const presence = document.createElement("span");
     presence.className = `presence presence-${member.runtime?.status ?? "none"}`;
     if (member.runtime?.purpose === "snapshot_connector") {
@@ -2155,6 +2215,17 @@ function renderMembers() {
     }
     list.append(item);
   }
+  if (focusedVisibilityUserId) restoreVisibilityFocus(focusedVisibilityUserId,state.session?.id,state.currentUser?.id);
+}
+
+function restoreVisibilityFocus(memberId,sessionId,userId) {
+  requestAnimationFrame(()=>{
+    if (state.session?.id!==sessionId || state.currentUser?.id!==userId || document.activeElement!==document.body) return;
+    const input=document.getElementById(`member-session-visible-${memberId}`);
+    if (!input) return;
+    const mobileOptions=input.closest("details.mobile-member-options"); if (mobileOptions) mobileOptions.open=true;
+    (input.disabled ? input.closest(".member-session-visibility")?.querySelector("button") : input)?.focus({preventScroll:true});
+  });
 }
 
 async function changeProjectMemberRole(member, select) {

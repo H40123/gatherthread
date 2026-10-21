@@ -35,6 +35,7 @@ import type {
   RuntimeProvenance,
   SessionListItem,
   SessionMode,
+  SessionVisibility,
   SnapshotFailure,
   SnapshotRequestRecord,
   SnapshotRequestKind,
@@ -48,6 +49,7 @@ import {
   buildHistorySummaryPrompt, historySummaryMarker, historySummarySourceJson, historySummaryText,
   isHistorySummaryRequest, selectHistorySummarySources,
   CreateCodexLauncherAuthorizationInputSchema, ClaimCodexLauncherAuthorizationInputSchema,
+  SetSessionMemberVisibilityInputSchema, type SetSessionMemberVisibilityInput,
 } from "@gatherthread/protocol";
 import { RegistrationStore, REGISTRATION_SCHEMA, type RegistrationOptions } from "./registration.js";
 import { hashPassword, checkPassword, PasswordCapacityError } from "./password.js";
@@ -77,6 +79,8 @@ export interface SessionRecord {
   project_id: string;
   owner_user_id: string;
   mode: SessionMode;
+  visibility: SessionVisibility;
+  visibility_revision?: number;
   title: string;
   state: "active" | "archived";
   next_sequence: number;
@@ -120,6 +124,8 @@ export interface RuntimeRecord {
 }
 
 export interface SessionMemberRecord {
+  session_visible?: boolean;
+  visibility_revision?: number;
   avatar_id: AvatarId | null;
   user_id: string;
   display_name: string;
@@ -467,6 +473,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   owner_user_id TEXT NOT NULL REFERENCES users(id),
   mode TEXT NOT NULL CHECK (mode IN ('solo', 'multi')),
+  visibility TEXT NOT NULL DEFAULT 'project' CHECK (visibility IN ('project', 'private')),
   title TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'archived')),
   next_sequence INTEGER NOT NULL DEFAULT 0,
@@ -1040,6 +1047,34 @@ export class CollaborationDatabase {
     this.migrateCodeRepositoryUsageColumns();
     this.migrateDeviceCredentialColumns();
     this.migrateProjectModel();
+    // Existing sessions retain their original project-wide audience.
+    if (!this.sqlite.prepare("PRAGMA table_info(sessions)").all().some(row => row.name === "visibility")) {
+      this.sqlite.exec("ALTER TABLE sessions ADD COLUMN visibility TEXT NOT NULL DEFAULT 'project' CHECK (visibility IN ('project','private'))");
+    }
+    if (!this.sqlite.prepare("PRAGMA table_info(sessions)").all().some(row => row.name === "visibility_revision")) {
+      this.sqlite.exec("ALTER TABLE sessions ADD COLUMN visibility_revision INTEGER NOT NULL DEFAULT 0 CHECK (visibility_revision >= 0)");
+    }
+    this.sqlite.exec(`CREATE TABLE IF NOT EXISTS session_member_visibility (
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      visible INTEGER NOT NULL CHECK (visible IN (0,1)),
+      blocked_through_sequence INTEGER NOT NULL DEFAULT 0 CHECK (blocked_through_sequence >= 0),
+      PRIMARY KEY(session_id,user_id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS session_visibility_receipts (
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      idempotency_key TEXT NOT NULL,
+      actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      target_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      visible INTEGER NOT NULL CHECK (visible IN (0,1)),
+      expected_revision INTEGER NOT NULL,
+      PRIMARY KEY(session_id,idempotency_key)
+    ) STRICT;
+    CREATE VIEW IF NOT EXISTS session_readers AS
+      SELECT s.id AS session_id,m.user_id,m.role FROM sessions s
+      JOIN project_memberships m ON m.project_id=s.project_id
+      LEFT JOIN session_member_visibility v ON v.session_id=s.id AND v.user_id=m.user_id
+      WHERE s.owner_user_id=m.user_id OR COALESCE(v.visible,CASE WHEN s.visibility='private' THEN 0 ELSE 1 END)=1;`);
     // Additive metadata only: source and GitHub credentials never enter SQLite.
     this.sqlite.exec(`CREATE TABLE IF NOT EXISTS project_github_connections (
       project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
@@ -2066,7 +2101,8 @@ export class CollaborationDatabase {
     return this.sqlite.prepare(`
       SELECT projects.id, projects.title, projects.state, projects.created_at, projects.updated_at,
              project_memberships.role,
-             (SELECT COUNT(*) FROM sessions WHERE sessions.project_id = projects.id) AS session_count
+             (SELECT COUNT(*) FROM sessions WHERE sessions.project_id = projects.id
+               AND EXISTS(SELECT 1 FROM session_readers r WHERE r.session_id=sessions.id AND r.user_id=project_memberships.user_id)) AS session_count
       FROM project_memberships
       JOIN projects ON projects.id = project_memberships.project_id
       WHERE project_memberships.user_id = ?
@@ -2284,18 +2320,20 @@ export class CollaborationDatabase {
     if (!role) throw notFound("Project");
     return this.sqlite.prepare(`
       SELECT sessions.id, sessions.project_id, sessions.owner_user_id,
-             sessions.title, sessions.mode, sessions.state,
+             sessions.title, sessions.mode, sessions.visibility, sessions.visibility_revision, sessions.state,
              ? AS role, sessions.next_sequence AS current_sequence, sessions.content_revision, sessions.updated_at,
-             (SELECT COUNT(*) FROM project_memberships
-              WHERE project_memberships.project_id = sessions.project_id) AS member_count
+             (SELECT COUNT(*) FROM session_readers WHERE session_readers.session_id=sessions.id) AS member_count
       FROM sessions
       WHERE sessions.project_id = ?
+        AND EXISTS(SELECT 1 FROM session_readers r WHERE r.session_id=sessions.id AND r.user_id=?)
       ORDER BY sessions.updated_at DESC, sessions.id ASC
-    `).all(role, projectId) as unknown as SessionListItem[];
+    `).all(role, projectId, userId) as unknown as SessionListItem[];
   }
 
   deleteSession(actor: Actor, sessionId: string): { project_id: string; session_id: string } {
     return this.transaction(() => {
+      this.assertActiveDevice(actor);
+      if (!this.membershipRole(sessionId, actor.user_id)) throw notFound("Session");
       const row = this.sqlite.prepare(`
         SELECT sessions.project_id, sessions.owner_user_id AS session_owner_user_id,
                projects.owner_user_id AS project_owner_user_id
@@ -2855,6 +2893,7 @@ export class CollaborationDatabase {
     session_id?: string | undefined;
     idempotency_key: string;
     mode: SessionMode;
+    visibility?: SessionVisibility | undefined;
     title: string;
   }): { session: SessionRecord; event: CanonicalEvent } {
     const sessionId = input.session_id ?? `session-${createHash("sha256")
@@ -2871,6 +2910,7 @@ export class CollaborationDatabase {
       session_id: sessionId,
       idempotency_key: input.idempotency_key,
       mode: input.mode,
+      visibility: input.visibility,
       title: input.title,
     }, timestamp, () => {
       if (input.project_id === undefined) {
@@ -2904,12 +2944,21 @@ export class CollaborationDatabase {
       event_id?: string | undefined;
       idempotency_key: string;
       mode: SessionMode;
+      visibility?: SessionVisibility | undefined;
       title: string;
     },
     timestamp: string,
     prepareProject: () => void = () => {},
   ): { session: SessionRecord; event: CanonicalEvent } {
-    const creationPayload = { action: "created", mode: input.mode, title: input.title } satisfies JsonValue;
+    this.assertActiveDevice(actor);
+    const visibility = input.visibility ?? "project";
+    if (!["project", "private"].includes(visibility)) {
+      throw forbidden("Invalid session visibility");
+    }
+    // Keep historical project-visible creation receipts byte-for-byte compatible.
+    const creationPayload = { action: "created", mode: input.mode, title: input.title,
+      ...(visibility === "private" ? { visibility } : {}),
+    } satisfies JsonValue;
     prepareProject();
     const project = this.requireProject(input.project_id);
     if (project.state !== "active") throw conflict("Archived projects do not accept new sessions");
@@ -2926,6 +2975,7 @@ export class CollaborationDatabase {
       if (session.project_id !== input.project_id || !existingEvent) {
         throw idempotencyConflict("Session ID already exists with another operation");
       }
+      if (!this.membershipRole(session.id, actor.user_id)) throw notFound("Session");
       return {
         session,
         event: this.requireIdempotencyMatch(
@@ -2939,13 +2989,14 @@ export class CollaborationDatabase {
     this.enforceSessionQuota(input.project_id, actor.user_id);
     this.sqlite.prepare(`
       INSERT INTO sessions(
-        id, project_id, owner_user_id, mode, title, state, next_sequence, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'active', 0, ?, ?)
+        id, project_id, owner_user_id, mode, visibility, title, state, next_sequence, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?, ?)
     `).run(
       input.session_id,
       input.project_id,
       actor.user_id,
       input.mode,
+      visibility,
       input.title,
       timestamp,
       timestamp,
@@ -2973,19 +3024,19 @@ export class CollaborationDatabase {
   listSessions(userId: string): SessionListItem[] {
     return this.sqlite.prepare(`
       SELECT sessions.id, sessions.project_id, sessions.owner_user_id,
-             sessions.title, sessions.mode, sessions.state,
+             sessions.title, sessions.mode, sessions.visibility, sessions.visibility_revision, sessions.state,
              project_memberships.role, sessions.next_sequence AS current_sequence, sessions.content_revision,
              sessions.updated_at,
-             (SELECT COUNT(*) FROM project_memberships AS project_members
-              WHERE project_members.project_id = sessions.project_id) AS member_count
+             (SELECT COUNT(*) FROM session_readers WHERE session_readers.session_id=sessions.id) AS member_count
       FROM project_memberships
       JOIN sessions ON sessions.project_id = project_memberships.project_id
       WHERE project_memberships.user_id = ?
+        AND EXISTS(SELECT 1 FROM session_readers r WHERE r.session_id=sessions.id AND r.user_id=project_memberships.user_id)
       ORDER BY sessions.updated_at DESC, sessions.id ASC
     `).all(userId) as unknown as SessionListItem[];
   }
 
-  listSessionMembers(sessionId: string): SessionMemberRecord[] {
+  listSessionMembers(sessionId: string, requestingUserId?: string): SessionMemberRecord[] {
     const rows = this.sqlite.prepare(`
       SELECT project_memberships.user_id, users.display_name, users.avatar_id, project_memberships.role,
              runtimes.id AS runtime_id, runtimes.session_id AS runtime_session_id,
@@ -3008,9 +3059,11 @@ export class CollaborationDatabase {
         LIMIT 1
       )
       WHERE sessions.id = ?
+        AND (sessions.owner_user_id=? OR EXISTS(SELECT 1 FROM session_readers r
+          WHERE r.session_id=sessions.id AND r.user_id=project_memberships.user_id))
       ORDER BY CASE project_memberships.role WHEN 'owner' THEN 0 WHEN 'participant' THEN 1 ELSE 2 END,
                users.display_name ASC
-    `).all(sessionId) as Array<Record<string, string | null>>;
+    `).all(sessionId, requestingUserId ?? null) as Array<Record<string, string | null>>;
 
     const now = this.clock().getTime();
     return rows.map((row) => ({
@@ -3050,13 +3103,59 @@ export class CollaborationDatabase {
 
   membershipRole(sessionId: string, userId: string): MembershipRole | null {
     const row = this.sqlite.prepare(`
-      SELECT project_memberships.role
-      FROM sessions
-      JOIN project_memberships ON project_memberships.project_id = sessions.project_id
-      WHERE sessions.id = ? AND project_memberships.user_id = ?
+      SELECT role FROM session_readers WHERE session_id=? AND user_id=?
     `)
       .get(sessionId, userId) as unknown as MembershipRow | undefined;
     return row?.role ?? null;
+  }
+
+  setSessionMemberVisibility(actor: Actor, sessionId: string, userId: string, input: SetSessionMemberVisibilityInput) {
+    const change = SetSessionMemberVisibilityInputSchema.parse(input);
+    return this.transaction(() => {
+      this.assertActiveDevice(actor);
+      const session = this.requireReadableSessionInsideTransaction(actor, sessionId);
+      if (session.owner_user_id !== actor.user_id || this.membershipRole(sessionId, actor.user_id) === "viewer") {
+        throw forbidden("Only the session creator with a writable project role can manage session visibility");
+      }
+      if (userId === session.owner_user_id) throw forbidden("The session creator always retains visibility");
+      if (!this.projectMembershipRole(session.project_id, userId)) throw notFound("Project membership");
+      const receipt = this.sqlite.prepare(`SELECT * FROM session_visibility_receipts WHERE session_id=? AND idempotency_key=?`)
+        .get(sessionId, change.idempotency_key) as { actor_user_id: string; target_user_id: string; visible: number; expected_revision: number } | undefined;
+      if (receipt) {
+        if (receipt.actor_user_id !== actor.user_id || receipt.target_user_id !== userId
+          || receipt.visible !== Number(change.visible) || receipt.expected_revision !== change.expected_revision) throw idempotencyConflict();
+        // Recover acceptance without reapplying an older grant over a newer denial.
+        return { user_id: userId, visible: this.membershipRole(sessionId, userId) !== null,
+          revision: session.visibility_revision ?? 0, replayed: true };
+      }
+      if (change.expected_revision !== (session.visibility_revision ?? 0)) {
+        throw new ApiError(409, "session_visibility_conflict", "Session visibility changed. Refresh members and try again.");
+      }
+      const wasVisible = this.membershipRole(sessionId, userId) !== null;
+      const revision = (session.visibility_revision ?? 0) + Number(wasVisible !== change.visible);
+      this.sqlite.prepare(`INSERT INTO session_member_visibility(session_id,user_id,visible,blocked_through_sequence)
+        VALUES(?,?,?,?) ON CONFLICT(session_id,user_id) DO UPDATE SET visible=excluded.visible,
+        blocked_through_sequence=MAX(blocked_through_sequence,excluded.blocked_through_sequence)`)
+        .run(sessionId, userId, Number(change.visible), wasVisible && !change.visible ? session.next_sequence : 0);
+      this.sqlite.prepare("UPDATE sessions SET visibility_revision=? WHERE id=?").run(revision, sessionId);
+      this.sqlite.prepare(`INSERT INTO session_visibility_receipts
+        (session_id,idempotency_key,actor_user_id,target_user_id,visible,expected_revision) VALUES(?,?,?,?,?,?)`)
+        .run(sessionId, change.idempotency_key, actor.user_id, userId, Number(change.visible), change.expected_revision);
+      if (wasVisible && !change.visible) {
+        // Do not release execution capacity until the existing runners confirm exit.
+        this.fenceSharedExecutionsInsideTransaction({ session_id: sessionId, user_id: userId });
+        this.sqlite.prepare(`UPDATE agent_request_claims SET status='paused',lease_expires_at=NULL WHERE status='claimed'
+          AND request_event_id IN (SELECT id FROM events WHERE session_id=? AND actor_user_id=?)`).run(sessionId, userId);
+        this.sqlite.prepare(`INSERT OR IGNORE INTO hosted_agent_pauses(request_event_id,created_at)
+          SELECT request_event_id,? FROM hosted_agent_runs WHERE session_id=? AND user_id=? AND status='running'`)
+          .run(this.now(), sessionId, userId);
+        this.sqlite.prepare("UPDATE runtimes SET status='revoked' WHERE session_id=? AND user_id=?").run(sessionId, userId);
+        this.sqlite.prepare(`UPDATE snapshot_requests SET status='failed',failed_at=?,result_json=NULL,failure_json=?
+          WHERE session_id=? AND requested_by_user_id=? AND status IN ('pending','claimed')`)
+          .run(this.now(), JSON.stringify({ code: "access_changed", message: "Session access changed; request a fresh job" }), sessionId, userId);
+      }
+      return { user_id: userId, visible: change.visible, revision, replayed: false };
+    });
   }
 
   setMembership(actor: Actor, sessionId: string, userId: string, role: "participant" | "viewer", idempotencyKey: string): CanonicalEvent {
@@ -3330,10 +3429,13 @@ export class CollaborationDatabase {
   }
 
   isRequestContextCurrent(sessionId: string, requestId: string): boolean {
-    const row = this.sqlite.prepare(`SELECT e.deleted_at,e.content_revision,s.content_revision AS current_revision
-      FROM events e JOIN sessions s ON s.id=e.session_id WHERE e.id=? AND e.session_id=?`).get(requestId, sessionId) as
-      { deleted_at: string | null; content_revision: number; current_revision: number } | undefined;
-    return Boolean(row && !row.deleted_at && row.content_revision === row.current_revision);
+    const row = this.sqlite.prepare(`SELECT e.deleted_at,e.content_revision,s.content_revision AS current_revision,
+      e.sequence,COALESCE(v.blocked_through_sequence,0) AS blocked_through_sequence
+      FROM events e JOIN sessions s ON s.id=e.session_id
+      LEFT JOIN session_member_visibility v ON v.session_id=e.session_id AND v.user_id=e.actor_user_id
+      WHERE e.id=? AND e.session_id=?`).get(requestId, sessionId) as
+      { deleted_at: string | null; content_revision: number; current_revision: number; sequence: number; blocked_through_sequence: number } | undefined;
+    return Boolean(row && !row.deleted_at && row.content_revision === row.current_revision && row.sequence > row.blocked_through_sequence);
   }
 
   assertRequestContextCurrent(sessionId: string, requestId: string, contentRevision?: number): void {
@@ -3911,6 +4013,7 @@ export class CollaborationDatabase {
       FROM events e JOIN sessions s ON s.id = e.session_id
       JOIN project_memberships m ON m.project_id = s.project_id AND m.user_id = ?
       WHERE s.project_id = ? AND (e.visibility = 'session' OR ? = 'owner')
+        AND EXISTS(SELECT 1 FROM session_readers r WHERE r.session_id=s.id AND r.user_id=m.user_id)
         AND e.type IN ('human_chat', 'agent_request')
         AND (? IS NULL OR e.rowid < (SELECT rowid FROM events WHERE id = ?))
         AND EXISTS (SELECT 1 FROM json_each(e.payload_json, '$.mentions') entry
@@ -4582,7 +4685,7 @@ export class CollaborationDatabase {
     this.assertActiveDevice(actor);
     const request = this.requireSnapshotRequest(requestId);
     if (request.requested_by_user_id !== actor.user_id) throw notFound("Snapshot request");
-    if (request.status !== "completed" && this.membershipRole(request.session_id, actor.user_id) === null) {
+    if (this.membershipRole(request.session_id, actor.user_id) === null) {
       throw notFound("Snapshot request");
     }
     return request;
@@ -4600,12 +4703,11 @@ export class CollaborationDatabase {
       SELECT snapshot_requests.* FROM snapshot_requests
       WHERE requested_by_user_id = ? AND (? IS NULL OR status = ?)
         AND (? IS NULL OR session_id = ?)
-        AND (status = 'completed' OR EXISTS (
-          SELECT 1 FROM project_memberships JOIN sessions
-            ON sessions.project_id = project_memberships.project_id
-          WHERE sessions.id = snapshot_requests.session_id
-            AND project_memberships.user_id = snapshot_requests.requested_by_user_id
-        ))
+        AND EXISTS (
+          SELECT 1 FROM session_readers
+          WHERE session_readers.session_id = snapshot_requests.session_id
+            AND session_readers.user_id = snapshot_requests.requested_by_user_id
+        )
       ORDER BY created_at DESC, snapshot_requests.rowid DESC LIMIT ?
     `).all(
       actor.user_id, status ?? null, status ?? null, sessionId ?? null, sessionId ?? null, limit,
@@ -4893,6 +4995,7 @@ export class CollaborationDatabase {
   }
 
   private requireSessionOwnedBy(sessionId: string, userId: string): SessionRecord {
+    if (!this.membershipRole(sessionId, userId)) throw notFound("Session");
     const row = this.sqlite.prepare(`
       SELECT sessions.* FROM sessions
       JOIN projects ON projects.id = sessions.project_id

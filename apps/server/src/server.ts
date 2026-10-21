@@ -54,6 +54,7 @@ import {
   CloudApiStatusSchema, CloudApiPutInputSchema, CloudApiDeleteInputSchema, CloudApiSavedSchema,
   CreateProjectInputSchema,
   CreateSessionInputSchema,
+  SetSessionMemberVisibilityInputSchema, SessionMemberVisibilityResultSchema,
   CODE_SYNC_MAX_BODY_BYTES,
   FailSnapshotRequestInputSchema,
   GitHubConnectionInputSchema,
@@ -1425,6 +1426,14 @@ export async function startCollaborationServer(
 
       if (sessionId && parts[3] === "members" && parts.length === 4 && request.method === "GET") {
         sendJson(response, 200, { data: { members: service.listMembers(actor, sessionId) } });
+        return;
+      }
+
+      if (sessionId && parts[3] === "members" && parts[4] && parts[5] === "visibility" && parts.length === 6 && request.method === "PUT") {
+        const input = SetSessionMemberVisibilityInputSchema.parse(await readAuthenticatedJson(2048));
+        const result = service.setSessionMemberVisibility(actor, sessionId, parts[4], input);
+        closeRealtimeWithoutMembership();
+        sendJson(response, 200, { data: SessionMemberVisibilityResultSchema.parse(result) });
         return;
       }
 
