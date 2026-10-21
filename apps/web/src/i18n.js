@@ -1023,6 +1023,8 @@ const ZH_CN = Object.freeze({
   "Personalize this browser.": "个性化当前浏览器。",
   "Close Settings": "关闭设置",
   "Settings sections": "设置分类",
+  "Help": "帮助",
+  "QQ support group:": "QQ 答疑群：",
   "General": "通用",
   "This device": "当前设备",
   "Account & privacy": "账号与隐私",

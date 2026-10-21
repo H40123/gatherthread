@@ -2353,6 +2353,17 @@ time,
   background: var(--paper-raised);
 }
 
+@media (min-width: 761px) {
+  html:not([data-mobile-workspace="true"]) .settings-navigation {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  html:not([data-mobile-workspace="true"]) .settings-navigation a {
+    flex-shrink: 0;
+  }
+}
+
 .settings-sections {
   min-height: 0;
   overflow-y: auto;
