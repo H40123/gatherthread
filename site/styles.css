@@ -256,9 +256,13 @@ h1 { font-size: clamp(48px, 6.2vw, 84px); line-height: 1.12; margin-inline: auto
 .footer-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 27px; max-width: 590px; }
 .footer-links a { display: inline-flex; align-items: center; min-height: 44px; min-width: 44px; font-size: 14px; color: var(--muted); }
 .footer-links a:hover { color: var(--strong); text-decoration: underline; text-underline-offset: 4px; }
-.footer-bottom { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; margin-top: 25px; font-size: 12px; color: var(--muted); line-height: 1.65; }
+.footer-bottom { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 24px; margin-top: 25px; font-size: 12px; color: var(--muted); line-height: 1.65; }
 .footer-bottom p { min-width: 0; overflow-wrap: anywhere; }
-.footer-contact, .footer-filings { display: grid; gap: 4px; }
+.footer-contact { grid-column: 1 / -1; display: flex; align-items: center; gap: 24px; min-width: 0; font-size: 14px; line-height: 1.8; color: var(--ink); }
+.footer-contact-text, .footer-filings { display: grid; gap: 4px; min-width: 0; }
+.footer-contact-text { gap: 8px; }
+.footer-qq-number { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.footer-qq-code { display: block; width: 80px; max-width: 100%; height: auto; flex: none; }
 .public-security-record { display: inline-flex; align-items: center; gap: 5px; }
 .public-security-record img { flex: none; }
 .footer-bottom .language { flex-shrink: 0; }
@@ -378,7 +382,6 @@ h1 { font-size: clamp(48px, 6.2vw, 84px); line-height: 1.12; margin-inline: auto
   .start-steps { grid-template-columns: 1fr 1fr; gap: 28px 32px; }
   .footer-top { gap: 32px; }
   .footer-links { gap: 0 20px; }
-  .footer-bottom { justify-content: flex-start; }
   html:not(.glass-ready) .site-header { position: static; padding-top: 13px; }
   html:not(.glass-ready) .header-inner { height: auto; flex-wrap: wrap; padding-block: 12px; }
   html:not(.glass-ready) .nav { display: flex; position: static; order: 3; width: 100%; padding: 5px 0 0; border: 0; box-shadow: none; min-height: 44px; }
@@ -474,6 +477,7 @@ h1 { font-size: clamp(48px, 6.2vw, 84px); line-height: 1.12; margin-inline: auto
   .footer-logo { width: 157px; margin-bottom: 11px; }
   .footer-links { justify-content: flex-start; margin-top: 20px; gap: 0 24px; }
   .footer-bottom { font-size: 12px; margin-top: 21px; }
+  .footer-contact { gap: 16px; }
 }
 @media (max-width: 355px) {
   .brand img { width: 96px; }

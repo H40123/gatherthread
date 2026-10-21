@@ -1025,6 +1025,7 @@ const ZH_CN = Object.freeze({
   "Settings sections": "设置分类",
   "Help": "帮助",
   "QQ support group:": "QQ 答疑群：",
+  "GitHub Issue:": "GitHub Issue：",
   "General": "通用",
   "This device": "当前设备",
   "Account & privacy": "账号与隐私",

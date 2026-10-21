@@ -2381,6 +2381,9 @@ time,
   border-top: 1px solid var(--line);
 }
 
+.settings-help-issue { overflow-wrap: anywhere; }
+.settings-help-issue a { color: var(--teal); text-underline-offset: 3px; }
+
 .settings-section-heading {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 0.65fr);
