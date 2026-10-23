@@ -48,6 +48,7 @@ function harness(names, overrides = {}) {
     authView: element(), workspace: element(), emptyState: element(), sessionView: element(),
     hostedAgentStatus: { enabled: false },
     cloudGithubUi: { updateContext: noop, completeAuthorization: async () => {} },
+    teamsUi: { updateContext: noop, selected: () => null, pendingStart: () => false, activeRun: () => null, t: value => value },
     filesUi: { confirmLeave: async () => true, clear: noop, updateContext: noop },
     cloudCodeConsent: { updateContext: noop, refresh: noop, refreshLanguage: noop, includeCode: () => true,
       submission: () => ({ allowed: true, includeCode: true, reason: "" }) },
@@ -61,14 +62,14 @@ function harness(names, overrides = {}) {
     location: { hash: "" }, URLSearchParams, initials: () => "U", localizer: { t: (value) => value },
     renderProjectSelect: noop, renderSessionList: noop, maybeOpenPendingDshPairing: noop,
     renderCurrentAvatar: noop, applyAvatarProfiles: noop,
-    renderMembers: noop, renderTimeline: noop, renderComposerPermissions: noop,
+    renderMembers: noop, renderTimeline: noop, renderComposerPermissions: noop, sendError: element(),
     renderSessionDeliveryControls: noop, announce: noop,
     memberRefreshInFlight: false, avatarProfilesRefreshInFlight: null, stopMemberRefresh: noop, stopSnapshotPolling: noop,
     sync: { disconnect: noop }, resetWorkspaceToAuth: noop,
     ...overrides,
     api: { getAccountAvatar: async () => ({ user_id: "u1", avatar_id: null }), listAvatarProfiles: async () => [], ...overrides.api },
   });
-  vm.runInContext([...new Set(["captureWorkspaceScope", "applyAccountAvatar", "refreshAccountAvatar", "refreshAvatarProfiles", "isAlternativeNative", ...names])]
+  vm.runInContext([...new Set(["captureWorkspaceScope", "applyAccountAvatar", "refreshAccountAvatar", "refreshAvatarProfiles", "clearStaleTeamComposerProblem", "isAlternativeNative", ...names])]
     .map(functionSource).join("\n"), context);
   return context;
 }
@@ -259,7 +260,7 @@ test("mobile Cloud rejection reasons stay visible while ready and local labels s
   currentCodexResolution: () => ({ runtime: null, reason: "Connect your Agent on a computer." }),
   currentDshResolution: () => ({ runtime: null, reason: "Connect DSH on a computer." }),
   sendChatButton: element(), sendAgentButton: element(), messageInput: element(),
-  renderAgentProfileControls: noop, historySummaryUi: { updateContext: noop }, agentRequestControl: { update: noop },
+  renderAgentProfileControls: noop, historySummaryUi: { updateContext: noop }, agentRequestControl: { update: noop }, teamRunNotice: { update: noop },
  });
  app.state.sync = { phase: "live" };
  let reasonWrites = 0, reasonText = "";

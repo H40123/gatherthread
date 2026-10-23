@@ -6,7 +6,7 @@ import { AgentShareExecutionCapsuleSchema, AgentShareJobSchema, JsonValueSchema,
   AgentShareJobLeaseInputSchema, ClaimAgentShareJobInputSchema, ReportAgentShareAvailabilityInputSchema,
   ReportAgentShareSourceAvailabilityInputSchema,
   type AgentShareExecutionCapsule, type SharedAgentMetadata, type SharedAgentProfile, type CanonicalEvent, type AgentShareJob,
-  type SharedAgentRequestInput, type SaveAgentShareInput, type ControlAgentShareInput,
+  type AgentTeamRequestMetadata, type SharedAgentRequestInput, type SaveAgentShareInput, type ControlAgentShareInput,
   type AgentShareJobProgressInput, type CompleteAgentShareJobInput, type AbortAgentShareJobInput,
   type AgentShareJobLeaseInput, type ReportAgentShareAvailabilityInput, type ReportAgentShareSourceAvailabilityInput,
   type JsonValue } from "@gatherthread/protocol";
@@ -24,7 +24,8 @@ const SharedFinalAnswerSchema = z.object({ content: z.string().max(65536).option
   .refine(value => Boolean(value.content?.trim() || value.text?.trim()), "A completed shared answer must contain public text");
 const SharedLifecycleSchema = z.object({ content: z.string().max(256), phase: z.literal("lifecycle"),
   status: z.enum(["thinking", "running"]) }).strict();
-
+export interface SharedTeamReservation { metadata: AgentTeamRequestMetadata; onAccepted: (event: CanonicalEvent) => void;
+  deadlineAt?: string }
 
 /** Sharing never grants the native owner general writes to the requester's session. */
 export class AgentSharing {
@@ -83,7 +84,7 @@ export class AgentSharing {
         ...(target.reasoning_effort === undefined ? {} : { reasoning_effort: target.reasoning_effort }) }, requireOnline);
     return this.store.detail(actor, row);
   }
-  start(actor: Actor, sessionId: string, raw: SharedAgentRequestInput) {
+  start(actor: Actor, sessionId: string, raw: SharedAgentRequestInput, team?: SharedTeamReservation) {
     const input = SharedAgentRequestInputSchema.parse(raw);
     if (stableShareJson(redactJson(input as unknown as JsonValue)) !== stableShareJson(input)) throw new ApiError(400,
       "agent_share_sensitive_input", "Remove credentials before requesting a shared Agent");
@@ -91,9 +92,11 @@ export class AgentSharing {
     if (session.state !== "active") throw conflict("Archived conversations cannot request shared Agents");
     if (session.mode === "solo" && !input.solo_transfer_ack) throw new ApiError(400, "agent_share_solo_disclosure_required",
       "Confirm that this Solo task and its conversation context will be sent to the sharing member's device");
-    const digest = shareDigest(input);
+    const digest = team ? shareDigest({ input, team: team.metadata, deadline: team.deadlineAt ?? null }) : shareDigest(input);
     // Derived context is bounded and current-authorized. Freeze its sequence; acceptance rechecks erasure revision.
-    const context = this.service.readHistoryContext(actor, sessionId);
+    const context = team?.metadata.purpose === "test"
+      ? { view: "original" as const, through_sequence: session.next_sequence, content_revision: session.content_revision ?? 0, items: [] }
+      : this.service.readHistoryContext(actor, sessionId);
     const quoted = input.reply_to_event_id ? this.quotedMessage(sessionId, input.reply_to_event_id) : undefined;
     const contextJson = JSON.stringify(context);
     if (Buffer.byteLength(contextJson) > 262144 || Buffer.byteLength(contextJson) + Buffer.byteLength(JSON.stringify(quoted ?? null))
@@ -129,7 +132,8 @@ export class AgentSharing {
       const limits = this.store.limits(row), id = `shared-job-${randomUUID()}`, eventId = randomUUID();
       this.store.reserve(row, actor);
       const requestDeadline = new Date(this.store.clock().getTime() + limits.max_request_seconds * 1000).toISOString();
-      const deadline = requestDeadline;
+      if (team?.deadlineAt && (!Number.isFinite(Date.parse(team.deadlineAt)) || team.deadlineAt <= this.store.now())) throw conflict("The team execution deadline has elapsed");
+      const deadline = team?.deadlineAt && team.deadlineAt < requestDeadline ? team.deadlineAt : requestDeadline;
       this.store.sql.prepare(`INSERT INTO agent_share_jobs(id,project_id,share_id,share_revision,owner_user_id,owner_device_id,source_runtime_id,
         requester_user_id,requester_device_id,requester_display_name,session_id,request_event_id,idempotency_key,input_digest,
         content_revision,through_sequence,content,context_json,context_digest,profile_json,max_request_seconds,status,utc_day,
@@ -143,7 +147,9 @@ export class AgentSharing {
         idempotency_key: input.idempotency_key, type: "agent_request", visibility: "session", content_revision: input.content_revision,
         ...(input.reply_to_event_id === undefined ? {} : { reply_to_event_id: input.reply_to_event_id }),
         payload: { content: input.content, shared_agent: metadata as unknown as JsonValue,
-          ...(input.mentions === undefined ? {} : { mentions: input.mentions }) } });
+          ...(input.mentions === undefined ? {} : { mentions: input.mentions }),
+          ...(team ? { agent_team: team.metadata as unknown as JsonValue } : {}) } });
+      team?.onAccepted(event);
       return { job: this.store.summary(job), event, replayed: false };
     });
     if (!result.replayed) this.service.publishSharedAgentEvents([result.event]);
@@ -204,10 +210,13 @@ export class AgentSharing {
         AND json_extract(j.profile_json,'$.harness')=? AND (j.status='running' OR j.cleanup_pending=1) LIMIT 1`)
         .get(job.project_id, job.owner_device_id, this.store.profile(job).harness);
       const ordinaryBusy = this.store.sql.prepare(`SELECT 1 FROM agent_request_claims c JOIN runtimes r ON r.id=c.runtime_id
-        JOIN sessions s ON s.id=r.session_id WHERE r.device_id=? AND r.harness=? AND s.project_id=? AND c.status='claimed'
-        AND (c.lease_expires_at IS NULL OR c.lease_expires_at>?) LIMIT 1`)
+        JOIN events e ON e.id=c.request_event_id JOIN sessions s ON s.id=e.session_id WHERE r.device_id=? AND r.harness=? AND s.project_id=?
+        AND (c.execution_pending=1 OR (c.status='claimed' AND (c.lease_expires_at IS NULL OR c.lease_expires_at>?))) LIMIT 1`)
         .get(job.owner_device_id, this.store.profile(job).harness, job.project_id, this.store.now());
-      if (running >= limits.max_concurrent || poolBusy || ordinaryBusy) throw new ApiError(409, "agent_share_busy", "The native Agent is already executing work");
+      const detachedBusy = this.store.sql.prepare(`SELECT 1 FROM agent_native_exit_holds
+        WHERE owner_device_id=? AND harness=? AND (origin_verified=0 OR project_id=?) LIMIT 1`)
+        .get(job.owner_device_id, this.store.profile(job).harness, job.project_id);
+      if (running >= limits.max_concurrent || poolBusy || ordinaryBusy || detachedBusy) throw new ApiError(409, "agent_share_busy", "The native Agent is already executing work");
       const start = this.store.now(), ownDeadline = new Date(this.store.clock().getTime() + job.max_request_seconds * 1000).toISOString();
       const deadline = job.deadline_at && job.deadline_at < ownDeadline ? job.deadline_at : ownDeadline;
       const lease = new Date(Math.min(Date.parse(deadline), this.store.clock().getTime() + AGENT_SHARE_LEASE_MS)).toISOString();
@@ -246,7 +255,7 @@ export class AgentSharing {
   private outputPayload(job: SharedJobRow, raw: unknown, completed: boolean): JsonValue {
     const payload = JsonValueSchema.parse(raw);
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new ApiError(400, "validation_error", "Shared output must be an object");
-    if (payload.shared_agent !== undefined || payload.history_summary !== undefined
+    if (payload.shared_agent !== undefined || payload.agent_team !== undefined || payload.history_summary !== undefined
       || payload.continue_from_event_id !== undefined) throw forbidden("Native shared output cannot forge server metadata");
     if (completed) SharedFinalAnswerSchema.parse(payload);
     else z.union([LiveOutputPayloadSchema, SharedLifecycleSchema]).parse(payload);

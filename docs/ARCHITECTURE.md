@@ -96,7 +96,7 @@ The durable conversation core keeps append-only ordered event envelopes keyed by
 
 SQLite runs in WAL mode with foreign keys enabled. A write transaction allocates the next per-session sequence and inserts the event. WebSocket fan-out happens only after commit.
 
-`agent_request_claims` is the single-writer lock over one Agent request, and it is a lease rather than a plain mutex. A claim carries an attempt count and a server-assigned lease, and accepted `agent_progress` from its holder is what renews it: device presence alone cannot keep a dead execution alive. A lapsed claim no longer occupies the runtime's single active slot, but only the exact runtime recorded by the request may reclaim it; GatherThread never rewrites the selected device, harness, provider, model, or runtime silently. The claim response exposes a positive `attempt_count`. Progress, completion, and request-linked tool events echo it as `claim_attempt`, so an expired or superseded execution cannot publish any part of a recovered turn. A request-linked `agent_response` is accepted only through the dedicated completion endpoint; the generic event route cannot bypass claim fencing. Legacy omission is accepted only for attempt 1. Recovery is bounded; past the attempt budget the request terminates as `failed` and the server commits and broadcasts one canonical `agent_response` with `status: "failed"`, carrying no capture fidelity and no runtime provenance because no harness produced it. [ADR-0023](adr/0023-lease-and-bounded-redispatch-agent-claims.md) records the lease, fencing, and budget.
+`agent_request_claims` is the single-writer lock over one Agent request, and it is a lease rather than a plain mutex. A claim carries an attempt count and a server-assigned lease, and accepted `agent_progress` from its holder is what renews it: device presence alone cannot keep a dead execution alive. A lapsed ordinary claim no longer occupies the runtime's single active slot; a native Team exit-confirmation hold remains until physical exit. Only the exact runtime recorded by the request may reclaim it; GatherThread never rewrites the selected device, harness, provider, model, or runtime silently. The claim response exposes a positive `attempt_count`. Progress, completion, and request-linked tool events echo it as `claim_attempt`, so an expired or superseded execution cannot publish any part of a recovered turn. A request-linked `agent_response` is accepted only through the dedicated completion endpoint; the generic event route cannot bypass claim fencing. Legacy omission is accepted only for attempt 1. Recovery is bounded; past the attempt budget the request terminates as `failed` and the server commits and broadcasts one canonical `agent_response` with `status: "failed"`, carrying no capture fidelity and no runtime provenance because no harness produced it. [ADR-0023](adr/0023-lease-and-bounded-redispatch-agent-claims.md) records the lease, fencing, and budget.
 
 During a claimed Web Agent turn, the bridge first appends an idempotent lifecycle marker. Exact owned native output becomes bounded cumulative `agent_progress` snapshots: public answer, exposed thinking summaries, selected tool fields and actual plan updates. A shared publisher owns redaction, opaque stream identity, coalescing and acknowledged revisions. Codex raw reasoning text and whole native notifications are excluded. Activity markers remain separate from presence and report actual silent work. Hosted OpenCode uses its existing process's loopback SSE and a private bounded progress pipe; transactional publication rechecks current job/device/session permissions and any GitHub binding. The claim remains active until the canonical final response commits; live previews cannot bypass final-result or executor-cleanup checks. Browser replay replaces each request/stream's highest revision, preserves the first visual anchor and references real canonical snapshots. Markdown/GFM and bounded untrusted KaTeX retain their existing safe rendering. See [ADR-0045](adr/0045-streamed-public-agent-output.md).
 
@@ -115,6 +115,14 @@ The connector depends on a harness-neutral `ProjectHarnessAdapter`: project auth
 DeepSeek Harness uses the same server ordering, permission truth, request claim boundary, cursors, and durable outbox, but its execution core is an opt-in native DSH Host plugin. The plugin discovers writable project Sessions, keeps one independent editable DSH Session per GatherThread Session, resumes through DSH's public persistence/Agent services, and owns a bounded claim-to-settlement execution gate. A newly created native Session receives a ` · 共序 · MULTI|SOLO` title marker so the DSH session list separates it from plain local conversations; the cloud-name portion is clipped by UTF-8 bytes, not characters, so the marker survives DSH's 80-byte title cap. Adopted and resumed Sessions keep their existing local titles, including user edits. When a DSH-created conversation completes its first valid local turn, a global scoped event listener retains the live snapshot across the persistence-list race; the server then creates one same-identity creator-owned Solo, and the connector borrows the existing Agent through the public registry without acquiring its disposal capability. Empty, failed, and viewer conversations remain local-only. External canonical events are appended with DSH's public `Session.append` API and `surfaceOp: "append"`, then made durable by the public flush service. Human input remains a `user/message`; remote Agent output is projected as an explicitly labelled plugin-source quotation with canonical actor, provider, model, ID and sequence. It is collaboration data, not an instruction from the current user or a synthetic local model turn. This avoids colliding with the pinned DSH AgentLoop's cached turn numbering; native local model output retains its own assistant role. Persisted projected-event IDs suppress replay and echo. Native DSH turns enter a durable outbox before one atomic, idempotent `commitLocalTurn`; only after the server returns the canonical bindings can the local state advance. A versioned state flag gates only this local-to-cloud capture and commit path. The native settings RPC reports bounded counts and accepts exact project/session routes for toggling or manual recovery; it carries no device credential to the browser. Only allowlisted assistant and redacted tool projections can leave DSH; reasoning, private streams, headers, and native metadata cannot enter canonical history. A short-lived browser-approved pairing grant is stored through DSH's credential service, and the plugin connects outbound to the selected GatherThread origin. The Web client selects one exact online device/provider/model/runtime and never falls back to Codex. Ordinary native conversations use one editable Session for projection and execution; summary-aware Web requests use a separate GatherThread-owned auxiliary execution Session without replacing that conversation. DSH does not create immutable snapshot Sessions like Codex. Claude Code's separate source integration is described above; it does not reuse DSH native sessions.
 
 While an exact GatherThread-claimed DSH prompt is active, scoped native-visible answer, thinking, tool and plan events feed the same bounded snapshot publisher. Alpha frames require selected Agent/Session/turn ownership; the pinned npm fallback requires DSH's genuine Agent-loop request marker and exact turn/step/model route. Unrelated streams, private instructions, headers and raw native identifiers stay excluded. Generic activity and ten-second presence remain separate; accepted progress renews the exact claim. Native-local completed-turn automatic upload remains unchanged. See [ADR-0045](adr/0045-streamed-public-agent-output.md).
+
+Native Team execution adds an exit-confirmation hold independent of the write
+lease. The exact bridge/DSH watcher forwards current claim, authority, history
+and Team cancellation to the native executor's abort signal. Pause, expiry or
+private cache deletion fences publication but cannot free the native slot until
+that attempt acknowledges physical exit. Lost acknowledgments are metadata-only
+local outbox entries retried without executing the turn again. Protocol and
+upgrade requirements are owned by the native Agent request lifecycle contract.
 
 ### Native projection and offline reconciliation
 
@@ -194,3 +202,50 @@ routes and compatibility live in [Interface contracts](INTERFACE_CONTRACTS.md#na
 See [ADR-0056](adr/0056-project-scoped-native-agent-sharing.md). This preview is
 included in the Beta 3 source release; publication and deployment status are
 recorded separately in the release and operator receipts.
+
+## Saved Agent Teams (local implementation preview)
+
+`agent-team-library.ts` owns account-private saved definitions, favorite module
+snapshots, revisioned test/enable state and idempotent metadata receipts. These
+records are independent of any project or session. `agent-team-store.ts` owns
+requester-private, session-bound run/step/control snapshots; `agent-teams.ts`
+serializes the bounded delegation graph. Strict draft/library and execution
+shapes live in `packages/protocol/src/agent-team-library.ts` and `agent-team.ts`.
+The Web library and graph editor configure saved definitions; a human selects an
+enabled Team in the ordinary composer to start a task.
+
+Acceptance atomically freezes the saved definition revision, graph, limits,
+initiating device and session content revision. Each accepted step appends an
+ordinary canonical Agent request and consumes a call in that same write
+transaction. Own native steps reuse exact-runtime claims, cloud steps reuse the
+hosted reservation/proxy, and shared steps reserve through the ADR-0056 broker.
+The Team orchestrator receives no additional execution authority. Native source
+selection remains session-specific even though its saved configuration is
+account-wide; unavailable bindings require an explicit edit and retest.
+
+Native cancellation separates logical request authority from physical execution
+capacity. Claims keep a pending-exit bit until the exact native attempt confirms
+exit. Deletion triggers transfer that identity into bounded admission storage
+independent of history resources, so session deletion cannot free a still-running
+executor. Connectors persist content-free exit receipts across reconnects and
+only acknowledge verified settlement; preparation or ownership uncertainty keeps
+the hold. Both ordinary native and shared dispatch respect detached pool holds.
+The pool is frozen to canonical request scope; runtime metadata refresh cannot
+rebind an unresolved hold. CLI/subprocess executors persist physical settlement
+before bridge receipt delivery, and reconnect drains exact cleanup before new
+registration. Executor-specific capability admission and legacy-origin migration
+are defined by the native lifecycle contract in Interface contracts.
+
+A connectivity run is a separate `purpose:test` snapshot. Its first phase probes
+every module with an execution-specific marker. The second calls each destination
+with incoming edges once, transferring all of its sources' public first-phase
+markers and requiring an exact line-by-line echo for every configured direction,
+including both directions of a bidirectional edge. Both phases validate canonical
+output provenance; structural reachability remains a separate preflight check.
+Only a successful test of the unchanged saved revision permits enablement. Content-free test
+stamps can outlive the private run record; edits invalidate them. Existing
+accepted task snapshots remain immutable when their saved definition is changed,
+disabled or deleted. Product flow, quotas, HTTP contracts and security controls
+are owned by their respective canonical documents; the durable split between
+configuration and execution is recorded in
+[ADR-0061](adr/0061-account-private-saved-agent-teams.md).

@@ -18,6 +18,9 @@ import {
   CodexAppServerExecutor,
   CodexProjectHarness,
   HarnessExecutionTerminatedError,
+  HarnessExecutionUnconfirmedError,
+  LocalBridge,
+  MemoryCursorStore,
   buildVisibleHistoryImport,
   codexSessionKey,
   discoverCompletedLocalTurns,
@@ -1865,7 +1868,15 @@ function respond(id, result) { process.stdout.write(JSON.stringify({ id, result 
   assert.equal(lifecycle.some((event) => event.method === "thread/inject_items" && event.threadId === "old-thread"), false);
 });
 
-test("native compaction rejects failed, interrupted and terminal error races without waiting for timeout", async (t) => {
+function stubWindowsExecutionPlatform(t: TestContext): void {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...descriptor, value: "win32" });
+  t.after(() => { Object.defineProperty(process, "platform", descriptor); });
+}
+
+for (const windowsStub of [false, true]) {
+test(`native compaction rejects failed, interrupted and terminal error races without waiting for timeout${windowsStub ? " (Windows semantics)" : ""}`, async (t) => {
+  if (windowsStub) stubWindowsExecutionPlatform(t);
   for (const failure of ["failed", "interrupted", "error"]) {
     const directory = await mkdtemp(path.join(tmpdir(), "gt-compact-native-failure-"));
     const fakeCodex = path.join(directory, "fake.mjs");
@@ -1890,11 +1901,17 @@ for await (const line of createInterface({ input: process.stdin })) {
       env: { ...process.env, FAILURE: failure }, turnTimeoutMs: 300,
     });
     t.after(() => client.dispose());
-    await assert.rejects(client.compactThread("thread-1"), failure === "error" ? /native compact rejected/ : new RegExp(failure));
+    // An error notification is not physical-exit evidence. Windows cannot
+    // replace that missing terminal with the parent process's close event.
+    const expected = failure === "error"
+      ? process.platform === "win32" ? HarnessExecutionUnconfirmedError : /native compact rejected/
+      : new RegExp(failure);
+    await assert.rejects(client.compactThread("thread-1"), expected);
   }
 });
 
-test("native compaction terminal failure does not wait for a missing start RPC reply", async (t) => {
+test(`native compaction terminal failure does not wait for a missing start RPC reply${windowsStub ? " (Windows semantics)" : ""}`, async (t) => {
+  if (windowsStub) stubWindowsExecutionPlatform(t);
   const directory = await mkdtemp(path.join(tmpdir(), "gt-compact-missing-ack-"));
   const fakeCodex = path.join(directory, "fake.mjs");
   await writeFile(fakeCodex, `
@@ -1918,8 +1935,10 @@ for await (const line of createInterface({ input: process.stdin })) {
     requestTimeoutMs: 5_000, turnTimeoutMs: 300,
   });
   t.after(() => client.dispose());
-  await assert.rejects(client.compactThread("thread-1"), /terminal native failure without RPC ack/);
+  await assert.rejects(client.compactThread("thread-1"), process.platform === "win32"
+    ? HarnessExecutionUnconfirmedError : /terminal native failure without RPC ack/);
 });
+}
 
 test("native compaction ignores unrelated and retryable errors and accepts completion before the RPC reply", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "gt-compact-native-success-"));
@@ -1947,7 +1966,9 @@ for await (const line of createInterface({ input: process.stdin })) {
   await client.compactThread("thread-1");
 });
 
-test("close during pending turn and compact starts rejects cleanly without unhandled completions", async () => {
+for (const windowsStub of [false, true]) {
+test(`close during pending turn and compact starts rejects cleanly without unhandled completions${windowsStub ? " (Windows semantics)" : ""}`, async (t) => {
+  if (windowsStub) stubWindowsExecutionPlatform(t);
   const directory = await mkdtemp(path.join(tmpdir(), "gatherthread-codex-close-pending-"));
   const capturePath = path.join(directory, "capture.jsonl");
   const fakeCodex = path.join(directory, "fake-codex.mjs");
@@ -1968,15 +1989,16 @@ test("close during pending turn and compact starts rejects cleanly without unhan
       clientUserMessageId: "pending-turn",
     });
     await waitForCapturedMethod(capturePath, "turn/start", 1);
+    const expected = process.platform === "win32" ? HarnessExecutionUnconfirmedError : /closing/;
     await Promise.all([
-      assert.rejects(turn, /closing/),
+      assert.rejects(turn, expected),
       client.close(),
     ]);
 
     const compact = client.compactThread("thread-1");
     await waitForCapturedMethod(capturePath, "thread/compact/start", 1);
     await Promise.all([
-      assert.rejects(compact, /closing/),
+      assert.rejects(compact, expected),
       client.close(),
     ]);
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -1986,6 +2008,7 @@ test("close during pending turn and compact starts rejects cleanly without unhan
     await client.dispose();
   }
 });
+}
 
 test("abort during pending turn and compact starts is terminal without unhandled completions", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "gatherthread-codex-abort-pending-"));
@@ -3538,6 +3561,31 @@ function respond(id, result) { process.stdout.write(JSON.stringify({ id, result 
   );
 });
 
+for (const status of ["prepared", "started"] as const) {
+  test(`a recovered ${status} Team journal cannot release another native owner's execution hold`, async () => {
+    const workspacePath = await realpath(await mkdtemp(path.join(tmpdir(), `gt-native-owner-${status}-`)));
+    const statePath = path.join(workspacePath, "state.json"), request = canonical(3, "agent_request", { content: "same accepted request", agent_team: {} });
+    const initial = { ...projectionState(workspacePath), executionJournal: { [request.id]: { requestId: request.id, status,
+      ...(status === "started" ? { turnId: "unconfirmed-turn" } : {}) } } };
+    await writeFile(statePath, JSON.stringify(initial));
+    let acknowledgments = 0;
+    const api = { async registerRuntime() { return registeredRuntime("old-thread"); },
+      async readEvents(_session: string, after: number) { return { events: after < 3 ? [request] : [], hasMore: false, nextSequence: 3 }; },
+      async claimAgentRequest() { return { claimed: true, status: "claimed", requestId: request.id, runtimeId: "runtime-1", attemptCount: 1 }; },
+      async readAgentExecution() { return { active: true }; },
+      async acknowledgeAgentExecutionStopped() { acknowledgments += 1; },
+    } as unknown as CollaborationApi;
+    const client = { processGeneration: 1, async close() {}, async startThread() { throw new Error("must not replace an unconfirmed native owner"); } } as unknown as CodexAppServerClient;
+    const executor = new CodexAppServerExecutor({ client, workspacePath, statePath, threadName: "uncertain recovery", model: "gpt-test", threadSource: "exec" });
+    const cursorStore = new MemoryCursorStore();
+    const bridge = new LocalBridge({ api, cursorStore, runtime: registeredRuntime("old-thread"), transcriptRoots: {} });
+    await bridge.connect();
+    await assert.rejects(bridge.processAgentRequest(request, executor), HarnessExecutionUnconfirmedError);
+    assert.equal(acknowledgments, 0); assert.equal((await cursorStore.load()).stoppedExecutions, undefined);
+    assert.equal(JSON.parse(await readFile(statePath, "utf8")).executionJournal[request.id].status, status);
+  });
+}
+
 test("failed and cancelled Codex turns persist terminal journals for idempotent claim completion", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "gatherthread-codex-terminal-journal-"));
   const statePath = path.join(directory, "state.json");
@@ -4058,6 +4106,9 @@ for await (const line of lines) {
     // discovery fails fast instead of waiting for its own request timeout.
     fail(message.id, "Method not found");
   } else if (message.method === "thread/compact/start") {
+    process.stdout.write(JSON.stringify({ method: "item/started", params: {
+      threadId: message.params.threadId, turnId: "compact-turn", item: { type: "contextCompaction" },
+    } }) + "\\n");
     respond(message.id, {});
     process.stdout.write(JSON.stringify({ method: "thread/tokenUsage/updated", params: {
       threadId: message.params.threadId, turnId: "compact-" + message.id, tokenUsage: { modelContextWindow: 4096, last: { totalTokens: 500 } },
