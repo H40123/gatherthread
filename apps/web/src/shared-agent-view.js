@@ -1,5 +1,5 @@
-import { renderAvatar } from "./avatars.js?v=20261018-tabs-2";
-import { SHARED_AGENT_ZH_CN } from "./shared-agent-i18n.js";
+import { renderAvatar } from "./avatars.js?v=20261024-launcher-sharing-1";
+import { SHARED_AGENT_ZH_CN } from "./shared-agent-i18n.js?v=20261024-launcher-sharing-1";
 import { makeAgentDialogButton } from "./agent-dialog-navigation.js";
 
 export const DEFAULT_SHARE_LIMITS = Object.freeze({ per_member_daily_calls: 20, per_member_daily_seconds: 3600,
@@ -9,6 +9,7 @@ export const sharedAgentKey = share => JSON.stringify(["shared", share.id, share
 const modelKey = profile => JSON.stringify([profile.provider, profile.model]);
 const memberId = member => member.user_id ?? member.userId ?? member.id;
 const memberName = member => member.display_name ?? member.username ?? member.displayName ?? "";
+const sourceConnectionKey = runtime => JSON.stringify([runtime.deviceId ?? runtime.device_id ?? runtime.id, runtime.harness]);
 export function supportsAgentSharing(runtime) {
   const capability = runtime?.sharingCapability ?? runtime?.sharing_capability;
   return ["codex", "deepseek-harness"].includes(runtime?.harness) && runtime?.purpose !== "snapshot_connector"
@@ -170,15 +171,47 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
   }
   function renderSources(value = source.value) {
     const c = getContext(), names = new Map((c?.devices ?? []).map(device => [device.id, device.name]));
-    sourceChoices = (c?.ownRuntimes ?? c?.runtimes ?? []).filter(runtime =>
+    const existing = shares.filter(share => share.owner_user_id === c?.userId);
+    const savedSources = new Set(existing.map(share => share.source_runtime_id));
+    const candidates = (c?.ownRuntimes ?? c?.runtimes ?? []).filter(runtime =>
       (!runtime.userId || runtime.userId === c.userId) && (!runtime.user_id || runtime.user_id === c.userId)
       && (!runtime.purpose || runtime.purpose === "execution") && ["codex", "deepseek-harness"].includes(runtime.harness) && runtime.status !== "revoked")
       .map(runtime => ({ key: runtime.id, runtime, supported: supportsAgentSharing(runtime),
         label: `${harnessLabel(runtime)} · ${names.get(runtime.deviceId ?? runtime.device_id) ?? runtime.deviceName ?? t("Shared device")}` }));
-    const existing = shares.filter(share => share.owner_user_id === c?.userId);
+    const pinSource = !editor.hidden || mutation || attempt;
+    const previous = sourceChoices.find(choice => choice.key === value);
+    if (pinSource && previous && !candidates.some(choice => choice.key === value)) {
+      candidates.push({ ...previous, runtime: { ...previous.runtime, status: "offline", sharingAvailability: "offline", sharing_availability: "offline" } });
+    }
+    // Runtime IDs are per conversation. Present one unconfigured connection per
+    // device/harness, but never hide a saved grant or silently retarget it.
+    const groups = new Map();
+    for (const choice of candidates) {
+      const key = sourceConnectionKey(choice.runtime);
+      const group = groups.get(key) ?? []; group.push(choice); groups.set(key, group);
+    }
+    sourceChoices = [];
+    for (const group of groups.values()) {
+      const saved = group.filter(choice => savedSources.has(choice.key));
+      const pinned = pinSource ? group.find(choice => choice.key === value) : undefined;
+      const rank = choice => (sourceReady(choice) ? 4 : 0) + (choice.runtime.status === "online" ? 2 : 0) + (choice.supported ? 1 : 0);
+      const best = [...group].sort((a, b) => rank(b) - rank(a) || a.key.localeCompare(b.key))[0];
+      const chosen = pinned ?? (saved.some(sourceReady) ? undefined : best);
+      sourceChoices.push(...saved);
+      if (chosen && !savedSources.has(chosen.key)) sourceChoices.push(chosen);
+    }
     for (const share of existing) if (!sourceChoices.some(choice => choice.key === share.source_runtime_id)) {
       sourceChoices.push({ key: share.source_runtime_id, runtime: { id: share.source_runtime_id, ...share.execution_profile, status: "offline" },
         supported: false, label: `${harnessLabel(share.execution_profile)} · ${t("Device offline")}` });
+    }
+    // Two separately authorized devices may have the same default name. Keep
+    // their exact identities and make the visible/accessibility names distinct.
+    const labelCounts = new Map();
+    for (const choice of sourceChoices) labelCounts.set(choice.label, (labelCounts.get(choice.label) ?? 0) + 1);
+    const labelPositions = new Map();
+    for (const choice of [...sourceChoices].sort((a, b) => a.key.localeCompare(b.key))) {
+      const label = choice.label, position = (labelPositions.get(label) ?? 0) + 1; labelPositions.set(label, position);
+      if (labelCounts.get(label) > 1) choice.label += ` · ${t("Connection {number}").replace("{number}", String(position))}`;
     }
     options(source, sourceChoices.map(choice => ({ value: choice.key, label: choice.label })), value);
   }
@@ -238,14 +271,16 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
     setToggle(toggle, selected, ready, source.value); editorState(); renderPicker();
   }
   function renderOwnList() {
-    const focused = doc.activeElement?.dataset?.sourceId; let restore;
+    const focused = doc.activeElement?.dataset?.sourceId, focusedConnection = doc.activeElement?.dataset?.connectionKey; let restore;
     ownList.replaceChildren(); const c = getContext(), people = new Map((c?.members ?? []).map(member => [memberId(member), member]));
     empty.hidden = sourceChoices.length > 0;
     for (const choice of sourceChoices) {
       const share = shares.find(item => item.owner_user_id === c?.userId && item.source_runtime_id === choice.key);
       const row = el("li", "", "sharing-row"), edit = btn("", undefined, "sharing-edit"); edit.dataset.sourceId = choice.key;
+      edit.dataset.connectionKey = sourceConnectionKey(choice.runtime);
       const details = el("span", "", "sharing-row-details"); details.append(raw("strong", choice.label),
-        raw("small", share?.enabled ? t("Sharing is on") : share?.disabled_reason ? sharingReason(share.disabled_reason, t) : t("Not shared")));
+        raw("small", [share?.enabled ? t("Sharing is on") : share?.disabled_reason ? sharingReason(share.disabled_reason, t) : t("Not shared"),
+          choice.runtime.status === "online" ? t("Device online") : t("Device offline")].join(" · ")));
       const avatars = el("span", "", "sharing-avatar-stack"), allowed = share?.allowed_user_ids ?? [];
       if (!allowed.length) avatars.append(el("span", "Click to add recipients", "sharing-add-recipients"));
       for (const id of allowed.slice(0, 4)) {
@@ -262,7 +297,8 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
         if (stopTarget(share, choice.key)) stopSharing(share, choice.key);
         else { beginEdit(choice.key); if (allowedIds().length) startSharing(); else { setStatus("Choose sharing recipients to start."); membersField.focus?.(); } }
       });
-      row.append(edit, smallToggle); ownList.append(row); if (choice.key === focused) restore = edit;
+      row.append(edit, smallToggle); ownList.append(row);
+      if (choice.key === focused || !restore && focusedConnection === edit.dataset.connectionKey) restore = edit;
     }
     restore?.focus({ preventScroll: true });
   }

@@ -176,6 +176,6 @@ Codex 还可以在初次建立连接时导入可见历史，也可手动“导�
 
 打开[自由示例](https://gatherthread.cn/app/example.html?locale=zh-CN&topic=browse)先试一遍，随时重置；再回到自己的项目。设置中的新手引导、摘要、Agent 与上传开关可按需调整。界面支持中文/英文，语言会在首页、登录页与工作页之间同步。
 
-**多 Agent 团队在 Beta 4 提供有限预览。** 打开「Agent 团队」，添加已连接的 Agent，测试当前配置，再启用并发起任务。多个 Agent 可分工、相互交流；跨成员协作须由各 Agent 的所有者明确授权。当前在调用和时长限额内逐个执行，可独立暂停或停止团队。支持自己的 Codex/DSH、明确共享的本地 Agent 与可用云端模型；Claude Code 团队模块及更自由的自主协作仍在开发。[范围与版本说明](releases/0.1.0-beta.4.md)
+**多 Agent 团队在 Beta 5 提供有限预览。** 打开「Agent 团队」，添加已连接的 Agent，测试当前配置，再启用并发起任务。多个 Agent 可分工、相互交流；跨成员协作须由各 Agent 的所有者明确授权。当前在调用和时长限额内逐个执行，可独立暂停或停止团队。支持自己的 Codex/DSH、明确共享的本地 Agent 与可用云端模型；Claude Code 团队模块及更自由的自主协作仍在开发。[范围与版本说明](releases/0.1.0-beta.5.md)
 
 [返回产品介绍](../README.zh-CN.md) · [云端体验 Agent 指南](HOSTED_AGENT_GUIDE.zh-CN.md) · [文档目录](README.md) · [自托管](SELF_HOSTING.md) · [反馈建议](https://github.com/TH060419/gatherthread/issues)

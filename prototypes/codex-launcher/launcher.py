@@ -23,8 +23,8 @@ from urllib.request import Request, HTTPRedirectHandler, build_opener
 from urllib.error import HTTPError, URLError
 
 
-PACKAGE = "@gatherthread/codex-connect@0.1.0-beta.4"
-CLAUDE_PACKAGE = "@gatherthread/claude-connect@0.1.0-beta.4"
+PACKAGE = "@gatherthread/codex-connect@0.1.0-beta.5"
+CLAUDE_PACKAGE = "@gatherthread/claude-connect@0.1.0-beta.5"
 SERVER_ORIGIN = "https://gatherthread.cn"
 TEST_SERVER_ORIGIN = "https://test.gatherthread.cn"
 OFFICIAL_ORIGINS = {SERVER_ORIGIN, TEST_SERVER_ORIGIN}
@@ -994,9 +994,9 @@ class Launcher(tk.Tk):
         for line in process.stdout:
             output = line.replace(token, "[REDACTED]") if token else line
             output = re.sub(r"\b(?:gta_|gtd_)[A-Za-z0-9_-]+", "[REDACTED]", output)
-            self.events.put(("log", output.rstrip()))
+            self.events.put(("connector_log", (process, output.rstrip())))
         code = process.wait()
-        self.events.put(("status", f"连接器已退出，代码 {code}。可检查日志后重试。"))
+        self.events.put(("connector_exit", (process, code)))
 
     def _stop(self) -> None:
         self.connection_cancelled.set()
@@ -1019,6 +1019,19 @@ class Launcher(tk.Tk):
         try:
             while True:
                 kind, value = self.events.get_nowait()
+                if kind in ("connector_log", "connector_exit"):
+                    process, value = value
+                    if self.connector is not process:
+                        continue
+                    if kind == "connector_exit":
+                        self.connector = None
+                        self.status.set(f"连接器已退出，代码 {value}。可检查日志后重试。")
+                        self._set_busy(False)
+                        continue
+                    if process.poll() is None and (value == "GatherThread connector ready." or value.startswith("Connected session: ")
+                            or value.startswith('Connected "claude-code" session: ')):
+                        self.status.set("已连接；保持启动器运行，即可在网页使用此 Agent。")
+                    kind = "log"
                 if kind == "log":
                     self.log.configure(state="normal")
                     self.log.insert("end", value + "\n")

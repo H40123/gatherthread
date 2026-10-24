@@ -40,8 +40,8 @@ the app if desired; existing Claude conversations and project files remain local
 
 This optional arm64/x86_64 prototype uses a native AppKit `.app` and bundles
 Node 24, the fixed-version connector, and a copy of the reviewed Codex plugin.
-Launcher 0.1.4/build 14 is the installer/app display version; the bundled connector
-and plugin use the matching `0.1.0-beta.4` package version. The earlier Beta 2
+Launcher 0.1.5/build 15 is the installer/app display version; the bundled connector
+and plugin use the matching `0.1.0-beta.5` package version. The earlier Beta 2
 downloads remain available under their original release.
 End users do not need Python or npm. Codex Desktop / CLI must already be
 installed and signed in. The manual terminal connection remains an advanced fallback.
@@ -79,6 +79,13 @@ targets that minimum rather than the build machine's OS version.
    is exchanged over HTTPS and passed only to the connector process. Keep the app
    running; its GatherThread Dock icon restores the window
    after closing it. Use **Stop connection** before quitting.
+
+The status changes to **已连接** after the connector confirms project/session
+readiness, including an empty project. Short live log lines appear immediately;
+messages from a replaced connector cannot overwrite the current connection.
+For an offline native regression check after compilation, run the executable
+with `--connector-output-self-test`. It uses a fictional local child process,
+without account authorization or a model call.
 
 New `v=2` links are restricted to those two exact official HTTPS origins. An email
 account in the test environment is separate from the production account. A URL opens the form

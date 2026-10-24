@@ -816,12 +816,22 @@ function requiredBoundedLabel(value: unknown, field: string, maxLength: number):
   return value.trim();
 }
 
+// Codex Desktop submits this native UI request through the same Hook as human
+// prompts. It is not a user turn and must never create a cloud Solo or outbox.
+export function isCodexAppGeneratedPrompt(prompt: string): boolean {
+  return prompt.startsWith(
+    "This is an app-generated request for a suggested next user message. The user did not write this message.",
+  );
+}
+
 export async function isAllowedCodexHookEvent(registryPath: string, event: CodexHookEvent): Promise<boolean> {
+  if (event.hook_event_name === "UserPromptSubmit" && isCodexAppGeneratedPrompt(event.prompt)) return false;
   try {
     const registry = JSON.parse(await readFile(registryPath, "utf8")) as unknown;
     if (!isHookRegistry(registry) || !await isWorkspacePathOrDescendant(event.cwd, registry.workspacePath)) return false;
     const purpose = registry.threads[event.session_id];
-    return purpose === "execution" || (purpose === undefined && registry.discoverUnregistered === true);
+    return purpose === "execution" || (purpose === undefined && registry.discoverUnregistered === true
+      && event.hook_event_name === "UserPromptSubmit");
   } catch {
     return false;
   }

@@ -73,6 +73,43 @@ const wait = async () => { await new Promise(resolve => setTimeout(resolve, 8));
 const openEditor = async f => { await f.ui.open(); f.el("list").children[0].children[0].click(); };
 const checkBob = f => { const input = f.el("members").children[0].children[0]; input.checked = true; input.dispatch("change"); };
 
+test("session runtimes on one device form one unconfigured Agent, without merging devices or grants", async () => {
+  const second = { ...runtime, id: "runtime-b", sessionId: "session-b", status: "offline", sharingAvailability: "offline" };
+  const f = fixture({ patch: { ownRuntimes: [second, runtime] } });
+  await f.ui.open();
+  assert.equal(f.el("list").children.length, 1);
+  assert.equal(f.el("list").children[0].children[0].dataset.sourceId, "runtime-a");
+
+  const separate = fixture({ patch: { ownRuntimes: [runtime, { ...second, deviceId: "device-b" }],
+    devices: [{ id: "device-a", name: "Mac Launcher" }, { id: "device-b", name: "Mac Launcher" }] } });
+  await separate.ui.open();
+  const labels = separate.el("list").children.map(row => row.children[0].attributes["aria-label"]);
+  assert.equal(labels.length, 2);
+  assert.notEqual(labels[0], labels[1]);
+
+  const saved = fixture({ initial: [grant, { ...grant, id: "share-b", source_runtime_id: "runtime-b" }],
+    patch: { ownRuntimes: [runtime, second] } });
+  await saved.ui.open();
+  assert.equal(saved.el("list").children.length, 2);
+  assert.ok(saved.el("list").children.every(row => !row.children[1].disabled));
+});
+
+test("an unconfigured editor retains its exact offline source and representative changes preserve focus", async () => {
+  const second = { ...runtime, id: "runtime-b" };
+  const f = fixture({ patch: { ownRuntimes: [runtime, second] } });
+  await openEditor(f);
+  f.update({ ownRuntimes: [second] });
+  assert.equal(f.el("source").value, "runtime-a");
+  assert.ok(f.el("source").children.some(option => option.value === "runtime-a"));
+  assert.equal(f.el("toggle").disabled, true);
+  const list = fixture({ patch: { ownRuntimes: [runtime, { ...second, status: "offline" }] } });
+  await list.ui.open();
+  list.el("list").children[0].children[0].focus();
+  list.update({ ownRuntimes: [{ ...runtime, status: "offline" }, second] });
+  assert.equal(list.el("list").children[0].children[0].dataset.sourceId, "runtime-b");
+  assert.equal(list.doc.activeElement, list.el("list").children[0].children[0]);
+});
+
 test("complete confinement/cancellation/liveness capabilities are required", () => {
   assert.equal(supportsAgentSharing(runtime), true);
   for (const key of Object.keys(capability)) { const missing = structuredClone(runtime); delete missing.sharingCapability[key]; assert.equal(supportsAgentSharing(missing), false); }
