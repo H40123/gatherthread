@@ -2356,6 +2356,17 @@ time,
   background: var(--paper-raised);
 }
 
+@media (min-width: 761px) {
+  html:not([data-mobile-workspace="true"]) .settings-navigation {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  html:not([data-mobile-workspace="true"]) .settings-navigation a {
+    flex-shrink: 0;
+  }
+}
+
 .settings-sections {
   min-height: 0;
   overflow-y: auto;
@@ -2372,6 +2383,9 @@ time,
 .settings-section + .settings-section {
   border-top: 1px solid var(--line);
 }
+
+.settings-help-issue { overflow-wrap: anywhere; }
+.settings-help-issue a { color: var(--teal); text-underline-offset: 3px; }
 
 .settings-section-heading {
   display: grid;
@@ -3548,6 +3562,14 @@ time,
   min-height: 1.1em;
   margin: 7px 0 0;
 }
+
+.member-session-visibility { margin-top: 7px; display: grid; gap: 5px; font-size: .76rem; }
+.member-session-visibility label { display: flex; align-items: center; gap: 7px; cursor: pointer; min-height: 28px; margin: 0; }
+.member-session-visibility input { width: 16px; height: 16px; min-height: 0; flex: 0 0 auto; accent-color: var(--teal); }
+.member-session-visibility input:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; }
+.member-session-visibility small { color: var(--ink-soft); line-height: 1.5; }
+.member-visibility-note { margin: 8px 0 12px; color: var(--ink-soft); font-size: .76rem; line-height: 1.6; }
+.member-session-creator { color: var(--teal); }
 
 .create-dialog fieldset {
   margin: 24px 0 0;

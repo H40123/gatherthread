@@ -39,6 +39,8 @@ export const captureFidelities = [
 export const invitationTtls = ["1h", "24h", "7d"] as const;
 
 export const SessionModeSchema = z.enum(sessionModes);
+export const SessionVisibilitySchema = z.enum(["project", "private"]);
+export type SessionVisibility = z.infer<typeof SessionVisibilitySchema>;
 export const MembershipRoleSchema = z.enum(membershipRoles);
 export const ProjectStateSchema = z.enum(projectStates);
 export const EventTypeSchema = z.enum(eventTypes);
@@ -280,10 +282,22 @@ export const CreateSessionInputSchema = z.object({
   session_id: IdSchema.optional(),
   idempotency_key: IdempotencyKeySchema,
   mode: SessionModeSchema,
+  visibility: SessionVisibilitySchema.optional(),
   title: SessionTitleSchema,
 });
 
+export const SetSessionMemberVisibilityInputSchema = z.object({
+  visible: z.boolean(),
+  expected_revision: z.number().int().nonnegative(),
+  idempotency_key: IdempotencyKeySchema,
+}).strict();
+export type SetSessionMemberVisibilityInput = z.infer<typeof SetSessionMemberVisibilityInputSchema>;
+export const SessionMemberVisibilityResultSchema = z.object({
+  user_id: IdSchema, visible: z.boolean(), revision: z.number().int().nonnegative(), replayed: z.boolean(),
+}).strict();
+
 export const UpdateSessionInputSchema = z.object({
+  visibility: z.never().optional(),
   mode: SessionModeSchema.optional(),
   state: ProjectStateSchema.optional(),
   title: SessionTitleSchema.optional(),
@@ -778,6 +792,8 @@ export const SessionListItemSchema = z.object({
   owner_user_id: IdSchema,
   title: z.string(),
   mode: SessionModeSchema,
+  visibility: SessionVisibilitySchema.optional(),
+  visibility_revision: z.number().int().nonnegative().optional(),
   state: z.enum(["active", "archived"]),
   role: MembershipRoleSchema,
   current_sequence: z.number().int().nonnegative(),

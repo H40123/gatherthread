@@ -1,7 +1,7 @@
 // A presentation layer over the existing form. Hidden desktop values stay intact.
 export const MOBILE_SETTINGS_SECTIONS = Object.freeze([
   "settings-general", "settings-profile", "settings-appearance", "settings-composer",
-  "settings-notifications", "settings-summaries", "settings-device", "settings-account",
+  "settings-notifications", "settings-summaries", "settings-device", "settings-account", "settings-help",
 ]);
 
 export function mountMobileSettings({ document: doc, window: win, t, isMobile }) {

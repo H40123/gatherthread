@@ -23,6 +23,8 @@ The entry UI offers email/password sign-in and email registration. The selected 
 
 Opening `/` presents the bilingual product home. Its primary action opens same-origin `/app/`, restores an eligible email account Cookie or shows email registration/password login. Existing forwarding queries and fragments remain supported. The home does not read credentials.
 
+The product-home contact footer and Settings → Help show the QQ support group number, 1023987916. The footer also displays the supplied group QR image, scaled proportionally without altering its contents. Help includes a GitHub Issue link below the group number and follows Notifications in the same scrollable navigation list in both desktop and mobile settings, using the same navigation-row style.
+
 The product home introduces people, devices and their own Agents through seven chapters and a four-step illustrated example: discussion, shared summary, explicit Agent work, and human review. Chinese and English use the workspace's shared `gt-lang` preference, including cross-tab changes. Screenshots come from the isolated product example in both languages. Desktop chapters use native proximity snapping and scroll-linked reveals without wheel interception or delayed repositioning; compact layouts use natural scrolling. Light/dark appearance, reduced-motion, high-contrast, and no-JavaScript fallbacks keep the entry and content usable. File guidance recommends GitHub for ongoing development and distinguishes its direct uploads from the limited GT Cloud trial, conversation uploads, and human-approved merges. Product and connection guides remain separate from the Agent Team implementation preview.
 
 User accounts register with a verified email address and a self-set password, then sign in with email and password. All new accounts can create projects under the current project roles and resource rules. Registration is closed by default; existing email/password login remains available while signup is disabled or paused. Password recovery is implemented with a browser-bound, single-use email code. Its independent GATHERTHREAD_PASSWORD_RECOVERY switch is closed by default and requires configured providers plus rollout validation; signup may remain closed. No user access token is displayed or saved. First workspace entry on each device displays the required cloud Git notice before other work. The notice explains project-wide visibility, collaboration-only use, optional upload and the limits of disabling sync.
@@ -33,6 +35,8 @@ Completion or skipping is stored only in the parent browser, scoped by origin, a
 
 ## Project collaboration boundary
 
+Per-member conversation visibility additionally restricts the project-wide session rules below, for both Solo and Multi; see **Session visibility**.
+
 A project groups related sessions and is the stable membership, invitation, and local-agent binding boundary. Creating a project atomically creates only its owner membership; an owner or participant then creates an eligible first session explicitly. Existing sessions named `General` are preserved, but new and historical projects are never backfilled with one. A project invitation grants access to the project's current and future sessions. The project owner can rename the project, creates and renames `multi` sessions, switches their own sessions between `solo` and `multi`, and can change every other member between `participant` and `viewer`. Owners and participants create and rename only their own personal `solo` sessions. A participant or viewer may leave another person's project, immediately losing its sessions and runtime access; an owner cannot leave their own project without deleting it. If the departing member has a cloud Git branch, the remover must explicitly delete that branch or wait for the owner to review and merge its exact head to project main, then select the merged resolution. The owner may decline a merge; the member may delete their own branch and exit. Removal and branch release are one transaction, without changing local Git. A session creator or project owner may permanently delete that session's cloud copy; only the project owner may delete the whole cloud project. Neither operation deletes local workspaces or Agent conversations.
 
 One collaborator maps the project to one local working directory and harness configuration. Sessions inside that project keep independent canonical histories, cursors, native agent conversations, and local compaction.
@@ -41,11 +45,21 @@ One collaborator maps the project to one local working directory and harness con
 
 ### Solo
 
-The Solo creator is the only member allowed to write or submit agent requests while that creator still has a non-viewer project role. Every other member, including the project owner for a participant-created Solo, can read the complete shared event history and approved context snapshots but cannot mutate it.
+The Solo creator is the only visible member allowed to write or submit agent requests while retaining a non-viewer project role. Other visible members, including the project owner, can read but cannot write. Read access is managed through Session visibility below.
+
+Existing private Solos keep their initial creator-only audience unless their creator explicitly grants an individual project member access. Mode conversion preserves these member decisions and the initial audience; it does not broaden visibility.
 
 ### Multi
 
-Project owners and participants can append human chat and agent requests. A human chat event is shared and included in future context hydration but does not trigger a local agent. An agent request is assigned to the initiating user's registered local runtime. The resulting response is appended to the same canonical history. Viewers remain read only.
+Visible project owners and participants can append human chat and agent requests. A human chat event is shared and included in future context hydration but does not trigger a local agent. An agent request is assigned to the initiating user's registered local runtime. The resulting response is appended to the same canonical history. Visible project viewers remain read only.
+
+### Session visibility
+
+For both Solo and Multi, the conversation's immutable creator can independently show or hide it from each other current project member in the Members sidebar (or Manage member in the mobile Members page), while retaining a non-viewer project role. Project ownership alone does not grant this control or bypass a denial. The creator cannot hide themselves. The creation dialog contains only name and mode; new Web sessions use the existing project-visible default, including future project members unless an individual override applies. Existing private defaults remain private for new members. Hidden sessions disappear from discovery and visible counts; metadata, content, context, snapshots, execution and realtime access are denied on the server.
+
+Showing a member grants only the rights already allowed by their project role and the conversation mode, not a role promotion. Hiding closes their live connection, invalidates unused realtime tickets, revokes session runtimes, fences pending jobs/claims and prevents pre-denial requests from running or publishing even after a later regrant. Regrant does not restart work. Already delivered local/provider copies cannot be recalled. Project-file, GT Cloud, GitHub and separately consented shared-executor access remain independent. A project owner can still delete an entire project without gaining read access to its hidden conversations.
+
+Conflicting updates require refreshing members; an uncertain acknowledgement offers an exact retry instead of accepting another change. See [ADR-0062](adr/0062-per-member-session-visibility.md) and [the interface contract](INTERFACE_CONTRACTS.md#session-member-visibility).
 
 ## Browser page recovery
 
@@ -142,13 +156,15 @@ The conversation header groups summary selection, summary/original display and e
 
 ## Permissions
 
+Every session-scoped permission below additionally requires current session visibility; project ownership does not bypass a conversation's read boundary.
+
 | Project role | `multi` | `solo` | Project administration |
 |---|---|---|---|
 | `owner` | read, chat, request/live-sync Agent | write own Solo; read/download other Solos | multi sessions, invitations, roles, retention |
 | `participant` | read, chat, request/live-sync Agent | write own Solo; read/download other Solos | create personal Solo only |
 | `viewer` | read and download immutable local snapshots | read and download immutable local snapshots | none |
 
-Solo sessions reject every writer except their immutable creator, and a viewer downgrade also disables that creator. Viewer sessions reject every conversation write and execution-runtime registration. Multi sessions serialize agent turns per local runtime while allowing concurrent human chat. Apart from creator ownership on Solo, session-specific membership overrides are outside the first release.
+Solo sessions reject every writer except their immutable creator, and a viewer downgrade also disables that creator. Viewer sessions reject every conversation write and execution-runtime registration. Multi sessions serialize agent turns per local runtime while allowing concurrent human chat. Creator-managed session visibility changes reading access without changing project roles or Solo writing authority.
 
 Settings → Account & privacy provides self-service deletion with a preflight impact count. A project owner must first transfer each owned project to an existing participant (or delete that project) and resolve personal cloud-code branches. Explicit `DELETE` confirmation removes that account's Solo cloud sessions, revokes its devices and browser sessions, and removes its memberships. Shared Multi events stay in order but their server-side author identity becomes “Deleted member”; user-entered text, shared Git commits, and local Agent data are not rewritten or removed. The public bilingual [privacy notice](../site/privacy/) describes routine backup, unreachable cloud Git, log, and copy-retention limits separately from immediate live-service deletion.
 

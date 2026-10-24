@@ -3,7 +3,8 @@
 .boot-brand { display: flex; align-items: center; justify-content: center; gap: 12px; }
 .boot-recovery-hint { width: min(100%, 580px); color: var(--ink-soft, #425c58); font-size: 14px; line-height: 1.65; }
 .boot-recovery-hint p { margin: 8px 0; }
-.page-recovery-help-row { display: flex; flex: 0 0 100%; justify-content: flex-end; width: 100%; margin-top: 8px; }
+/* Width fills row-based dialogs; an auto basis must not consume a column's height. */
+.page-recovery-help-row { display: flex; flex: 0 0 auto; justify-content: flex-end; width: 100%; margin-top: 8px; }
 .page-recovery-help {
   min-height: 32px;
   padding: 5px 10px;

@@ -17,7 +17,7 @@
     <title>GatherThread</title>
     <script async src="./src/page-recovery.js?v=20261018-recovery-1"></script>
     <link rel="stylesheet" href="./src/styles.css?v=20261018-tabs-2" data-page-required-style />
-    <link rel="stylesheet" href="./src/page-recovery.css?v=20261018-recovery-1" data-page-required-style />
+    <link rel="stylesheet" href="./src/page-recovery.css?v=20261024-recovery-2" data-page-required-style />
   </head>
   <body>
     <div id="boot-screen" class="boot-screen" role="status" aria-live="polite">
@@ -579,6 +579,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
             </button>
           </div>
+          <p id="session-visibility-note" class="member-visibility-note" hidden>The session creator can change visibility here without changing project roles.</p>
           <ul id="member-list" class="member-list"></ul>
           <section class="invitation-card" aria-labelledby="join-project-title">
             <h3 id="join-project-title">Join another project</h3>
@@ -853,12 +854,12 @@
       <div class="dialog-actions"><button id="code-notice-continue" class="button button-primary" type="button">Got it</button></div>
     </dialog>
 
-    <dialog id="create-session-dialog" class="create-dialog">
+    <dialog id="create-session-dialog" class="create-dialog" aria-labelledby="create-session-title">
       <form id="create-session-form" method="dialog">
         <div class="dialog-heading">
           <div>
             <p class="eyebrow">New workspace</p>
-            <h2>Create a session</h2>
+            <h2 id="create-session-title">Create a session</h2>
           </div>
           <button id="cancel-create-button" class="icon-button" type="button" aria-label="Close">×</button>
         </div>
@@ -872,7 +873,7 @@
           </label>
           <label class="mode-option">
             <input type="radio" name="mode" value="solo" />
-            <span><strong>Solo</strong><small>Only its creator writes; every other project member follows read-only.</small></span>
+            <span><strong>Solo</strong><small>Only its creator writes.</small></span>
           </label>
         </fieldset>
         <p id="create-error" class="form-error" role="alert"></p>
@@ -1309,6 +1310,7 @@ codex plugin add gatherthread@gatherthread-source</code>
             <a href="#settings-agents">Agents</a>
             <a href="#settings-composer">Composer</a>
             <a href="#settings-notifications">Notifications</a>
+            <a href="#settings-help">Help</a>
           </nav>
 
           <div class="settings-sections">
@@ -1550,6 +1552,11 @@ codex plugin add gatherthread@gatherthread-source</code>
               <div class="settings-section-heading"><div><p class="eyebrow">Notifications</p><h3 id="settings-notifications-title">Attention</h3></div><p>In-page alerts always work. Saving an enabled notification requests browser permission for background system alerts.</p></div>
               <label class="settings-row settings-toggle" for="settings-notify-agent"><span><strong>Agent completed</strong><small>Notify when a requested Agent finishes while this tab is in the background.</small></span><input id="settings-notify-agent" name="notify-agent" type="checkbox" role="switch" /><span class="settings-switch-visual" aria-hidden="true"></span></label>
               <label class="settings-row settings-toggle" for="settings-notify-connection"><span><strong>Connection lost</strong><small>Alert once when an established live sync connection is interrupted.</small></span><input id="settings-notify-connection" name="notify-connection" type="checkbox" role="switch" /><span class="settings-switch-visual" aria-hidden="true"></span></label>
+            </section>
+            <section id="settings-help" class="settings-section" aria-labelledby="settings-help-title">
+              <div class="settings-section-heading"><div><h3 id="settings-help-title">Help</h3></div></div>
+              <p><span>QQ support group:</span> <strong>1023987916</strong></p>
+              <p class="settings-help-issue"><span>GitHub Issue:</span> <a href="https://github.com/TH060419/gatherthread/issues" target="_blank" rel="noopener noreferrer">https://github.com/TH060419/gatherthread/issues</a></p>
             </section>
           </div>
         </div>
