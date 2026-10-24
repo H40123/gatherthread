@@ -7,6 +7,7 @@ import { HostedGithubStatusSchema, HostedGithubAuthorizationSchema, HostedGithub
   ProjectInvitationPreviewSchema, DeleteMessageResultSchema, CloudApiStatusSchema, CloudApiSavedSchema,
   HostedAgentSelectionSchema,
   SaveAgentShareInputSchema, ControlAgentShareInputSchema, SharedAgentRequestInputSchema,
+  SetSessionMemberVisibilityInputSchema, SessionMemberVisibilityResultSchema,
   AgentSharesResponseSchema, AgentShareResponseSchema, SharedAgentRequestAcceptedSchema, AgentShareSourcesResponseSchema,
   ClaimAgentShareJobInputSchema, AgentShareJobResponseSchema } from "@gatherthread/protocol";
 import { AgentTeamLibrarySchema, AgentTeamDefinitionResponseSchema, AgentTeamFavoriteResponseSchema,
@@ -122,7 +123,7 @@ export class HttpCollaborationApi {
     this.sessionHeads = new Map();
   }
 
-  async request(path, options = {}) {
+  async request(path, { deadlineMs = 45_000, ...options } = {}) {
     const target = `${this.baseUrl}${path}`;
     // A shared ?api= link must never redirect a browser-entered credential to
     // another origin. Development uses the same-origin loopback proxy too.
@@ -156,7 +157,7 @@ export class HttpCollaborationApi {
           reject(error);
           try { globalThis.window?.__gtPageRecovery?.report("request_timeout"); } catch { /* Recovery UI cannot prevent request cleanup. */ }
           controller.abort(error);
-        }, 45_000);
+        }, deadlineMs);
       });
       const request = (async () => {
         const response = await fetch(target, {
@@ -261,6 +262,7 @@ export class HttpCollaborationApi {
         id: session.id,
         projectId: session.project_id,
         ownerUserId: session.owner_user_id,
+        visibility: session.visibility ?? "project",
         name: session.title,
         mode: session.mode,
         description: session.state === "archived" ? "Archived shared session" : "Active shared session",
@@ -426,6 +428,7 @@ export class HttpCollaborationApi {
         id: session.id,
         projectId: session.project_id,
         ownerUserId: session.owner_user_id,
+        visibility: session.visibility ?? "project",
         name: session.title,
         mode: session.mode,
         description: session.state === "archived" ? "Archived shared session" : "Active shared session",
@@ -451,11 +454,21 @@ export class HttpCollaborationApi {
   }
 
   async createSession(projectId, input) {
+    // An older server strips unknown create fields. Check support BEFORE sending
+    // private content or creating a session that could accidentally be shared.
+    if (input.visibility === "private") {
+      const capabilities = await this.request(`/v1/projects/${encodeURIComponent(projectId)}`);
+      if (!Array.isArray(capabilities.session_visibility_options) || !capabilities.session_visibility_options.includes("private")) {
+        throw new ApiError("This server does not support private Solo sessions. Update the server before creating one.",
+          { status: 409, code: "private_solo_unsupported" });
+      }
+    }
     const { session } = await this.request(`/v1/projects/${encodeURIComponent(projectId)}/sessions`, {
       method: "POST",
       body: JSON.stringify({
         title: input.name,
         mode: input.mode,
+        ...(input.visibility === undefined ? {} : { visibility: input.visibility }),
         idempotency_key: input.idempotencyKey,
       }),
     });
@@ -498,6 +511,9 @@ export class HttpCollaborationApi {
         username: member.display_name,
         avatar_id: member.avatar_id ?? null,
         role: member.role,
+        ...(typeof member.session_visible === "boolean" && Number.isSafeInteger(member.visibility_revision) ? {
+          sessionVisible: member.session_visible, visibilityRevision: member.visibility_revision,
+        } : {}),
         runtime: member.runtime ? {
           id: member.runtime.id,
           status: member.runtime.status,
@@ -509,6 +525,14 @@ export class HttpCollaborationApi {
         } : null,
       };
     });
+  }
+
+  async setSessionMemberVisibility(sessionId, userId, input) {
+    const body = SetSessionMemberVisibilityInputSchema.parse({ visible: input.visible,
+      expected_revision: input.expectedRevision, idempotency_key: input.idempotencyKey });
+    return SessionMemberVisibilityResultSchema.parse(await this.request(
+      `/v1/sessions/${encodeURIComponent(sessionId)}/members/${encodeURIComponent(userId)}/visibility`,
+      { method: "PUT", body: JSON.stringify(body), deadlineMs: 8000 }));
   }
 
   async listSessionRuntimes(sessionId) {
@@ -1003,6 +1027,7 @@ export class HttpCollaborationApi {
       id: session.id,
       projectId: session.project_id,
       ownerUserId: session.owner_user_id,
+      visibility: session.visibility ?? "project",
       name: session.title,
       mode: session.mode,
       description: session.state === "archived" ? "Archived shared session" : "Active shared session",
@@ -1073,6 +1098,8 @@ export class MockCollaborationApi {
     this.listeners = new Map();
     this.idempotentEvents = new Map();
     this.projectMutations = new Map();
+    this.sessionVisibility = new Map();
+    this.visibilityReceipts = new Map();
     this.invitations = new Map();
     this.snapshotRequests = new Map();
     this.localAutomaticUpload = new Map();
@@ -1238,7 +1265,7 @@ export class MockCollaborationApi {
 
   async listSessions() {
     await this.#wait();
-    return this.sessions.map((session) => this.#summary(session));
+    return this.sessions.filter((session) => this.#canReadSession(session)).map((session) => this.#summary(session));
   }
 
   async listProjects() {
@@ -1334,7 +1361,7 @@ export class MockCollaborationApi {
 
   async listProjectSessions(projectId) {
     await this.#wait();
-    return this.sessions.filter((session) => session.projectId === projectId).map((session) => this.#summary(session));
+    return this.sessions.filter((session) => session.projectId === projectId && this.#canReadSession(session)).map((session) => this.#summary(session));
   }
 
   async getProjectCode(projectId) {
@@ -1476,10 +1503,13 @@ export class MockCollaborationApi {
     return structuredClone([...members.values()]);
   }
 
-  async createSession(projectId, { name, mode }) {
+  async createSession(projectId, { name, mode, visibility = "project" }) {
     await this.#wait();
     const title = normalizeMockTitle(name, "Session");
     if (!new Set(["solo", "multi"]).has(mode)) throw new ApiError("Choose solo or multi.", { status: 422, code: "invalid_mode" });
+    if (!["project", "private"].includes(visibility)) {
+      throw new ApiError("Invalid session visibility.", { status: 422, code: "invalid_visibility" });
+    }
     const project = this.projects.find((item) => item.id === projectId);
     if (!project || project.role === "viewer" || (project.role === "participant" && mode !== "solo")) {
       throw new ApiError("Your project role cannot create this session.", { status: 403, code: "forbidden" });
@@ -1491,6 +1521,7 @@ export class MockCollaborationApi {
       ownerUserId: this.currentUser.id,
       name: title,
       mode,
+      visibility,
       description: mode === "solo" ? "Creator-led thread with read-only observers" : "Shared human and agent collaboration",
       updatedAt: new Date().toISOString(),
       members: [
@@ -1592,7 +1623,36 @@ export class MockCollaborationApi {
 
   async listMembers(sessionId) {
     await this.#wait();
-    return structuredClone(this.#findSession(sessionId).members);
+    const session = this.#findSession(sessionId);
+    const mayManage = session.ownerUserId === this.currentUser.id && this.projects.find(p => p.id === session.projectId)?.role !== "viewer";
+    const members = await this.listProjectMembers(session.projectId);
+    return members.filter(m => mayManage || this.#sessionVisibleTo(session, m.userId)).map(m => ({ ...m,
+      runtime: session.members.find(item => item.userId === m.userId)?.runtime ?? null,
+      ...(mayManage ? { sessionVisible: this.#sessionVisibleTo(session, m.userId), visibilityRevision: session.visibilityRevision ?? 0 } : {}),
+    }));
+  }
+
+  async setSessionMemberVisibility(sessionId, userId, input) {
+    await this.#wait();
+    const body = SetSessionMemberVisibilityInputSchema.parse({ visible: input.visible,
+      expected_revision: input.expectedRevision, idempotency_key: input.idempotencyKey });
+    const session = this.#findSession(sessionId);
+    if (session.ownerUserId !== this.currentUser.id || this.projects.find(p => p.id === session.projectId)?.role === "viewer") {
+      throw new ApiError("Only the session creator can manage visibility.", {status:403,code:"forbidden"});
+    }
+    if (userId === session.ownerUserId) throw new ApiError("The creator always remains visible.",{status:403,code:"forbidden"});
+    if (!(await this.listProjectMembers(session.projectId)).some(m => m.userId === userId)) throw new ApiError("Member not found.",{status:404,code:"not_found"});
+    const key = `${sessionId}:${input.idempotencyKey}`;
+    const digest = JSON.stringify({ userId, ...body });
+    if (this.visibilityReceipts.has(key)) {
+      if (this.visibilityReceipts.get(key) !== digest) throw new ApiError("Changed retry.",{status:409,code:"idempotency_conflict"});
+      return { user_id:userId, visible:this.#sessionVisibleTo(session,userId), revision:session.visibilityRevision ?? 0,replayed:true };
+    }
+    if ((session.visibilityRevision ?? 0) !== body.expected_revision) throw new ApiError("Session visibility changed. Refresh members and try again.",{status:409,code:"session_visibility_conflict"});
+    session.visibilityRevision = (session.visibilityRevision ?? 0) + Number(this.#sessionVisibleTo(session,userId) !== input.visible);
+    this.sessionVisibility.set(`${sessionId}:${userId}`, input.visible);
+    this.visibilityReceipts.set(key,digest);
+    return { user_id:userId,visible:input.visible,revision:session.visibilityRevision,replayed:false };
   }
 
   async listSessionRuntimes(sessionId) {
@@ -2209,6 +2269,7 @@ export class MockCollaborationApi {
       ownerUserId: session.ownerUserId,
       name: session.name,
       mode: session.mode,
+      visibility: session.visibility ?? "project",
       description: session.description,
       updatedAt: session.updatedAt,
       memberCount: session.members.length,
@@ -2220,8 +2281,16 @@ export class MockCollaborationApi {
 
   #findSession(sessionId) {
     const session = this.sessions.find((item) => item.id === sessionId);
-    if (!session) throw new ApiError("Session not found.", { status: 404, code: "not_found" });
+    if (!session || !this.#canReadSession(session)) throw new ApiError("Session not found.", { status: 404, code: "not_found" });
     return session;
+  }
+
+  #canReadSession(session) {
+    return this.#sessionVisibleTo(session, this.currentUser?.id);
+  }
+
+  #sessionVisibleTo(session, userId) {
+    return session.ownerUserId === userId || (this.sessionVisibility.get(`${session.id}:${userId}`) ?? session.visibility !== "private");
   }
 
   #discardSessionCloudState(sessionId) {

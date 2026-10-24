@@ -102,6 +102,7 @@ export interface SnapshotRequestSummary {
 }
 
 export interface SessionSummary {
+  visibility?: "project" | "private";
   id: string;
   projectId?: string;
   ownerUserId?: string;
@@ -245,6 +246,7 @@ export interface CollaborationApi {
   listProjectSessions?(projectId: string): Promise<SessionSummary[]>;
   listSessionMembers?(sessionId: string): Promise<SessionMemberSummary[]>;
   createSession?(projectId: string, input: {
+    visibility?: "project" | "private";
     sessionId?: string;
     title: string;
     mode: "solo" | "multi";

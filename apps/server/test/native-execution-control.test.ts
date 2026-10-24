@@ -107,8 +107,52 @@ test("exact stopped cleanup is permitted for a revoked runtime without granting 
   } finally { f.close(); }
 });
 
+for (const status of ["running", "paused"] as const) {
+  test(`visibility regrant cannot revive an accepted ${status} Team before its first request`, async () => {
+    const f = fixture(); try {
+      const member = f.db.createIdentity({ display_name: "Visibility member", device_name: "Visibility device" }).actor;
+      f.service.setMembership(f.actor, f.session.id, member.user_id, "participant", "visibility-team-member");
+      const registration = { session_id: f.session.id, device_id: member.device_id,
+        harness: "codex", provider: "synthetic", model: "synthetic-model", context_deletion_version: 1,
+        local_session_id: "visibility-team-local", capture_fidelity: "harness_transcript" as const };
+      const runtime = f.service.registerRuntime(member, registration);
+      const plan: AgentTeamPlan = { name: "Visibility Team", team_prompt: "", nodes: [{
+        id: "lead", label: "Lead", role: "", x: 0, y: 0, target: { kind: "local", runtime_id: runtime.id,
+          harness: "codex", provider: "synthetic", model: "synthetic-model" } }], edges: [] };
+      const input = { plan, entry_node_id: "lead", content: "Previously accepted task", content_revision: 0,
+        max_calls: 2, max_duration_minutes: 1, idempotency_key: `visibility-queued-${status}` };
+      // Accept durably without letting the coordinator dispatch a child yet.
+      const { run } = f.teams.store.create(member, f.session.id, input);
+      if (status === "paused") f.teams.store.settle(run.id, "paused");
+      assert.equal(f.teams.store.row(run.id).calls_used, 0);
+      f.service.setSessionMemberVisibility(f.actor, f.session.id, member.user_id, {
+        visible: false, expected_revision: 0, idempotency_key: "hide-queued-team",
+      });
+      assert.equal(f.teams.store.row(run.id).status, "failed");
+      assert.equal(f.teams.store.row(run.id).error_code, "agent_team_authorization_lost");
+      f.service.setSessionMemberVisibility(f.actor, f.session.id, member.user_id, {
+        visible: true, expected_revision: 1, idempotency_key: "regrant-queued-team",
+      });
+      assert.equal(f.service.registerRuntime(member, registration).id, runtime.id);
+      await f.teams.pump();
+      assert.equal(f.teams.store.row(run.id).calls_used, 0);
+      assert.equal(f.teams.store.steps(run.id).length, 0);
+      assert.throws(() => f.teams.control(member, f.session.id, run.id, {
+        action: "resume", idempotency_key: "resume-revoked-team",
+      }));
+      const replay = f.teams.start(member, f.session.id, input);
+      assert.equal(replay.replayed, true); assert.equal(replay.run.status, "failed");
+      // Regrant permits a fresh explicit human start, not the old frozen grant.
+      const fresh = f.teams.start(member, f.session.id, { ...input, idempotency_key: "fresh-after-regrant" });
+      await f.teams.pump();
+      assert.equal(f.teams.store.row(fresh.run.id).calls_used, 1);
+      assert.equal(f.teams.store.row(run.id).status, "failed");
+    } finally { f.close(); }
+  });
+}
+
 test("exit cleanup survives access and history invalidation without restoring execution authority", async t => {
-  for (const change of ["viewer", "removed", "archived", "history_erased", "request_erased", "authorizer_revoked"] as const) {
+  for (const change of ["viewer", "removed", "archived", "history_erased", "request_erased", "authorizer_revoked", "visibility", "visibility_regranted"] as const) {
     await t.test(change, async () => {
       const f = fixture(); try {
         const requester = f.db.createIdentity({ display_name: "Synthetic participant", device_name: "Synthetic browser" }).actor;
@@ -131,6 +175,15 @@ test("exit cleanup survives access and history invalidation without restoring ex
         else if (change === "removed") f.service.removeMembership(f.actor, f.session.id, requester.user_id, "exit-remove");
         else if (change === "archived") f.service.updateSession(f.actor, f.session.id, { state: "archived", idempotency_key: "exit-archive" });
         else if (change === "authorizer_revoked") f.db.revokeDevice(native, requester.device_id);
+        else if (change === "visibility" || change === "visibility_regranted") {
+          f.service.setSessionMemberVisibility(f.actor, f.session.id, requester.user_id, {
+            visible: false, expected_revision: 0, idempotency_key: "native-exit-hide",
+          });
+          assert.equal(f.teams.store.row(run.id).status, "failed");
+          if (change === "visibility_regranted") f.service.setSessionMemberVisibility(f.actor, f.session.id, requester.user_id, {
+            visible: true, expected_revision: 1, idempotency_key: "native-exit-regrant",
+          });
+        }
         else f.service.deleteMessage(requester, f.session.id, change === "request_erased" ? request : source.id, "exit-erase");
         assert.equal(f.db.teamRequestMayExecute(request), false, "invalidation fences native execution before coordinator maintenance");
         await f.teams.pump();
