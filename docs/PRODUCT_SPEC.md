@@ -360,7 +360,17 @@ The Agent Teams dialog follows the sharing dialog's compact row layout. Each
 saved Team row opens its editor and has an independent enable/disable switch;
 the final row adds a Team. The editor presents the title, Team name, then Add
 blank module / Add favorite module / Save / Clear. Clear is red; Save is disabled
-when the draft matches the saved configuration. Empty or unbound drafts may be
+when the draft matches the saved configuration. Closing or returning from a
+changed editor offers Save and leave, Keep editing, or Discard and leave inside
+the Team dialog. Save and leave actually saves, and leaves only after a confirmed
+receipt for that same editor/draft; invalid names or limits identify and focus
+the field to correct. With a pending/unconfirmed mutation, leaving explicitly
+discards local edits without cancelling or declaring the submitted action failed;
+its original recovery key remains available after reopening. Recovery reports
+that it is checking while the response is pending, then clears only its own
+feedback. A late receipt must not close a newer view, discard newer edits, or
+silently submit an old cached configuration as a new Save. A replacement editor
+that has not loaded the confirmed configuration must reopen it before saving. Empty or unbound drafts may be
 saved but cannot be tested or enabled. The zoomable canvas separates modules
 from their selected execution Agent: each module has its own name, Agent, model,
 reasoning effort, identity and prompt. Agent/model/effort choices use the same
