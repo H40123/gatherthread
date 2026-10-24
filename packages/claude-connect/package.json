@@ -1,6 +1,6 @@
 {
   "name": "@gatherthread/claude-connect",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "description": "Standalone Claude Code connector and private plugin tools for GatherThread",
   "author": "Yuhan He and contributors",
   "license": "Apache-2.0",

@@ -118,11 +118,11 @@ class DmgPackagingTests(unittest.TestCase):
                          "connector/claude/package.json", "claude-marketplace/plugins/gatherthread/.claude-plugin/plugin.json"):
             path = resources / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"version": "0.1.0-beta.3"}), encoding="utf-8")
+            path.write_text(json.dumps({"version": "0.1.0-beta.4"}), encoding="utf-8")
         return app
 
     def provenance(self, app):
-        return {"schema_version": 1, "source_commit": "a" * 40, "version": "0.1.0-beta.3",
+        return {"schema_version": 1, "source_commit": "a" * 40, "version": "0.1.0-beta.4",
                 "architecture": "arm64", "node_version": "v24.16.0", "minimum_macos": "13.5",
                 "signing": "ad-hoc; not Developer ID signed or notarized",
                 "app_files": {str(path.relative_to(app)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -163,9 +163,9 @@ class DmgPackagingTests(unittest.TestCase):
     def test_installer_display_version_is_separate_from_the_connector_version(self):
         with (HERE / "Info.plist").open("rb") as handle:
             info = plistlib.load(handle)
-        self.assertEqual(info["CFBundleShortVersionString"], "0.1.3")
-        self.assertEqual(info["CFBundleVersion"], "13")
-        self.assertEqual(info["GatherThreadReleaseVersion"], "0.1.0-beta.3")
+        self.assertEqual(info["CFBundleShortVersionString"], "0.1.4")
+        self.assertEqual(info["CFBundleVersion"], "14")
+        self.assertEqual(info["GatherThreadReleaseVersion"], "0.1.0-beta.4")
 
     def test_finder_layout_keeps_app_on_right_and_drag_target_on_left(self):
         settings = BUILD.finder_window_settings()

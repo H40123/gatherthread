@@ -4,13 +4,33 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 ## [Unreleased]
 
-- Add a source-preview Claude Code connector, native commands/MCP tools and
+## [0.1.0-beta.4] - 2026-10-24
+
+Beta 4 combines the reviewed updates after Beta 3 for matching npm packages,
+plugins, Launchers and an authorized full test/production upgrade. Preserve
+separate account/data/secret stores and all immutable earlier artifacts. See
+the [release record](docs/releases/0.1.0-beta.4.md) for publication and deployment
+evidence boundaries.
+
+- Add a bounded saved Agent Team preview with a visual module configuration,
+  exact-target connectivity tests, explicit enable/start, serial delegation,
+  call/time budgets and independent Pause/Stop. Keep account-private definitions,
+  canonical task history and each native/cloud execution's existing permissions.
+- Add a Claude Code connector, native commands/MCP tools and
   separately reviewed Hooks, with exact device/model routing, streamed public
   work, Pause/Resume and per-conversation upload consent. Extend the Windows/Mac
-  Launcher handoff without changing existing Codex links, and reuse the separate
-  project-file synchronization controls. Matching installers/npm artifacts must
-  be published before this source feature is available in existing downloads.
+  Launcher handoff without changing existing Codex links. Your own Claude Code
+  uses its local terminal/install permission policy, with private-output and
+  owned-process safeguards. Matching installers/npm artifacts are part of this
+  release batch; publication receipts confirm availability.
   See [Claude Code setup](docs/CLAUDE_CODE.md) and [ADR-0060](docs/adr/0060-claude-code-plugin-and-local-connector.md).
+- Align the free example and tutorials with the file-workspace sidebar while
+  retaining the existing mobile, file-collaboration and connection-sharing flows.
+- Recover exact native exit receipts before current-session discovery; preserve
+  emergency controls during replay and prevent stale Team diagnostics from
+  overwriting newer input. Upgrade Zod to `4.6.6`.
+- Align current packages/plugins/download references at `0.1.0-beta.4`, with Mac
+  Launcher numeric version `0.1.4`/build `14`. Earlier releases remain unchanged.
 
 ## [0.1.0-beta.3] - 2026-10-21
 

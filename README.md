@@ -1,14 +1,14 @@
 # GatherThread
 
-**Work together. Continue anywhere. Multi-Agent teams are coming in a later release.**
+**Work together. Continue anywhere. Try your Agents as a team.**
 
 GatherThread puts your team's discussion, AI-assisted work, and file review in one shared conversation. Collaborate live, use your own Agent, and continue from a computer, phone, or tablet. Less copying between chats. More progress everyone can follow.
 
 [Open GatherThread](https://gatherthread.cn/) · [Try the example](https://gatherthread.cn/app/example.html?locale=en&topic=browse) · [Illustrated guide](docs/PRODUCT_GUIDE.md) · [简体中文](README.zh-CN.md)
 
-![GatherThread: work together across devices; multi-Agent teams are planned for a later release](docs/assets/product/cover.en.jpg)
+![GatherThread: work together across devices, with your own Agents](docs/assets/product/cover.en.jpg)
 
-Open source · Self-hostable · Current version identifier **0.1.0-beta.3** · [Apache 2.0](LICENSE)
+Open source · Self-hostable · Current version identifier **0.1.0-beta.4** · [Apache 2.0](LICENSE)
 
 Public-registration Beta: verify your email and choose a password to create an account. Available cloud models and allowances are shown in the workspace. Project invitations join a team; they are not account registration codes. [Release history](CHANGELOG.md) · [Developer test environment](docs/TEST_ENVIRONMENT.md)
 
@@ -18,11 +18,11 @@ Public-registration Beta: verify your email and choose a password to create an a
 
 **Keep going beyond your desk.** The same account can be signed in on computers, phones, and tablets at once. On your phone, continue the discussion, review progress, or ask your connected computer Agent to keep working. Move to another computer by downloading the file version you saved.
 
-**Multi-Agent teams (coming in a later release).** Several Agents connected by one person will form a team, divide work and communicate directly to complete tasks together. With members' explicit permission, Agents belonging to different teammates will also communicate and collaborate automatically.
+**Multi-Agent teams (Beta 4 preview).** Configure several connected Agents as a team, test the setup, then let them divide a task and communicate directly within the limits you choose. Cross-member collaboration requires each owner's explicit permission. Calls run one at a time; broader autonomous collaboration remains in development.
 
-For today's projects, connect Codex or DeepSeek Harness, or use the cloud trial Agent for a small task without local setup. Choose from that Agent's supported models and options; cloud usage allowances are shown in the workspace.
+For today's projects, connect Codex, DeepSeek Harness or Claude Code, or use the cloud trial Agent for a small task without local setup. Choose from that Agent's supported models and options; cloud usage allowances are shown in the workspace.
 
-Developing with Claude Code? The [native plugin and Launcher integration](docs/CLAUDE_CODE.md) is available in this source preview; matching published installers and npm artifacts are tracked separately.
+Developing with Claude Code? Start with the [native plugin and Launcher guide](docs/CLAUDE_CODE.md). Claude Code connects independently; it is not yet a Team module.
 
 ![People share discussion and file versions while keeping their own Agents](docs/assets/product/collaboration.en.jpg)
 
@@ -105,9 +105,9 @@ Summaries may omit details and use your Agent's quota. Later Agent requests defa
 
 After message deletion, all future Agent history prepared by GatherThread will exclude the erased content and invalidated results. Deletion does not roll back file changes, erase other members' independent messages or manual reposts, or recall copies already held locally or by model providers. The live conversation retains a placeholder with its order, author and time; [privacy](https://gatherthread.cn/privacy/) explains retention.
 
-## Next: your Agents, working as a team
+## Try your Agents as a team
 
-**Multi-Agent teams are planned for a later release:** one person connects several Agents that divide work, communicate directly and complete tasks together. With each member's explicit permission, this can extend to automatic collaboration between different teammates' Agents.
+**Multi-Agent teams are a bounded preview in Beta 4.** Open **Agent teams**, add connected Agents as modules, test the exact setup, then enable it to start a task. Own Codex/DSH connections, explicitly shared native connections and eligible cloud models keep their existing permissions. Set call/time limits and use the Team's Pause/Stop controls. Claude Code modules and broader autonomous collaboration are not included in this preview. [Scope and release notes](docs/releases/0.1.0-beta.4.md)
 
 ### Explore, contribute, or self-host
 
