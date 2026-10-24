@@ -558,3 +558,18 @@ test("checking a receipt while the leave choice is visible retires that old navi
   assert.equal(f.ui.elements.dialog.open, true, "checking the result is not consent to the previous Leave choice");
   assert.equal(f.el("leave-confirmation").hidden, true); assert.equal(f.exits, 0); f.ui.clear();
 });
+
+
+test("a missing selected source can save again only after that exact connection returns", async () => {
+  const f = fixture({ autosave: 1000 }); await openEditor(f);
+  f.update({ ownRuntimes: [] });
+  f.el("total_daily_calls").value = "21"; f.el("total_daily_calls").dispatch("input");
+  f.el("back").click(); await flush();
+  assert.equal(f.calls.length, 0); assert.equal(f.el("leave-confirmation").hidden, false);
+  f.el("leave-stay").click(); f.update({ ownRuntimes: [runtime] });
+  f.el("close").click(); await flush();
+  const saves = f.calls.filter(call => call[0] === "save");
+  assert.equal(saves.length, 1); assert.equal(saves[0][2].source_runtime_id, runtime.id);
+  assert.equal(saves[0][2].limits.total_daily_calls, 21);
+  assert.equal(f.ui.elements.dialog.open, false); f.ui.clear();
+});

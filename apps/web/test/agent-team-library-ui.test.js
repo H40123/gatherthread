@@ -2356,3 +2356,39 @@ test("generic recovery cannot lend a reopened stale draft the accepted revision 
   assert.equal(f.calls[2][2].expected_revision, 1, "only reopening/loading the confirmed configuration can advance this editor's CAS");
   assert.equal(f.el("team-name").value, "Explicit newer local edit");
 });
+
+
+test("an uncertain Save retains its exact recovery identity while write permission is unavailable", async () => {
+  let attempts = 0;
+  const f = fixture({ initial: [team()], overrides: { saveAgentTeam: async (id, input) => {
+    f.calls.push(["save", id, structuredClone(input)]);
+    if (++attempts === 1) throw Object.assign(new Error("Lost Save receipt"), { status: 0 });
+    return { team: team(id, { draft: structuredClone(input.draft), revision: 2,
+      max_calls: input.max_calls, max_duration_minutes: input.max_duration_minutes }), replayed: true };
+  } } }); await open(f); editInput(f.el("team-name"), "Preserve the original Save");
+  f.el("team-save").click(); await flush();
+  const original = structuredClone(f.calls[0]);
+  f.update({ writable: false, controlWritable: true });
+  assert.equal(f.button("Check the previous action").hidden, false);
+  assert.equal(f.button("Check the previous action").disabled, true);
+  await f.ui.recover(); await flush();
+  assert.equal(f.calls.length, 1, "a local permission block cannot send or settle the unknown Save");
+  f.update({ writable: true }); await f.ui.recover(); await flush();
+  assert.equal(f.calls.length, 2); assert.deepEqual(f.calls[1], original);
+  assert.equal(f.button("Check the previous action").hidden, true);
+});
+
+test("an uncertain emergency Stop remains recoverable without normal write permission", async () => {
+  let attempts = 0;
+  const run = startedRun("emergency-stop-recovery");
+  const f = fixture({ initialRuns: [run], overrides: { controlTeamRun: async (session, id, input) => {
+    f.calls.push(["run-control", session, id, structuredClone(input)]);
+    if (++attempts === 1) throw Object.assign(new Error("Lost Stop receipt"), { status: 0 });
+    return { run: { ...run, status: "stopped" }, replayed: true };
+  } } }); await flush(); f.update({ writable: false, controlWritable: true });
+  await assert.rejects(f.ui.controlRun(run, "stop")); await flush();
+  assert.equal(f.button("Check the previous action").disabled, false);
+  await f.ui.recover(); await flush();
+  assert.equal(f.calls.length, 2); assert.deepEqual(f.calls[1], f.calls[0]);
+  assert.equal(f.button("Check the previous action").hidden, true);
+});

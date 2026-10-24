@@ -181,7 +181,7 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
     const pinSource = !editor.hidden || mutation || attempt;
     const previous = sourceChoices.find(choice => choice.key === value);
     if (pinSource && previous && !candidates.some(choice => choice.key === value)) {
-      candidates.push({ ...previous, runtime: { ...previous.runtime, status: "offline", sharingAvailability: "offline", sharing_availability: "offline" } });
+      candidates.push({ ...previous, missing: true, runtime: { ...previous.runtime, status: "offline", sharingAvailability: "offline", sharing_availability: "offline" } });
     }
     // Runtime IDs are per conversation. Present one unconfigured connection per
     // device/harness, but never hide a saved grant or silently retarget it.
@@ -381,7 +381,7 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
   function saveDraft() {
     clearTimeout(autosaveTimer); if (mutation || attempt || !dirty && !requestedStart || !getContext()?.writable) return;
     const choice = sourceChoices.find(item => item.key === source.value), limits = inputLimits(), allowed = allowedIds();
-    if (!choice?.supported) {
+    if (!choice?.supported || choice.missing) {
       requestedStart = false; setStatus("Unsaved sharing changes"); setError("This Agent connection cannot save sharing settings. Reconnect a supported Agent, or discard the unsaved changes when leaving."); return;
     }
     if (!limits) {

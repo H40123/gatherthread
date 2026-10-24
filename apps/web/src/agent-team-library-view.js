@@ -311,18 +311,24 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
       }
     }
   }
+  function canAttemptAction(intent) {
+    const emergency = intent.kind === "disable" || intent.kind === "run" && ["pause", "stop"].includes(intent.input.action);
+    return Boolean(context().writable || emergency && canControl());
+  }
   async function attempt(intent) {
     if (intent.generation !== generation || intent.scope !== scope || context().scope !== scope) return;
     if (intent.superseded || intents.get(intent.slot) !== intent) return;
     if (intent.busy) return intent.promise;
+    // A local permission block cannot settle an earlier request whose outcome
+    // remains unknown. Keep its frozen body/key until recovery is authorized.
+    if (intent.uncertain && !canAttemptAction(intent)) return;
     // An exact-key retry returns the server's current state. Only observations
     // arriving during this transport attempt can supersede that new receipt.
     const gen = generation, authority = runAuthority, contentRevision = context().contentRevision ?? 0;
     intent.busy = true; delete intent.observedRunIds; delete intent.observedTeams; epoch++; render(); clearIntentProblem(intent);
     intent.promise = (async () => {
       try {
-        const emergency = intent.kind === "disable" || intent.kind === "run" && ["pause", "stop"].includes(intent.input.action);
-        if (!context().writable && !(emergency && canControl())) {
+        if (!canAttemptAction(intent)) {
           throw Object.assign(new Error("Team changes require current writable history."), { status: 409, code: "conflict" });
         }
         const result = await intent.call();
@@ -390,7 +396,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   async function recoverActions() {
     const gen = generation;
     for (const intent of [...intents.values()]) { if (!current(gen)) break;
-      if (!intent.busy) { try { await attempt(intent); } catch { /* The original action remains reviewable. */ } } }
+      if (!intent.busy && canAttemptAction(intent)) { try { await attempt(intent); } catch { /* The original action remains reviewable. */ } } }
   }
   function changed() {
     if (!draft) return; updateDirty(); draftVersion++; error.textContent = ""; displayedProblem = null; displayedProblemText = null;
@@ -765,6 +771,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
     renderLeavePrompt();
     const uncertain = [...intents.values()].filter(intent => intent.uncertain);
     recover.hidden = !uncertain.some(intent => !intent.busy);
+    recover.disabled = !uncertain.some(intent => !intent.busy && canAttemptAction(intent));
     status.textContent = uncertain.some(intent => intent.busy) ? t("Checking the previous action…")
       : uncertain.length ? t("The last action is unconfirmed. Check it before repeating it.") : "";
   }
