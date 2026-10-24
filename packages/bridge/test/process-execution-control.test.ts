@@ -158,7 +158,8 @@ for (const kind of ["cli", "adapter"] as const) {
     });
   }
   test(`${kind} output limits and failed spawn also produce evidence only after owned process cleanup`, async (t) => {
-    const fixture = await processFixture(t, kind, { mode: "flood", maxOutputBytes: 1024 });
+    // Allow loaded CI hosts to start the worker; this case must exercise the output cap, not the timeout path.
+    const fixture = await processFixture(t, kind, { mode: "flood", maxOutputBytes: 1024, timeoutMs: 10_000 });
     const input: HarnessExecutionInput = { request, canonicalHistory: [request], runtime, claimAttempt: 2 };
     const failure = await fixture.executor.execute(input).catch((error: unknown) => error);
     assert.ok(failure instanceof HarnessExecutionTerminatedError); assert.match(failure.failureCode, /output_limit/);
