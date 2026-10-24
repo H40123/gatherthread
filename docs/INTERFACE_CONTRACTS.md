@@ -563,7 +563,17 @@ project's workspace or inspect unrelated native conversations.
 Web sharing reads, sends, recovery and cancel operations each bound the whole
 HTTP exchange (including the response body) to eight seconds and abort their
 own transport. Uncertain retries preserve the original body/key. An uncertain
-enable is displayed as stoppable in both owner switches. Before a first-create
+enable is displayed as stoppable in both owner switches. Closing or returning
+from the sharing panel after an explicit warning does not cancel an in-flight
+write or retire its frozen receipt; reopening within the same authenticated
+context retains exact-body/key recovery. Only a draft for which no request was
+sent can be explicitly discarded. Current write authorization still gates every
+recovery mutation, and account/project scope changes fence delayed navigation.
+The view owns `agent-sharing-leave-confirmation` and its `leave-stay`,
+`leave-discard` and `leave-pending` controls (all with the `agent-sharing-`
+prefix), implemented as ordinary buttons rather than native modals or form
+submission. Their current navigation/pending identities fence stale actions.
+Before a first-create
 receipt supplies a grant ID, Stop independently discovers the owner's exact
 source grant and disables it; it never resends enable to discover the ID. If
 acceptance is not yet discoverable, Stop remains explicitly unconfirmed and

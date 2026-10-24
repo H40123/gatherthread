@@ -527,7 +527,7 @@ const agentManagementUi = mountAgentManagement({ document,
 const sharedAgentsUi = mountSharedAgents({ document, api, localizer,
   onExit: () => agentManagementUi.close(),
   hostButton: element("agent-sharing-button"), pickerHost: element("shared-agent-profile-fields"),
-  confirm: message => window.confirm(message), makeKey: () => createIdempotencyKey("agent-share"),
+  makeKey: () => createIdempotencyKey("agent-share"),
   onChange: () => renderComposerPermissions(),
   getContext: () => ({
     scope: `${authenticationGeneration}:${selectedSessionGeneration}:${state.currentUser?.id}:${state.project?.id}`,

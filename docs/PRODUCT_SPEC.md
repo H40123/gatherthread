@@ -294,6 +294,19 @@ of pending reads and cancels existing work. Empty recipient lists save disabled.
 Unsupported/offline sources remain visible; offline configuration can be saved,
 but starting requires a ready supported connection. Recovery never enables it.
 
+An invalid limit, removed/unsupported source or unavailable active source leaves
+an explicit unsaved reason rather than an indefinite Saving state. Back or Close
+first attempts a valid autosave; if no request can be sent, the owner may keep
+editing or explicitly discard only those local unsent edits and leave. A pending
+or unconfirmed write is different: the owner may leave after a warning that this
+does not cancel the update or stop sharing. Its original body/key and recovery
+control remain in the current authenticated panel context when reopened. Losing
+write permission disables mutation recovery until reauthorized, without trapping
+the owner in the dialog or treating the unknown result as saved or cancelled.
+The decision uses explicit buttons inside the sharing footer, including in the
+sandboxed free example; it does not depend on native JavaScript confirmation
+modals or expand the example's network, form or sandbox permissions.
+
 The owner selects recipients and combined daily call/time limits. The Web's
 initial totals are 100 calls and 300 minutes, shared by all allowed members,
 without an additional smaller per-member cap. Direct API clients may retain their

@@ -52,6 +52,9 @@
 .sharing-footer { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 24px; border-top: 1px solid var(--line); background: var(--glass-surface-strong); }
 .sharing-footer p { flex: 1 1 160px; margin: 0; }
 .sharing-footer p:empty { display: none; }
+.sharing-footer.sharing-footer-confirming { max-height: 50vh; overflow-y: auto; overscroll-behavior: contain; }
+.sharing-leave-confirmation { flex: 1 1 100%; min-width: 0; padding: 12px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--paper-muted); }
+.sharing-leave-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .shared-agent-picker { min-width: 0; }
 .shared-agent-picker > label { display: block; margin-bottom: 6px; font-size: .8125rem; }
 .shared-agent-picker select { width: 100%; min-height: 44px; max-width: 100%; }
