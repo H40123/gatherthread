@@ -9,6 +9,8 @@ export const SHARED_AGENT_ZH_CN = Object.freeze({
   "Click to add recipients": "点击添加共享对象",
   "Project member": "项目成员",
   "Not shared": "未共享",
+  "Connection {number}": "连接 {number}",
+  "Device online": "设备在线",
   "Start sharing": "开始共享",
   "Stop sharing": "停止共享",
   "Back to Agents": "返回 Agent 列表",

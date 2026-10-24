@@ -1,4 +1,4 @@
-import { normalizeReplayPage } from "./domain.js?v=20261018-tabs-2";
+import { normalizeReplayPage } from "./domain.js?v=20261024-launcher-sharing-1";
 
 const PHASE_DETAIL = {
   idle: "Choose a session to begin.",

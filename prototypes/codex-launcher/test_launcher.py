@@ -82,6 +82,56 @@ class ClaimResponse(io.BytesIO):
         self.headers = {"Content-Type": "application/json"}
 
 
+class ConnectorStatusTests(unittest.TestCase):
+    def test_connected_receipt_updates_status_before_child_exit(self):
+        for line in ('Connected session: Demo [multi] as "Demo"', 'GatherThread connector ready.',
+                     'Connected "claude-code" session: "Demo" [multi]'):
+            with self.subTest(line=line):
+                fake = email_launcher_fixture()
+                fake.log = MagicMock()
+                fake.after = MagicMock()
+                fake._poll = MagicMock()
+                process = MagicMock()
+                process.poll.return_value = None
+                fake.connector = process
+                fake.status.set("连接器正在启动")
+                process.stdout = iter([line + "\n"])
+                process.wait.return_value = 0
+                launcher.Launcher._read_connector(fake, process, "fixture-credential")
+                # Deliver the live output before the queued exit notification.
+                first = fake.events.get_nowait()
+                fake.events = launcher.queue.Queue()
+                fake.events.put(first)
+                launcher.Launcher._poll(fake)
+                self.assertIn("已连接", fake.status.get())
+
+    def test_native_startup_and_exited_process_do_not_report_connected(self):
+        for line, exit_code in (("Codex App Server ready: fixture", None), ("GatherThread connector ready.", 1)):
+            fake = email_launcher_fixture()
+            fake.log = MagicMock()
+            fake.after = MagicMock()
+            fake._poll = MagicMock()
+            fake.connector = MagicMock()
+            fake.connector.poll.return_value = exit_code
+            fake.status.set("starting")
+            fake.events.put(("connector_log", (fake.connector, line)))
+            launcher.Launcher._poll(fake)
+            self.assertEqual(fake.status.get(), "starting")
+
+    def test_old_connector_cannot_overwrite_new_connection_status(self):
+        fake = email_launcher_fixture()
+        fake.log = MagicMock()
+        fake.after = MagicMock()
+        fake._poll = MagicMock()
+        fake.connector = MagicMock()
+        fake.status.set("new connection")
+        old = MagicMock(stdout=iter(['Connected session: Old [solo] as "Old"\n']))
+        old.wait.return_value = 1
+        launcher.Launcher._read_connector(fake, old, "fixture-credential")
+        launcher.Launcher._poll(fake)
+        self.assertEqual(fake.status.get(), "new connection")
+
+
 class EmailAuthorizationTests(unittest.TestCase):
     def test_v2_keeps_actual_environment_and_fills_email(self):
         for origin in ("https://gatherthread.cn", "https://test.gatherthread.cn"):

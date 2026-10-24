@@ -1,4 +1,4 @@
-import { codeRuntimeChoices, codeErrorText } from "./code-sync.js?v=20261018-tabs-2";
+import { codeRuntimeChoices, codeErrorText } from "./code-sync.js?v=20261024-launcher-sharing-1";
 
 export const GITHUB_CODE_JOB_KINDS = new Set([
   "github_auth_connect",

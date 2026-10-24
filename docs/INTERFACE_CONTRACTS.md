@@ -276,6 +276,8 @@ Detail reads require the requester's current session read permission in every jo
 - `snapshot_connector` jobs create immutable read-only local snapshots and cannot claim Agent requests or publish local turns.
 - Each manual Codex history import creates and verifies a new writable local task. The `visible_history_replace` operation retains its Alpha wire name for compatibility, switches the binding and Hook allowlist after verification, and leaves the previous task untouched for the user to archive. The private registry marks that previous task `local_only`, so its later prompts cannot enter first-prompt discovery or create cloud state.
 - Empty-session visibility markers and compact summaries are local-only. Realtime context injection remains independent from snapshot/import policy.
+- Codex Desktop's app-generated next-message suggestions are not human turns. Hook admission, offline replay and completed-native-turn discovery exclude the recognized native request envelope; unknown Stop events cannot discover a session. Ordinary human prompts, including quoted explanations of that envelope, retain their normal synchronization policy.
+- On upgrade, unsubmitted suggestion drafts/outbox entries are discarded before publishing. A prior `commit_unknown` suggestion is never retried, modified or falsely acknowledged: its exact private evidence and uncertainty barriers remain until explicitly reconciled. Suppressed suggestions are not counted as uploadable or successfully uploaded human turns.
 - Visible Codex imports preserve public message bodies, subject to a separate bounded serialized snapshot size. An oversized resource is rejected before import, not shortened and marked complete. Native compaction, when required, must succeed before the new binding is committed. A summary is not a lossless copy or canonical history.
 - New snapshot kinds or changed claim authority require protocol, ACL, quota, bridge, integration, and security tests.
 
@@ -582,6 +584,13 @@ User MCP exposes only `collaboration_list_shared_agents`,
 `collaboration_request_shared_agent` and `collaboration_cancel_shared_agent_request`,
 through the project-scoped borrower API; it exposes no sharing management or
 native claim/availability controls.
+
+The owner list groups unconfigured conversation runtimes by exact device and
+harness. Every saved grant retains its exact source runtime and Stop control;
+grouping never migrates permissions. Independently authorized devices remain
+separate even when their default names match, with distinct connection labels
+and online/offline state. An open editor keeps its selected source until the
+user leaves it.
 
 Persistence adds separate grants, allowlists, usage, jobs, receipts, capabilities
 and source barriers, plus an additive canonical origin marker. Existing ordinary

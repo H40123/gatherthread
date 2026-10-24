@@ -1,5 +1,5 @@
-import { normalizeLauncherEmail, projectCodexLauncherUrl, projectClaudeLauncherUrl, isClaudeModelId } from "./domain.js?v=20261018-tabs-2";
-import { LAUNCHER_RELEASE_URL } from "./launcher-downloads.js?v=20261018-tabs-2";
+import { normalizeLauncherEmail, projectCodexLauncherUrl, projectClaudeLauncherUrl, isClaudeModelId } from "./domain.js?v=20261024-launcher-sharing-1";
+import { LAUNCHER_RELEASE_URL } from "./launcher-downloads.js?v=20261024-launcher-sharing-1";
 
 const EMAIL_HINT_KEY = "gt-account-email-hint";
 const optionalStorage = (name) => { try { return globalThis[name]; } catch { return null; } };

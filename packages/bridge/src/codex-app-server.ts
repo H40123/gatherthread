@@ -16,7 +16,7 @@ import { HarnessExecutionTerminatedError, HarnessExecutionUnconfirmedError } fro
 import { terminateOwnedProcessGroup } from "./owned-process.js";
 import { ProcessExecutionState } from "./process-execution-state.js";
 import { CODEX_PUBLIC_WORK_METHODS, createCodexLiveOutputMapper } from "./codex-live-output.js";
-import { updateCodexHookRegistry, type CodexHookEvent, type CodexHookRelayResult } from "./codex-hooks.js";
+import { isCodexAppGeneratedPrompt, updateCodexHookRegistry, type CodexHookEvent, type CodexHookRelayResult } from "./codex-hooks.js";
 import type {
   ProjectHarnessAdapter,
   ProjectHarnessDescriptor,
@@ -2012,6 +2012,7 @@ export class CodexAppServerExecutor implements HarnessExecutor {
     event: CodexHookEvent,
     replay = false,
   ): Promise<(CodexHookRelayResult & { handled: boolean })> {
+    if (event.hook_event_name === "UserPromptSubmit" && isCodexAppGeneratedPrompt(event.prompt)) return { handled: true };
     await this.#ensureDeletionRevision(api, runtime);
     return this.#withStateWriter(async () => {
       if (runtime.purpose === "snapshot_connector") return { handled: false };
@@ -2661,14 +2662,14 @@ export class CodexAppServerExecutor implements HarnessExecutor {
         });
       }
       if (discovered.length > 0) await this.#saveState(state);
-      const pendingBefore = state.pendingLocalTurns.length;
+      const pendingBefore = state.pendingLocalTurns.filter(turn => !isAppGeneratedLocalTurn(turn)).length;
       await this.#synchronizeLocalTurns(api, runtime, true);
       const refreshed = await this.#loadState(runtime.sessionId, workspacePath);
       if (!refreshed) throw new Error("Codex local conversation state disappeared during upload");
       return {
         ...this.#localSyncStatus(refreshed, await this.#countUploadableLocalTurns(refreshed)),
         discoveredLocalTurns: discovered.length,
-        uploadedLocalTurns: Math.max(0, pendingBefore - refreshed.pendingLocalTurns.length),
+        uploadedLocalTurns: Math.max(0, pendingBefore - refreshed.pendingLocalTurns.filter(turn => !isAppGeneratedLocalTurn(turn)).length),
       };
     });
   }
@@ -2682,6 +2683,11 @@ export class CodexAppServerExecutor implements HarnessExecutor {
     const workspacePath = await validateCodexWorkspace(this.#workspacePath);
     let state = await this.#loadState(runtime.sessionId, workspacePath);
     if (!state) return;
+    let discardedDraft = false;
+    for (const draft of Object.values(state.hookDrafts)) {
+      if (discardAppGeneratedDraft(state, draft)) discardedDraft = true;
+    }
+    if (discardedDraft) await this.#saveState(state);
     if (state.contextResetRequired !== undefined || state.localOnlyThreadIds?.includes(state.threadId)) return;
     if (state.projectionJournal && !this.#desktopHookOnly) {
       state = await this.#rebuildProjection(
@@ -2714,6 +2720,7 @@ export class CodexAppServerExecutor implements HarnessExecutor {
       // Legacy combined projections may enrich trusted hook turns with tools.
       // Dual projections intentionally omit them because Desktop owns its task.
       for (const pending of state.pendingLocalTurns) {
+        if (isAppGeneratedLocalTurn(pending)) continue;
         if (pending.toolEvents.length > 0) continue;
         const turn = thread.turns.find((candidate) => candidate.id === pending.turnId && candidate.status === "completed");
         if (turn) pending.toolEvents = canonicalLocalToolEvents(turn, pending.occurredAt);
@@ -2721,6 +2728,18 @@ export class CodexAppServerExecutor implements HarnessExecutor {
     }
     if (!forceUpload && !state.automaticUpload) return;
     for (const pending of [...state.pendingLocalTurns]) {
+      if (isAppGeneratedLocalTurn(pending)) {
+        // Never re-POST an old synthetic request. An uncertain commit retains
+        // its exact private evidence and existing reconciliation barrier; we
+        // cannot invent an acknowledgement or erase an already accepted event.
+        const binding = state.localTurnBindings[pending.localTurnId];
+        if (binding?.status !== "commit_unknown") {
+          state.pendingLocalTurns = state.pendingLocalTurns.filter(item => item !== pending);
+          if (binding?.status === "pending") delete state.localTurnBindings[pending.localTurnId];
+          await this.#saveState(state);
+        }
+        continue;
+      }
       if (pending.threadId !== state.threadId || (pending.contentRevision ?? 0) !== (state.contentRevision ?? 0)) {
         state.pendingLocalTurns = state.pendingLocalTurns.filter((item) => item !== pending);
         delete state.localTurnBindings[pending.localTurnId];
@@ -2772,9 +2791,10 @@ export class CodexAppServerExecutor implements HarnessExecutor {
   }
 
   async #countUploadableLocalTurns(state: CodexAppServerState): Promise<number> {
-    if (!this.#desktopHookOnly) return state.pendingLocalTurns.length;
+    const pending = state.pendingLocalTurns.filter(turn => !isAppGeneratedLocalTurn(turn)).length;
+    if (!this.#desktopHookOnly) return pending;
     const thread = await this.#client.readThread(state.threadId);
-    return state.pendingLocalTurns.length + discoverCompletedLocalTurns(thread.turns, state).length;
+    return pending + discoverCompletedLocalTurns(thread.turns, state).length;
   }
 
   #localSyncStatus(state: CodexAppServerState, uploadableLocalTurns: number): LocalConversationSyncStatus {
@@ -3255,6 +3275,7 @@ export class CodexAppServerExecutor implements HarnessExecutor {
   #promoteHookDraft(state: CodexAppServerState, turn: CodexThreadTurn | undefined): void {
     if (!turn || turn.status !== "completed") return;
     const draft = state.hookDrafts[turn.id];
+    if (draft && discardAppGeneratedDraft(state, draft)) return;
     if (!draft?.finalResponse) return;
     const userItem = turn.items.find((item) => isObject(item) && item.type === "userMessage");
     const requestText = isObject(userItem) ? userInputText(userItem.content) : undefined;
@@ -3284,6 +3305,7 @@ export class CodexAppServerExecutor implements HarnessExecutor {
   }
 
   #promoteHookDraftWithoutThread(state: CodexAppServerState, draft: HookLocalTurnDraft): void {
+    if (discardAppGeneratedDraft(state, draft)) return;
     if (!draft.finalResponse) return;
     if (!state.pendingLocalTurns.some((pending) => pending.localTurnId === draft.localTurnId)) {
       state.pendingLocalTurns.push({
@@ -3887,6 +3909,17 @@ export class CodexProjectHarness implements ProjectHarnessAdapter {
     this.#clients.add(client);
     return client;
   }
+}
+
+function isAppGeneratedLocalTurn(turn: { requestPayload: unknown }): boolean {
+  return isCodexAppGeneratedPrompt(objectOptionalString(turn.requestPayload, "text") ?? "");
+}
+
+function discardAppGeneratedDraft(state: CodexAppServerState, draft: HookLocalTurnDraft): boolean {
+  if (!isAppGeneratedLocalTurn(draft)) return false;
+  delete state.hookDrafts[draft.turnId];
+  if (state.localTurnBindings[draft.localTurnId]?.status === "pending") delete state.localTurnBindings[draft.localTurnId];
+  return true;
 }
 
 function clearUncommittedLocalPublishingState(state: CodexAppServerState): void {
@@ -4672,7 +4705,7 @@ export function discoverCompletedLocalTurns(
     );
     if (!isObject(response) || typeof response.text !== "string") continue;
     const requestText = userInputText(userItem.content);
-    if (requestText === undefined) continue;
+    if (requestText === undefined || isCodexAppGeneratedPrompt(requestText)) continue;
     const localTurnId = `codex:${createHash("sha256").update(`${state.threadId}\0${turn.id}`).digest("hex")}`;
     if (state.localTurnBindings[localTurnId]) continue;
     const occurredAt = new Date(((turn.completedAt ?? turn.startedAt) ?? Math.floor(Date.now() / 1000)) * 1000).toISOString();

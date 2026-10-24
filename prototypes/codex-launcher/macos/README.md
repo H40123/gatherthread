@@ -80,6 +80,13 @@ targets that minimum rather than the build machine's OS version.
    running; its GatherThread Dock icon restores the window
    after closing it. Use **Stop connection** before quitting.
 
+The status changes to **已连接** after the connector confirms project/session
+readiness, including an empty project. Short live log lines appear immediately;
+messages from a replaced connector cannot overwrite the current connection.
+For an offline native regression check after compilation, run the executable
+with `--connector-output-self-test`. It uses a fictional local child process,
+without account authorization or a model call.
+
 New `v=2` links are restricted to those two exact official HTTPS origins. An email
 account in the test environment is separate from the production account. A URL opens the form
 but never automatically starts a connector or installs Hooks. Local/self-hosted

@@ -1,4 +1,4 @@
-import { canAppend, retryAgentRequestInput } from "./domain.js?v=20261018-tabs-2";
+import { canAppend, retryAgentRequestInput } from "./domain.js?v=20261024-launcher-sharing-1";
 
 export const isCloudTrialRequest = (request) => request?.payload?.execution_profile?.harness === "opencode"
   && !request.payload.github_task_id;

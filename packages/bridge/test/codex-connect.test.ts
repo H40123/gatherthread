@@ -698,6 +698,25 @@ test("plugin Hook mode preserves but never drains the compatibility project Hook
   }
 });
 
+test("old next-message suggestion spools cannot create a Solo on reconnect", async () => {
+  const directory = await mkdtemp(path.join(socketTemporaryBase, "gt-suggestion-reconnect-"));
+  const paths = resolveWorkspaceCodexHookPaths(directory, directory);
+  await mkdir(path.dirname(paths.hookSpoolPath), { recursive: true });
+  await writeFile(paths.hookSpoolPath, JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "native-suggestion",
+    turn_id: "suggestion-turn", cwd: directory, model: "gpt-test",
+    prompt: "This is an app-generated request for a suggested next user message. The user did not write this message. Your suggestion should be brief." }) + "\n");
+  const stop = new AbortController(), project = { id: "project-1", name: "Fixture", role: "owner", state: "active", sessionCount: 0 } as const;
+  let creations = 0;
+  const api = { listProjects: async () => [project], listProjectSessions: async () => {
+    setTimeout(() => stop.abort(), 20); return [];
+  }, createSession: async () => { creations++; throw new Error("No cloud mutation allowed"); } } as unknown as HttpCollaborationClient;
+  await runProjectConnector({ api, actorUserId: "user-1", actorDeviceId: "device-1", project, stateRoot: directory,
+    harness: {} as ProjectHarnessAdapter, signal: stop.signal, token: "fictional", hookWorkspacePath: directory,
+    ...paths, hookMode: "project", hookRelay: { start: async () => {}, close: async () => {} } });
+  assert.equal(creations, 0);
+  assert.deepEqual(await readCodexHookSpool(paths.hookSpoolPath), []);
+});
+
 test("create-workspace reveals the exact validated project once with no GatherThread environment", async () => {
   const workspacePath = await mkdtemp(path.join(tmpdir(), "gatherthread-desktop-reveal-"));
   const verifiedWorkspacePath = await realpath(workspacePath);

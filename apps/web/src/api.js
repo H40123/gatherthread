@@ -1,4 +1,4 @@
-import { avatarImage } from "./avatars.js?v=20261018-tabs-2";
+import { avatarImage } from "./avatars.js?v=20261024-launcher-sharing-1";
 import { MockFileWorkspace } from "./file-workspace-mock.js";
 import { FileBranchesResultSchema, FileTreeResultSchema, FileContentResultSchema,
   FileHistoryResultSchema, FileChangesResultSchema, FileMutationResultSchema, FileMutationInputSchema } from "@gatherthread/protocol";
@@ -20,7 +20,7 @@ import {
   isExecutionRuntime,
   normalizeInvitation,
   normalizeSnapshotRequest,
-} from "./domain.js?v=20261018-tabs-2";
+} from "./domain.js?v=20261024-launcher-sharing-1";
 
 const TITLE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
 
@@ -936,7 +936,7 @@ export class HttpCollaborationApi {
       }), HOSTED_AGENT_RESPONSE_ERROR);
       return this.#event(receipt.request_event);
     }
-    const { historySummaryExecutionWire } = await import("./history-summaries.js?v=20261018-tabs-2");
+    const { historySummaryExecutionWire } = await import("./history-summaries.js?v=20261024-launcher-sharing-1");
     const { event } = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/history-summaries`, {
       method: "POST",
       body: JSON.stringify({
@@ -2112,7 +2112,7 @@ export class MockCollaborationApi {
     const existing = this.idempotentEvents.get(`${sessionId}:${input.idempotencyKey}`);
     if (existing) return structuredClone(existing);
     const contentRevision = this.#findSession(sessionId).contentRevision ?? 0;
-    const { historyWireEvents, historySummaryExecutionWire } = await import("./history-summaries.js?v=20261018-tabs-2");
+    const { historyWireEvents, historySummaryExecutionWire } = await import("./history-summaries.js?v=20261024-launcher-sharing-1");
     const { selectHistorySummarySources, historySummarySourceJson, buildHistorySummaryPrompt } = await import("./history-summary-policy.js");
     historySummaryExecutionWire(input.executionProfile);
     let sources;
