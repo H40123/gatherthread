@@ -1,6 +1,7 @@
 import { TEAM_DIAGNOSTIC_ZH_CN } from "./agent-team-diagnostics.js";
 
 export const TEAM_ZH_CN = {
+  "Back": "返回",
   ...TEAM_DIAGNOSTIC_ZH_CN,
   "View run records": "查看运行记录",
   "Test failed. The detailed record is unavailable; check the connections and retest. Test calls use provider and sharing allowances.": "测试未跑通，详细记录当前不可用；请检查连接后重测。测试会使用模型和共享额度。",

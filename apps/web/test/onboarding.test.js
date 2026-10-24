@@ -86,6 +86,19 @@ test("desktop and phone guides teach the real file workspace, Markdown tabs and 
   }
 });
 
+test("connection guidance targets Agent management beside the model selector in the conversation", () => {
+  for (const layout of ["desktop", "mobile"]) {
+    const connect = guideSteps("basics", { layout }).find(item => item.id === "connect");
+    assert.equal(connect.target, "#manage-agents-button");
+    assert.equal(connect.view, "conversation");
+    assert.match(guideText(connect.text, "en"), /below the message box.*to the right of the model and reasoning button/iu);
+    assert.match(guideText(connect.text, "zh-CN"), /输入框下方.*模型与推理强度按钮右侧.*管理我的 Agent|管理我的 Agent.*输入框下方.*模型与推理强度按钮右侧/u);
+  }
+  const desktop = guideSteps("basics", { layout: "desktop" }).find(item => item.id === "connect");
+  assert.match(desktop.text[0], /Manage my Agents.*Add my Agent/);
+  assert.match(desktop.text[1], /管理我的 Agent.*添加我的 Agent/);
+});
+
 test("mobile guide uses visible drawer and Agent controls without mobile installation instructions", () => {
   const basics = guideSteps("basics", { layout: "mobile" });
   assert.equal(basics.find((item) => item.id === "project").target, "#toggle-session-rail-button");

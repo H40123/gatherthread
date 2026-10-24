@@ -274,31 +274,6 @@
               <span aria-hidden="true">+</span>
             </button>
           </div>
-          <button
-            id="connect-codex-button"
-            class="button button-secondary project-connect-button"
-            type="button"
-            aria-haspopup="dialog"
-            aria-controls="connect-codex-dialog"
-            hidden
-          >
-            <span>Connect Codex</span>
-          </button>
-          <button
-            id="connect-dsh-button"
-            class="button button-secondary project-connect-button"
-            type="button"
-            aria-haspopup="dialog"
-            aria-controls="connect-dsh-dialog"
-            hidden
-          >
-            <span>Connect DeepSeek Harness</span>
-            <small id="connect-dsh-button-status">Not connected</small>
-          </button>
-          <button id="connect-claude-button" class="button button-secondary project-connect-button" type="button" aria-haspopup="dialog" aria-controls="connect-claude-dialog" hidden><span>Connect Claude Code</span></button>
-          <button id="add-agent-button" class="icon-button agent-settings-shortcut" type="button" aria-label="Choose Agent connections" title="Choose Agent connections" data-tooltip aria-haspopup="dialog" aria-controls="settings-dialog"><span aria-hidden="true">＋</span></button>
-          <button id="agent-sharing-button" class="button button-secondary button-wide" type="button" aria-haspopup="dialog" aria-controls="agent-sharing-dialog" disabled>Share my Agent</button>
-          <button id="agent-teams-button" class="button button-secondary button-wide" type="button" aria-haspopup="dialog" aria-controls="agent-team-dialog" disabled>Agent teams</button>
           <div class="project-action-row">
             <button id="rename-project-button" class="text-button project-rename-button" type="button" aria-haspopup="dialog" aria-controls="rename-project-dialog" hidden>
               Rename project
@@ -568,7 +543,10 @@
               </div>
               <div class="composer-actions">
                 <button id="mobile-compose-tools-button" class="icon-button mobile-workspace-only" type="button" aria-label="Conversation tools" title="Conversation tools" aria-haspopup="dialog" aria-controls="mobile-tools-dialog"><span aria-hidden="true">＋</span></button>
-                <button id="mobile-agent-button" class="mobile-agent-button composer-agent-button" type="button" aria-label="Agent, model and reasoning" title="Agent, model and reasoning" aria-haspopup="dialog" aria-controls="mobile-agent-dialog" aria-expanded="false"><span id="mobile-agent-label" data-i18n-skip>Codex</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></button>
+                <div id="composer-agent-controls" class="composer-agent-controls">
+                  <button id="mobile-agent-button" class="mobile-agent-button composer-agent-button" type="button" aria-label="Agent, model and reasoning" title="Agent, model and reasoning" aria-haspopup="dialog" aria-controls="mobile-agent-dialog" aria-expanded="false"><span id="mobile-agent-label" data-i18n-skip>Codex</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></button>
+                  <button id="manage-agents-button" class="button button-primary composer-management-button" type="button" aria-haspopup="dialog" aria-controls="agent-management-dialog" disabled><span>Manage my Agents</span></button>
+                </div>
                 <div class="intent-help" id="send-chat-help">
                   <button id="send-chat-button" class="button button-secondary" type="button">
                     <span aria-hidden="true">↗</span><span class="desktop-send-label">Send chat</span><span class="mobile-send-label">Chat only</span>
@@ -1030,6 +1008,44 @@
       <div id="mobile-members-content"></div>
     </dialog>
 
+    <dialog id="agent-management-dialog" class="create-dialog agent-management-dialog" aria-labelledby="agent-management-title">
+      <header class="agent-management-heading">
+        <div>
+          <!-- Approved final-f lockups; keep the delivered outlined wordmark. -->
+          <div class="brand-lockup agent-management-brand" aria-hidden="true">
+            <img class="brand-lockup-image brand-lockup-image-light" src="./brand/lockup-color-transparent-light.svg" alt="" />
+            <img class="brand-lockup-image brand-lockup-image-dark" src="./brand/lockup-color-transparent-dark.svg" alt="" />
+          </div>
+          <h2 id="agent-management-title">Manage my Agents</h2>
+        </div>
+        <button id="agent-management-close" class="icon-button workspace-icon-button" type="button" aria-label="Close Agent management"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+      </header>
+      <div class="agent-management-body">
+        <button id="agent-management-back" class="text-button agent-management-back" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg><span>Back</span></button>
+        <div id="agent-management-overview" class="agent-management-actions">
+          <div class="agent-management-entry">
+            <button id="agent-management-add" class="button button-secondary button-wide agent-management-row" type="button">Add my Agent</button>
+            <svg class="agent-management-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+          </div>
+          <div class="agent-management-entry">
+            <button id="agent-sharing-button" class="button button-secondary button-wide agent-management-row" type="button" aria-haspopup="dialog" aria-controls="agent-sharing-dialog" disabled>Manage my Agents</button>
+            <svg class="agent-management-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+          </div>
+          <div class="agent-management-entry">
+            <button id="agent-teams-button" class="button button-secondary button-wide agent-management-row" type="button" aria-haspopup="dialog" aria-controls="agent-team-dialog" disabled>Agent teams</button>
+            <svg class="agent-management-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+          </div>
+        </div>
+        <div id="agent-management-connections" class="agent-management-actions" hidden>
+          <button id="connect-codex-button" class="button button-secondary project-connect-button" type="button" aria-haspopup="dialog" aria-controls="connect-codex-dialog" hidden><span>Connect Codex</span></button>
+          <button id="connect-dsh-button" class="button button-secondary project-connect-button" type="button" aria-haspopup="dialog" aria-controls="connect-dsh-dialog" hidden><span>Connect DeepSeek Harness</span><small id="connect-dsh-button-status">Not connected</small></button>
+          <button id="connect-claude-button" class="button button-secondary project-connect-button" type="button" aria-haspopup="dialog" aria-controls="connect-claude-dialog" hidden><span>Connect Claude Code</span></button>
+          <button id="add-agent-button" class="button button-secondary button-wide agent-settings-shortcut" type="button" aria-label="Choose Agent connections" aria-haspopup="dialog" aria-controls="settings-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg><span>More Agent connections</span></button>
+          <p class="agent-management-mobile-note">Set up local Agent connections in Desktop mode on a computer. You can use online Agents here.</p>
+        </div>
+      </div>
+      <footer class="agent-management-footer"></footer>
+    </dialog>
     <dialog id="connect-claude-dialog" class="create-dialog codex-connect-dialog" aria-labelledby="connect-claude-title" aria-describedby="connect-claude-summary">
       <div class="codex-connect-content">
         <div class="dialog-heading"><div><p class="eyebrow">Project connector</p><h2 id="connect-claude-title">Connect Claude Code</h2></div><button id="close-connect-claude-button" class="icon-button" type="button" aria-label="Close Connect Claude Code dialog">×</button></div>

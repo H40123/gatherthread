@@ -72,15 +72,23 @@ async function login(page, empty = false) {
   await page.locator(empty ? "#empty-state:not([hidden])" : "#session-view:not([hidden])").waitFor();
 }
 
-async function openAgentSettings(page, width) {
-  if (width < 760 && await page.locator("#toggle-session-rail-button").getAttribute("aria-expanded") === "false") {
-    await page.locator("#toggle-session-rail-button").click();
-  }
+async function openAgentSettings(page, { empty = false } = {}) {
   const url = page.url();
-  await page.locator("#add-agent-button").waitFor({ state: "visible" });
-  await page.locator("#add-agent-button").focus();
-  assert.equal(await page.evaluate(() => document.activeElement?.id), "add-agent-button");
-  await page.keyboard.press("Enter");
+  if (empty) {
+    assert.equal(await page.locator("#manage-agents-button").isVisible(), false,
+      "the project-scoped management entry is unavailable before the first project");
+    await page.locator("#settings-button").click();
+    await page.locator("#settings-dialog[open]").waitFor();
+    await page.locator('.settings-navigation a[href="#settings-agents"]').click();
+  } else {
+    await page.locator("#manage-agents-button").click();
+    await page.locator("#agent-management-dialog[open]").waitFor();
+    await page.locator("#agent-management-add").click();
+    await page.locator("#add-agent-button").waitFor({ state: "visible" });
+    await page.locator("#add-agent-button").focus();
+    assert.equal(await page.evaluate(() => document.activeElement?.id), "add-agent-button");
+    await page.keyboard.press("Enter");
+  }
   try { await page.locator("#settings-dialog[open]").waitFor({ timeout: 8000 }); }
   catch (error) {
     await page.screenshot({ path: `${artifacts}/${browserName}-shortcut-failure.png` });
@@ -178,18 +186,16 @@ try {
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "home has no horizontal overflow");
       await page.screenshot({ path: `${artifacts}/${prefix}-home.png` });
       await login(page);
-      await openAgentSettings(page, width);
+      await openAgentSettings(page);
       await page.screenshot({ path: `${artifacts}/${prefix}-settings.png` });
       await page.locator("#close-settings-button").click();
-      if (width < 760 && !await page.locator("#add-agent-button").isVisible()) await page.locator("#toggle-session-rail-button").click();
-      else await page.waitForFunction(() => document.activeElement?.id === "add-agent-button");
+      await page.waitForFunction(() => document.activeElement?.id === "add-agent-button");
       await page.locator("#add-agent-button").click();
       await page.locator("#settings-enabled-dsh").check();
       await page.locator("#settings-confirm-agent").check();
       await page.locator("#settings-form button[type=submit]").click();
-      if (width < 760 && await page.locator("#toggle-session-rail-button").getAttribute("aria-expanded") === "true") {
-        await page.locator("#toggle-session-rail-button").click();
-      }
+      await page.locator("#agent-management-close").click();
+      await page.locator("#agent-management-dialog").waitFor({ state: "hidden" });
       await exerciseControl(page, "codex", locale, prefix);
       await exerciseControl(page, "deepseek-harness", locale, prefix);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "workspace has no horizontal overflow");
@@ -199,7 +205,7 @@ try {
   }
   const { page, context } = await contextFor("zh-CN", 1440);
   await login(page, true);
-  await openAgentSettings(page, 1440);
+  await openAgentSettings(page, { empty: true });
   await page.locator("#settings-enabled-dsh").check();
   await page.locator("#settings-form button[type=submit]").click();
   assert.equal(await page.locator("#settings-dialog").getAttribute("open"), null, "settings remain usable before the first project");

@@ -2,6 +2,11 @@ import { SHARED_AGENT_ZH_CN } from "./shared-agent-i18n.js";
 import { WORKSPACE_FILES_ZH_CN } from "./workspace-files.js";
 
 const ZH_CN = Object.freeze({
+  "Manage my Agents": "管理我的 Agent",
+  "Add my Agent": "添加我的 Agent",
+  "Close Agent management": "关闭 Agent 管理",
+  "More Agent connections": "更多 Agent 连接",
+  "Set up local Agent connections in Desktop mode on a computer. You can use online Agents here.": "请在电脑的桌面模式中设置本地 Agent 连接；这里可以使用已在线的 Agent。",
   "Connect Claude Code": "连接 Claude Code",
   "Close Connect Claude Code dialog": "关闭 Claude Code 连接窗口",
   "Claude model ID": "Claude 模型 ID",
