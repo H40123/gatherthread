@@ -34,8 +34,9 @@ const grant = { id: "share-a", project_id: "project-a", owner_user_id: "alice", 
   total_usage: usage, allowed_user_ids: ["bob"], source_runtime_id: "runtime-a", owner_device_id: "device-a",
   created_at: "2026-10-15T00:00:00.000Z", updated_at: "2026-10-15T00:00:00.000Z" };
 const flush = async () => { for (let index = 0; index < 18; index++) await Promise.resolve(); };
-function fixture({ initial = [], overrides = {}, deadline = 8000, patch = {}, autosave = 0 } = {}) {
-  const doc = { activeElement: null, documentElement: { lang: "en" }, createElement: tag => new Element(doc, tag) };
+function fixture({ initial = [], overrides = {}, deadline = 8000, patch = {}, autosave = 0, confirm = () => false } = {}) {
+  const doc = { activeElement: null, documentElement: { lang: "en" }, createElement: tag => new Element(doc, tag),
+    createElementNS: (_namespace, tag) => new Element(doc, tag) };
   doc.body = new Element(doc, "body");
   doc.getElementById = id => {
     const find = node => node.id === id ? node : node.children.map(find).find(Boolean);
@@ -45,7 +46,7 @@ function fixture({ initial = [], overrides = {}, deadline = 8000, patch = {}, au
     ownRuntimes: [runtime], devices: [{ id: "device-a", name: "Alice Mac" }], members: [
       { userId: "alice", username: "Alice", role: "owner" }, { userId: "bob", username: "Bob", role: "participant" },
       { userId: "viewer", username: "Viewer", role: "viewer" }], ...patch };
-  let shares = initial.map(value => structuredClone(value)), counter = 0; const calls = []; let changes = 0;
+  let shares = initial.map(value => structuredClone(value)), counter = 0; const calls = []; let changes = 0, exits = 0;
   const api = {
     listAgentShares: async () => ({ shares: structuredClone(shares) }),
     saveAgentShare: async (project, input) => { calls.push(["save", project, structuredClone(input)]);
@@ -59,12 +60,13 @@ function fixture({ initial = [], overrides = {}, deadline = 8000, patch = {}, au
     ...overrides,
   };
   const ui = mountSharedAgents({ document: doc, api, localizer: { t: value => value }, getContext: () => context,
-    makeKey: kind => `${kind}-fixture-${++counter}`, onChange: () => changes++, readDeadlineMs: deadline, autosaveDelayMs: autosave });
+    makeKey: kind => `${kind}-fixture-${++counter}`, onChange: () => changes++, onExit: () => exits++, confirm,
+    readDeadlineMs: deadline, autosaveDelayMs: autosave });
   doc.body.append(ui.elements.button, ui.elements.picker);
   ui.updateContext();
   return { ui, doc, api, calls, el: id => doc.getElementById(`agent-sharing-${id}`),
     update(value) { context = { ...context, ...value }; ui.updateContext(); }, get context() { return context; },
-    set shares(value) { shares = value; }, get changes() { return changes; } };
+    set shares(value) { shares = value; }, get changes() { return changes; }, get exits() { return exits; } };
 }
 
 const wait = async () => { await new Promise(resolve => setTimeout(resolve, 8)); await flush(); };
@@ -186,7 +188,108 @@ test("close waits for the latest autosave instead of hiding an unconfirmed chang
   } } });
   await openEditor(f); f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input");
   f.el("close").click(); await flush(); assert.equal(f.ui.elements.dialog.open, true);
-  resolve(); await flush(); assert.equal(f.ui.elements.dialog.open, false);
+  resolve(); await flush(); assert.equal(f.ui.elements.dialog.open, false); assert.equal(f.exits, 1);
+});
+test("overview Back returns to Agent management while the corner close exits to the workspace", async () => {
+  const f = fixture(); await f.ui.open();
+  assert.match(f.el("overview-back").className, /agent-dialog-back/u);
+  assert.equal(f.el("overview-back").children[0].tagName, "SVG");
+  assert.match(f.el("close").className, /workspace-icon-button/u);
+  assert.equal(f.el("close").children[0].tagName, "SVG");
+  f.el("overview-back").click(); assert.equal(f.ui.elements.dialog.open, false); assert.equal(f.exits, 0);
+  await f.ui.open(); f.el("close").click(); assert.equal(f.ui.elements.dialog.open, false); assert.equal(f.exits, 1);
+});
+test("editor Back and Escape return one level at a time without exiting the workspace", async () => {
+  const f = fixture(); await openEditor(f);
+  f.el("back").click(); assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.el("overview").hidden, false);
+  f.el("list").children[0].children[0].click(); let prevented = 0;
+  f.ui.elements.dialog.dispatch("cancel", { preventDefault() { prevented++; } });
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.el("editor").hidden, true);
+  f.ui.elements.dialog.dispatch("cancel", { preventDefault() { prevented++; } });
+  assert.equal(f.ui.elements.dialog.open, false); assert.equal(f.exits, 0); assert.equal(prevented, 2);
+});
+test("Back waits for a valid autosave before leaving the editor", async () => {
+  let release; const f = fixture({ autosave: 1000, initial: [grant], overrides: { saveAgentShare: async (_p, input) => {
+    await new Promise(resolve => { release = resolve; }); return { share: { ...grant, revision: 2, limits: input.limits } };
+  } } });
+  await openEditor(f); f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input");
+  f.el("back").click(); await flush(); assert.equal(f.el("editor").hidden, false); assert.equal(f.ui.elements.dialog.open, true);
+  release(); await flush(); assert.equal(f.el("editor").hidden, true); assert.equal(f.el("overview").hidden, false);
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.exits, 0); f.ui.clear();
+});
+test("Escape replaces a pending exit with a return to the previous page", async () => {
+  let release; const f = fixture({ autosave: 1000, initial: [grant], overrides: { saveAgentShare: async (_p, input) => {
+    await new Promise(resolve => { release = resolve; }); return { share: { ...grant, revision: 2, limits: input.limits } };
+  } } });
+  await openEditor(f); f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input");
+  f.el("close").click(); await flush(); f.ui.elements.dialog.dispatch("cancel"); release(); await flush();
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.el("overview").hidden, false); assert.equal(f.exits, 0); f.ui.clear();
+});
+test("editing after a queued exit cancels that navigation before either save receipt arrives", async () => {
+  let release, first = true;
+  const f = fixture({ autosave: 1000, initial: [grant], overrides: { saveAgentShare: async (_p, input) => {
+    if (first) { first = false; await new Promise(resolve => { release = resolve; }); }
+    return { share: { ...grant, revision: input.expected_revision + 1, limits: input.limits } };
+  } } });
+  await openEditor(f); f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input");
+  f.el("close").click(); await flush(); f.el("total_daily_calls").value = "26"; f.el("total_daily_calls").dispatch("input");
+  release(); await wait(); assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.el("editor").hidden, false); assert.equal(f.exits, 0); f.ui.clear();
+});
+test("an unconfirmed save keeps navigation visible and retry cannot later execute an obsolete exit", async () => {
+  let first = true; const f = fixture({ autosave: 1000, initial: [grant], overrides: { saveAgentShare: async (_p, input) => {
+    if (first) { first = false; throw Error("lost save response"); }
+    return { share: { ...grant, revision: 2, limits: input.limits } };
+  } } });
+  await openEditor(f); f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input"); f.el("close").click(); await flush();
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.el("editor").hidden, false); assert.equal(f.exits, 0);
+  assert.equal(f.el("retry").hidden, false); assert.match(f.el("error").textContent, /not confirmed/u);
+  f.el("retry").click(); await flush(); assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.exits, 0);
+  f.el("close").click(); assert.equal(f.ui.elements.dialog.open, false); assert.equal(f.exits, 1);
+});
+test("invalid fields and subsequent valid autosaves cannot execute an earlier rejected exit", async () => {
+  const f = fixture({ autosave: 1000, initial: [{ ...grant, enabled: false, available: false }] }); await openEditor(f);
+  f.el("total_daily_calls").value = "0"; f.el("total_daily_calls").dispatch("input"); f.el("close").click();
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.calls.length, 0); assert.equal(f.exits, 0);
+  f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input"); f.el("toggle").click(); await flush();
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0][2].enabled, true);
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.exits, 0); f.ui.clear();
+});
+test("a pending exit cannot close another account's interface after its save settles", async () => {
+  let release; const f = fixture({ autosave: 1000, initial: [grant], overrides: { saveAgentShare: async (_p, input) => {
+    await new Promise(resolve => { release = resolve; }); return { share: { ...grant, revision: 2, limits: input.limits } };
+  } } });
+  await openEditor(f); f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input");
+  f.el("close").click(); await flush(); f.update({ scope: "bob:project-b:session-b", userId: "bob", projectId: "project-b", sessionId: "session-b" });
+  await f.ui.open(); release(); await flush(); assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.exits, 0); f.ui.clear();
+});
+test("permission loss offers a local-only discard choice for Back and workspace exit", async () => {
+  for (const action of ["back", "close"]) {
+    let accepted = false; const prompts = [];
+    const f = fixture({ autosave: 30, initial: [grant], confirm: message => { prompts.push(message); return accepted; } });
+    f.doc.documentElement.lang = "zh-CN"; f.ui.refreshLanguage(); await openEditor(f);
+    f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input"); f.update({ writable: false });
+    assert.equal(f.el("total_daily_calls").disabled, true);
+    f.el(action).click(); assert.equal(prompts.length, 1); assert.match(prompts[0], /无权保存.*放弃未保存/u);
+    assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.el("editor").hidden, false); assert.equal(f.exits, 0);
+    accepted = true; f.el(action).click();
+    assert.equal(f.el("editor").hidden, action === "back");
+    assert.equal(f.ui.elements.dialog.open, action === "back"); assert.equal(f.exits, action === "close" ? 1 : 0);
+    f.update({ writable: true }); await new Promise(resolve => setTimeout(resolve, 40)); await flush();
+    assert.equal(f.calls.length, 0, "discard cannot write later if permission is restored"); f.ui.clear();
+  }
+});
+test("permission loss cannot discard an executing or unconfirmed sharing action", async () => {
+  let release, promptCount = 0; const f = fixture({ autosave: 1000, initial: [grant],
+    confirm: () => { promptCount++; return true; }, overrides: { saveAgentShare: async () => {
+      await new Promise(resolve => { release = resolve; }); throw Error("unconfirmed save");
+    } } });
+  await openEditor(f); f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input");
+  f.el("close").click(); await flush(); f.update({ writable: false });
+  f.el("back").click(); f.el("close").click();
+  assert.equal(promptCount, 0); assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.el("editor").hidden, false);
+  release(); await flush(); assert.equal(f.el("retry").hidden, false);
+  f.el("close").click(); assert.equal(promptCount, 0); assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.exits, 0);
+  f.ui.clear();
 });
 test("a pending read never blocks the saved Agent's immediate stop button", async () => {
   const f = fixture({ initial: [grant], deadline: 5 }); await openEditor(f);

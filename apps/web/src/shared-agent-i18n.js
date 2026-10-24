@@ -1,4 +1,6 @@
 export const SHARED_AGENT_ZH_CN = Object.freeze({
+  "Back": "返回",
+  "You no longer have permission to save these sharing changes. Discard your unsaved changes and leave this page?": "你已无权保存这些共享设置。是否放弃未保存的更改并离开此页？",
   "Choose who can use each connected Agent. Changes save automatically.": "为已连接的 Agent 设置共享对象，修改会自动保存。",
   "My connected Agents": "我已连接的 Agent",
   "{name}'s {agent}": "{name} 的 {agent}",

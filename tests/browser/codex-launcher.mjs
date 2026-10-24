@@ -56,6 +56,10 @@ async function fixture(origin, locale, platform, width = 1440, touch = 0) {
   const page = await context.newPage(); page.on("pageerror", error => errors.push(error.message));
   await page.goto(`${origin}/app/?mock=1`);
   await page.locator("#auth-view").waitFor({ state: "visible" });
+  if (touch > 0) {
+    await page.locator("#interface-mode-dialog[open]").waitFor();
+    await page.locator("#interface-mode-use-mobile").click();
+  }
   await page.evaluate(async () => {
     const entryUrl = document.querySelector('script[type="module"]').src;
     const entry = await (await fetch(entryUrl)).text();
@@ -81,10 +85,18 @@ async function fixture(origin, locale, platform, width = 1440, touch = 0) {
   await page.locator("#session-view:not([hidden])").waitFor();
   return { context, page };
 }
+async function openConnections(page) {
+  await page.locator("#manage-agents-button").click();
+  await page.locator("#agent-management-dialog[open]").waitFor();
+  await page.locator("#agent-management-add").click();
+  await page.locator("#agent-management-connections:not([hidden])").waitFor();
+}
+
 try {
   for (const origin of ["https://gatherthread.cn", "https://test.gatherthread.cn"]) {
     for (const [platform, locale] of [["MacIntel", "zh-CN"], ["Win32", "en"]]) {
       const { context, page } = await fixture(origin, locale, platform);
+      await openConnections(page);
       await page.locator("#connect-codex-button").click();
       await page.locator("#connect-codex-dialog[open]").waitFor();
       await page.locator("#open-codex-launcher-button:not([disabled])").waitFor();
@@ -180,6 +192,7 @@ try {
   }
   for (const [origin, platform] of [["https://gatherthread.cn", "Linux x86_64"], ["http://127.0.0.1:4173", "Win32"]]) {
     const { context, page } = await fixture(origin, "en", platform);
+    await openConnections(page);
     await page.locator("#connect-codex-button").click();
     assert.equal(await page.locator("#codex-launcher-option").isVisible(), false);
     assert.equal(await page.locator("#connect-codex-manual").evaluate(node => node.open), true);
@@ -190,7 +203,12 @@ try {
   }
   for (const [platform, width, touch] of [["iPhone", 390, 5], ["MacIntel", 1024, 5]]) {
     const { context, page } = await fixture("https://test.gatherthread.cn", "zh-CN", platform, width, touch);
-    assert.equal(await page.locator("#connect-codex-button").isVisible(), false, "mobile/tablet never configures a local connector");
+    await openConnections(page);
+    for (const id of ["connect-codex-button", "connect-dsh-button", "connect-claude-button", "add-agent-button"]) {
+      assert.equal(await page.locator(`#${id}`).isVisible(), false, "mobile/tablet never configures a local connector");
+    }
+    assert.equal(await page.locator(".agent-management-mobile-note").isVisible(), true);
+    await page.locator("#agent-management-close").click();
     await page.locator("#mobile-agent-button").click();
     await page.locator("#agent-harness-select").waitFor({ state: "visible" });
     assert.ok(await page.locator('#agent-harness-select option[value="codex"]').count(), "existing computer Agent stays selectable");

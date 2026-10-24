@@ -1,6 +1,7 @@
 import { renderAvatar, isAgentReply, eventAuthorLabel, eventExecutionOwner } from "./avatars.js?v=20261018-tabs-2";
 import { mountAvatarSettings } from "./avatar-settings.js?v=20261018-tabs-2";
 import { mountCloudGithub } from "./cloud-github-view.js?v=20261018-tabs-2";
+import { mountAgentManagement } from "./agent-management.js";
 import { mountSharedAgents } from "./shared-agent-view.js?v=20261018-tabs-2";
 import { mountAgentTeams } from "./agent-team-library-view.js?v=20261016-team-v2";
 import { mountTeamRunNotice } from "./agent-team-run-notice.js?v=20261018-team-errors";
@@ -518,7 +519,13 @@ const cloudCodeConsent = mountCloudCodeConsent({
   } : null,
 });
 element("project-code-dialog").addEventListener("close", () => void cloudCodeConsent.refresh());
+const agentManagementUi = mountAgentManagement({ document,
+  getContext: () => ({ scope: `${authenticationGeneration}:${state.currentUser?.id}:${state.project?.id}`,
+    available: Boolean(state.currentUser && state.project) }),
+});
+
 const sharedAgentsUi = mountSharedAgents({ document, api, localizer,
+  onExit: () => agentManagementUi.close(),
   hostButton: element("agent-sharing-button"), pickerHost: element("shared-agent-profile-fields"),
   confirm: message => window.confirm(message), makeKey: () => createIdempotencyKey("agent-share"),
   onChange: () => renderComposerPermissions(),
@@ -533,6 +540,7 @@ const sharedAgentsUi = mountSharedAgents({ document, api, localizer,
 });
 
 const teamsUi = mountAgentTeams({ document, api, hostButton: element("agent-teams-button"),
+  onExit: () => agentManagementUi.close(),
   refreshSources: () => Promise.allSettled([refreshDshRuntimes(), refreshHostedAgentStatus(), sharedAgentsUi.refresh()]),
   makeKey: createIdempotencyKey, confirm: message => window.confirm(message), onChange: () => renderComposerPermissions(),
   getContext: () => ({ scope: `${authenticationGeneration}:${selectedSessionGeneration}:${state.currentUser?.id}:${state.project?.id}:${state.session?.id}`,
@@ -551,7 +559,7 @@ const teamsUi = mountAgentTeams({ document, api, hostButton: element("agent-team
 const teamRunNotice = mountTeamRunNotice({
   host: element("team-task-notice"), message: element("team-task-notice-message"), advice: element("team-task-notice-advice"),
   button: element("team-task-notice-open"), getNotice: () => teamsUi.runNotice(), openRecords: () => teamsUi.openRunRecords(),
-  t: text => teamsUi.t(text), fallbackFocus: element("agent-teams-button"),
+  t: text => teamsUi.t(text), fallbackFocus: element("manage-agents-button"),
 });
 
 const onboarding = mountOnboarding({
@@ -1550,6 +1558,7 @@ async function restoreBrowserSession() {
 }
 
 function resetWorkspaceToAuth() {
+  agentManagementUi.close();
   sessionToolbar.reset();
   filesUi.clear();
   personalCloudApi.clear();
@@ -1901,6 +1910,7 @@ function renderProjectSelect() {
 }
 
 function renderProjectAgentButtons(settings = state.settings) {
+  agentManagementUi.updateContext();
   const enabled = state.project ? new Set(projectEnabledHarnesses(settings, state.project.id)) : new Set();
   connectCodexButton.hidden = !mobileWorkspace.canConnectLocally() || !enabled.has("codex");
   connectDshButton.hidden = !mobileWorkspace.canConnectLocally() || !enabled.has(DSH_HARNESS);

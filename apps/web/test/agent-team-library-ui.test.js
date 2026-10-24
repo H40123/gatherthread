@@ -86,13 +86,18 @@ const team = (id = "team-a", overrides = {}) => ({ id, revision: 1,
   max_calls: 12, max_duration_minutes: 30, enabled: false, tested_revision: null, test_status: "not_tested", ...overrides });
 const flush = async () => { for (let index = 0; index < 70; index++) await Promise.resolve(); };
 
-function fixture({ initial = [], modules = [], initialRuns = [], overrides = {} } = {}) {
+function fixture({ initial = [], modules = [], initialRuns = [], overrides = {}, confirm = () => true, onExit = () => {} } = {}) {
   const document = { documentElement: { lang: "en" }, activeElement: null,
     createElement(tag) { return new Element(this, tag); }, createElementNS(namespace, tag) { return new Element(this, tag, namespace); }, elementFromPoint() { return null; } };
   document.body = document.createElement("body");
   document.getElementById = id => document.body.querySelector(`#${id}`);
   document.querySelector = selector => document.body.querySelector(selector);
-  document.defaultView = { getComputedStyle: node => ({ display: node.style.display ?? "block", visibility: node.style.visibility ?? "visible" }) };
+  const windowListeners = new Map();
+  document.defaultView = {
+    getComputedStyle: node => ({ display: node.style.display ?? "block", visibility: node.style.visibility ?? "visible" }),
+    addEventListener(type, listener) { const entries = windowListeners.get(type) ?? []; entries.push(listener); windowListeners.set(type, entries); },
+    dispatch(type) { for (const listener of windowListeners.get(type) ?? []) listener(); },
+  };
   const hostButton = document.createElement("button"); document.body.append(hostButton);
   let teams = structuredClone(initial), favorites = structuredClone(modules), runs = structuredClone(initialRuns), nextId = 0;
   let context = { scope: "alice:project-a:session-a", userId: "alice", projectId: "project-a", sessionId: "session-a", sessionMode: "multi", writable: true,
@@ -132,7 +137,7 @@ function fixture({ initial = [], modules = [], initialRuns = [], overrides = {} 
       return { deleted: true, replayed: false }; },
     ...overrides,
   };
-  const ui = mountAgentTeams({ document, api, hostButton, getContext: () => context, makeKey: prefix => `${prefix}-fixture-${++nextId}`, confirm: () => true });
+  const ui = mountAgentTeams({ document, api, hostButton, getContext: () => context, makeKey: prefix => `${prefix}-fixture-${++nextId}`, confirm, onExit });
   const byId = id => {
     const search = node => node.id === id ? node : node.children.map(search).find(Boolean);
     return search(document.body);
@@ -141,10 +146,77 @@ function fixture({ initial = [], modules = [], initialRuns = [], overrides = {} 
   return { document, api, ui, calls, el: byId, hostButton, get teams() { return teams; }, set teams(value) { teams = value; },
     get runs() { return runs; }, set runs(value) { runs = value; },
     get favorites() { return favorites; }, set favorites(value) { favorites = value; }, update(value) { context = { ...context, ...value }; ui.updateContext(); },
-    button(text, root = document.body) { return root.querySelectorAll("button").find(node => node.textContent === text); } };
+    button(text, root = document.body) { return root.querySelectorAll("button").find(node => node.textContent === text || node.getAttribute("aria-label") === text); } };
 }
 
 async function open(f, index = 0) { await flush(); f.hostButton.click(); await flush(); f.document.body.querySelector(".team-library-list").children[index].children[0].click(); }
+
+test("pagehide fences queued Team reads and pageshow restores current-context polling", async () => {
+  let reads = 0;
+  const f = fixture({ overrides: { listAgentTeams: async () => {
+    reads++; return { teams: [], modules: [], team_limit: 5, module_limit: 5 };
+  } } });
+  await flush(); const before = reads;
+  f.document.defaultView.dispatch("pagehide");
+  f.update({ scope: "page-leaving" }); // Main invalidates authentication/session generations on pagehide.
+  await flush(); await f.ui.refresh();
+  assert.equal(reads, before, "no queued or explicit reads may start from a departing document");
+  f.document.defaultView.dispatch("pageshow");
+  f.update({ scope: "restoring-authentication", userId: null, sessionId: null });
+  await new Promise(resolve => setTimeout(resolve, 0)); await flush();
+  assert.equal(reads, before, "pageshow must let the shell invalidate old authentication first");
+  f.update({ scope: "restored-session", userId: "alice", sessionId: "session-b" });
+  await flush();
+  assert.equal(reads, before + 1, "BFCache restoration can refresh the newly authenticated context");
+});
+
+test("Team library Back returns to management while its X exits to the workspace", async () => {
+  let exits = 0;
+  const f = fixture({ onExit: () => exits++ }); await flush(); f.hostButton.click(); await flush();
+  const libraryBack = f.el("team-library-back"), close = f.el("team-dialog-close");
+  assert.match(libraryBack.className, /agent-dialog-back/u); assert.ok(libraryBack.querySelector("svg"));
+  assert.match(close.className, /workspace-icon-button/u); assert.ok(close.querySelector("svg"));
+  libraryBack.click(); assert.equal(f.el("agent-team-dialog").open, false); assert.equal(exits, 0);
+  f.hostButton.click(); await flush(); close.click();
+  assert.equal(f.el("agent-team-dialog").open, false); assert.equal(exits, 1);
+  close.click(); assert.equal(exits, 1, "a stale hidden close control cannot exit a new management surface");
+});
+
+test("Team editor Back and Escape each move one level and preserve unsaved-change confirmation", async () => {
+  let discard = false, exits = 0;
+  const f = fixture({ initial: [team()], confirm: () => discard, onExit: () => exits++ }); await open(f);
+  const editor = f.document.body.querySelector(".team-editor"), overview = f.document.body.querySelector(".team-overview");
+  f.el("team-name").value = "Unsaved name"; f.el("team-name").dispatch("input");
+  f.el("team-editor-back").click();
+  assert.equal(editor.hidden, false); assert.equal(f.el("team-name").value, "Unsaved name");
+  f.el("team-dialog-close").click(); assert.equal(f.el("agent-team-dialog").open, true); assert.equal(exits, 0);
+  discard = true; f.el("agent-team-dialog").dispatch("cancel");
+  assert.equal(editor.hidden, true); assert.equal(overview.hidden, false); assert.equal(f.el("agent-team-dialog").open, true);
+  assert.equal(f.document.activeElement, f.el("team-library-back")); assert.equal(exits, 0);
+  f.el("agent-team-dialog").dispatch("cancel");
+  assert.equal(f.el("agent-team-dialog").open, false); assert.equal(exits, 0);
+});
+
+test("secondary Team Back preserves the editor, while X checks changes then exits all levels", async () => {
+  let discard = false, exits = 0;
+  const f = fixture({ initial: [team()], modules: [{ id: "favorite-a", module }], confirm: () => discard, onExit: () => exits++ }); await open(f);
+  f.el("team-add-favorite").click(); const secondary = f.document.body.querySelector(".team-secondary-dialog");
+  assert.equal(secondary.open, true); f.el("team-secondary-back").click();
+  assert.equal(secondary.open, false); assert.equal(f.el("agent-team-dialog").open, true); assert.equal(exits, 0);
+  f.el("team-name").value = "Unsaved secondary name"; f.el("team-name").dispatch("input");
+  f.el("team-add-favorite").click(); f.el("team-secondary-close").click();
+  assert.equal(secondary.open, true); assert.equal(f.el("agent-team-dialog").open, true); assert.equal(exits, 0);
+  discard = true; f.el("team-secondary-close").click();
+  assert.equal(secondary.open, false); assert.equal(f.el("agent-team-dialog").open, false); assert.equal(exits, 1);
+});
+
+test("Team navigation remains SVG-based after a locale refresh", async () => {
+  const f = fixture(); f.document.documentElement.lang = "zh-CN"; f.ui.refreshLanguage();
+  for (const id of ["team-library-back", "team-editor-back", "team-secondary-back", "team-dialog-close", "team-secondary-close"]) {
+    const control = f.el(id); assert.ok(control.querySelector("svg"), `${id} retains its icon`);
+    assert.equal(control.getAttribute("aria-label"), id.endsWith("close") ? "关闭" : "返回");
+  }
+});
 
 test("a closed Team dialog remains reachable for Pause and Stop during replay without enabling new work", async () => {
   const run = { id: "running-team", status: "running", purpose: "task", calls_used: 1, max_calls: 12 };
@@ -242,7 +314,7 @@ test("a Save acknowledgement delayed past a confirmed Delete cannot resurrect th
     },
   } });
   await open(f); editInput(f.el("team-name"), "Accepted before Delete"); f.el("team-save").click(); await flush();
-  f.button("Back to Teams").click(); f.button("Delete").click(); await flush();
+  f.el("team-editor-back").click(); f.button("Delete").click(); await flush();
   assert.deepEqual(f.teams, []); hangReads = true;
   releaseSave(); await flush();
   assert.equal(f.document.body.querySelectorAll(".team-row-edit").length, 0, "a superseded response cannot reintroduce deleted private configuration");
@@ -490,7 +562,7 @@ test("five saved Teams prevent creation while preserving editing and deletion", 
   assert.equal(f.el("team-add").disabled, true);
   f.el("team-name").value = "Edit at capacity"; f.el("team-name").dispatch("input"); f.el("team-save").click(); await flush();
   assert.equal(f.calls[0][0], "save");
-  f.button("Back to Teams").click();
+  f.el("team-editor-back").click();
   f.document.body.querySelector(".team-library-list").children[0].children[2].click(); await flush();
   assert.equal(f.el("team-add").disabled, false); assert.equal(f.teams.length, 4);
 });
@@ -694,7 +766,7 @@ test("opening another Team resets the previous pan and zoom and brings its entry
     const viewport = f.document.body.querySelector(".team-canvas-viewport"), hud = f.document.body.querySelector(".team-canvas-tools");
     viewport.scrollLeft = 900; viewport.scrollTop = 500; hud.children[2].click(); hud.children[2].click();
     assert.equal(hud.children[1].textContent, "120%");
-    f.button("Back to Teams").click(); f.document.body.querySelector(".team-library-list").children[1].children[0].click();
+    f.el("team-editor-back").click(); f.document.body.querySelector(".team-library-list").children[1].children[0].click();
     assert.equal(hud.children[1].textContent, "100%", "each opened Team starts with a readable independent viewport");
     const entry = other.draft.nodes.find(node => node.id === other.draft.entry_node_id);
     assert.ok(entry.x >= viewport.scrollLeft && entry.x + 228 <= viewport.scrollLeft + viewport.clientWidth, "the entry module is horizontally visible");
@@ -732,7 +804,7 @@ test("a save waiting for Disable cannot write another Team after the editor sele
   } });
   await open(f); f.el("team-name").value = "Unsaved A"; f.el("team-name").dispatch("input");
   f.el("team-save").click(); await flush();
-  f.button("Back to Teams").click();
+  f.el("team-editor-back").click();
   f.document.body.querySelector(".team-library-list").children[1].children[0].click();
   f.el("team-name").value = "Unsaved B"; f.el("team-name").dispatch("input");
   releaseStop(); await flush();
@@ -1026,7 +1098,7 @@ test("switching Teams cancels an unfinished wire instead of saving an invisible 
   const f = fixture({ initial: [team(), other] }); await open(f);
   f.document.body.querySelector("[data-port='out']").click();
   assert.equal(f.document.body.querySelector(".team-canvas-viewport").dataset.linking, "true");
-  f.button("Back to Teams").click(); f.document.body.querySelector(".team-library-list").children[1].children[0].click();
+  f.el("team-editor-back").click(); f.document.body.querySelector(".team-library-list").children[1].children[0].click();
   assert.equal(f.document.body.querySelector(".team-canvas-viewport").dataset.linking, "false");
   f.document.body.querySelector("[data-port='in']").click();
   editInput(f.el("team-name"), "Other Team updated"); f.el("team-save").click(); await flush();
@@ -1141,7 +1213,7 @@ test("a delayed favorite deletion cannot reopen a dialog the user has closed", a
   await open(f); f.el("team-add-favorite").click();
   const secondary = f.document.body.querySelector(".team-secondary-dialog");
   secondary.querySelector(".team-library-list").children[0].children[1].click(); await flush();
-  f.button("Close", secondary).click(); f.button("Close", f.el("agent-team-dialog")).click();
+  f.el("team-secondary-back").click(); f.button("Close", f.el("agent-team-dialog")).click();
   completeDelete(); await flush();
   assert.equal(f.el("agent-team-dialog").open, false); assert.equal(secondary.open, false, "late acknowledgements must not summon a closed modal");
 });
@@ -1195,7 +1267,7 @@ test("a late favorite deletion cannot replace a newer relationships dialog", asy
   } });
   await open(f); f.el("team-add-favorite").click(); const secondary = f.document.body.querySelector(".team-secondary-dialog");
   secondary.querySelector(".team-library-list").children[0].children[1].click(); await flush();
-  f.button("Close", secondary).click(); f.button("View configuration").click(); completeDelete(); await flush();
+  f.el("team-secondary-back").click(); f.button("View configuration").click(); completeDelete(); await flush();
   assert.equal(secondary.open, true); assert.equal(f.el("team-secondary-title").textContent, "Configuration relationships");
 });
 
@@ -1748,7 +1820,7 @@ test("a delayed Delete ACK cannot remove a recreated higher revision or supersed
       const accepted = team(id, { revision: 4, draft: structuredClone(body.draft) }); f.teams = [accepted];
       return new Promise(resolve => { releaseSave = () => resolve({ team: accepted, replayed: false }); });
     },
-  } }); await open(f); f.button("Back to Teams").click(); f.button("Delete").click(); await flush();
+  } }); await open(f); f.el("team-editor-back").click(); f.button("Delete").click(); await flush();
   f.teams = [team("team-a", { revision: 3, draft: { ...team().draft, name: "Recreated on another device" } })];
   await f.ui.refresh(); f.document.body.querySelector(".team-library-list").children[0].children[0].click();
   editInput(f.el("team-name"), "Edit of the recreated Team"); f.el("team-save").click(); await flush();

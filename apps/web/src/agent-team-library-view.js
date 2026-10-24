@@ -1,6 +1,7 @@
 import { TEAM_ZH_CN } from "./agent-team-i18n.js";
 import { describeTeamActionError, formatTeamRunIssue, isTeamActionUncertain, teamTimeoutContinuationAvailable } from "./agent-team-diagnostics.js";
 import { mountTeamCanvas } from "./agent-team-canvas.js";
+import { makeAgentDialogButton } from "./agent-dialog-navigation.js";
 import { teamConnectionChoices, teamConnectionKey, teamModelKey, teamTargetForModel, moduleSnapshot,
   sameTeamSnapshot, removeTeamNode, teamEdgeAllowed } from "./agent-team-graph.js";
 const terminal = run => !["running", "paused"].includes(run.status);
@@ -19,7 +20,7 @@ const acceptedConfigurationKey = (draft, limits) => configurationKey({ ...draft,
 { max_calls: limits.max_calls, max_duration_minutes: limits.max_duration_minutes });
 
 export function mountAgentTeams({ document: doc, api, hostButton, getContext, onChange = () => {},
-  refreshSources = async () => {},
+  refreshSources = async () => {}, onExit = () => {},
   makeKey = prefix => `${prefix}-${crypto.randomUUID()}`, confirm = message => globalThis.confirm(message) }) {
   const t = text => doc.documentElement.lang.startsWith("zh") ? TEAM_ZH_CN[text] ?? text : text;
   const translations = [];
@@ -37,16 +38,20 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   const lockup = el("div", "team-brand");
   for (const theme of ["light", "dark"]) { const logo = el("img", `brand-lockup-image-${theme}`);
     logo.src = `./brand/lockup-color-transparent-${theme}.svg`; logo.alt = "GatherThread"; lockup.append(logo); }
-  titleArea.append(lockup, title); const close = button("Close", () => closeDialog(), "text-button"); header.append(titleArea, close);
+  titleArea.append(lockup, title);
+  const close = makeAgentDialogButton({ document: doc, kind: "close", label: t("Close"), id: "team-dialog-close", onClick: () => closeDialog(true) });
+  header.append(titleArea, close);
   const body = el("div", "team-dialog-body"), overview = el("section", "team-overview"), list = el("ul", "team-library-list");
   const intro = el("p", "field-help", t("Save up to 5 Teams and 5 favorite modules. Test a Team before enabling it."));
   translations.push(() => { intro.textContent = t("Save up to 5 Teams and 5 favorite modules. Test a Team before enabling it."); });
   const libraryActions = el("div", "team-library-heading"), count = el("span", "field-help"), refreshButton = button("Refresh", () => void refresh(), "text-button");
   libraryActions.append(count, refreshButton);
   const add = button("Add Agent Team", () => openEditor(null), "team-glass team-add-team"); add.id = "team-add";
-  overview.append(intro, libraryActions, list, add);
+  const overviewBack = makeAgentDialogButton({ document: doc, kind: "back", label: t("Back"), id: "team-library-back", onClick: () => closeDialog() });
+  overview.append(overviewBack, intro, libraryActions, list, add);
   const editor = el("section", "team-editor"); editor.hidden = true;
-  const back = button("Back to Teams", () => { if (!dirty || confirm(t("Discard unsaved changes?"))) { editId = null; dirty = false; editor.hidden = true; overview.hidden = false; title.textContent = t("My Agent teams"); render(); } }, "text-button team-back");
+  const back = makeAgentDialogButton({ document: doc, kind: "back", label: t("Back"), id: "team-editor-back", onClick: () => backToTeams() });
+  back.classList.add("team-back");
   const nameInput = input("name", 120); nameInput.placeholder = t("Team name");
   nameInput.addEventListener("input", () => { draft.name = nameInput.value; changed(); });
   const toolbar = el("div", "team-toolbar"), addBlank = button("Add blank module", () => insertModule()), addFavorite = button("Add favorite module", () => showFavorites()),
@@ -85,17 +90,33 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   dialog.append(header, body, footer); doc.body.append(dialog);
   const secondary = el("dialog", "create-dialog agent-team-dialog team-secondary-dialog"), secondaryTitle = el("h2"), secondaryBody = el("div", "team-dialog-body");
   secondaryTitle.id = "team-secondary-title"; secondary.setAttribute("aria-labelledby", secondaryTitle.id);
-  const secondaryHeader = el("header", "team-heading"); secondaryHeader.append(secondaryTitle, button("Close", () => secondary.close(), "text-button")); secondary.append(secondaryHeader, secondaryBody); doc.body.append(secondary);
+  const secondaryHeader = el("header", "team-heading");
+  const secondaryClose = makeAgentDialogButton({ document: doc, kind: "close", label: t("Close"), id: "team-secondary-close", onClick: () => closeDialog(true) });
+  const secondaryBack = makeAgentDialogButton({ document: doc, kind: "back", label: t("Back"), id: "team-secondary-back", onClick: () => secondary.close() });
+  const secondaryNavigation = el("div", "agent-dialog-navigation"); secondaryNavigation.append(secondaryBack);
+  secondaryHeader.append(secondaryTitle, secondaryClose); secondary.append(secondaryHeader, secondaryNavigation, secondaryBody); doc.body.append(secondary);
+  secondary.addEventListener("cancel", event => { event.preventDefault(); secondary.close(); });
 
   let scope = "", generation = 0, epoch = 0, readBusy = false, refreshTimer, teams = [], favorites = [], runs = [], testRuns = [], runRefreshFailed = false, hadTaskActivity = false,
     editId = null, draft = null, budgets = null, baseRevision = null, baseline = null, dirty = false, draftVersion = 0, selectedKey = "", returnFocus, catalogSignature = "", writableState, secondaryMode = "", refreshFavoriteControl = null;
   const intents = new Map();
   const actionKinds = new WeakMap(), problemIntents = new WeakMap(), problemFences = new WeakMap(), obsoleteProblems = new WeakSet(), testReads = new Map();
   let runAuthority = 0, runAccessBlocked = false, observedContentRevision;
+  let pageActive = true;
   let displayedProblem = null, displayedProblemText = null;
   const canvas = mountTeamCanvas({ document: doc, host: graphHost, t, makeId: makeKey, getDraft: () => draft,
     onChange: changed, onSelection: () => renderInspector() });
   const context = () => getContext() ?? {};
+  // Main invalidates the context during pagehide. Its queued refresh must not
+  // start fetches from a departing WebKit document; BFCache can resume later.
+  doc.defaultView?.addEventListener?.("pagehide", () => { pageActive = false; clearTimeout(refreshTimer); });
+  doc.defaultView?.addEventListener?.("pageshow", () => {
+    // Let the shell restore/invalidate authentication before reading this scope.
+    if (!pageActive) {
+      pageActive = true; clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => void refresh(), 0); refreshTimer.unref?.();
+    }
+  });
   const current = gen => gen === generation && context().scope === scope;
   const saved = () => teams.find(team => team.id === editId);
   const pendingFor = id => [...intents.values()].filter(intent => intent.id === id);
@@ -224,6 +245,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
     if (next.userId && next.sessionId) queueMicrotask(() => void refresh());
   }
   async function refresh() {
+    if (!pageActive) return;
     updateContext(); const ctx = context(), gen = generation, before = epoch;
     if (!ctx.userId || !ctx.sessionId || readBusy) return; readBusy = true;
     // Only a marker already visible before this GET proves that its missing
@@ -274,7 +296,10 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
       render(); if (favoritesChanged) showFavoritesContent(); onChange();
     } finally {
       if (current(gen)) { readBusy = false; clearTimeout(refreshTimer);
-        refreshTimer = setTimeout(() => void refresh(), dialog.open || runs.some(run => !terminal(run)) || intents.size ? 2000 : 12000); refreshTimer.unref?.(); }
+        if (pageActive) {
+          refreshTimer = setTimeout(() => void refresh(), dialog.open || runs.some(run => !terminal(run)) || intents.size ? 2000 : 12000); refreshTimer.unref?.();
+        }
+      }
     }
   }
   async function attempt(intent) {
@@ -466,10 +491,18 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
       id, x: 60 + slot % 4 * 290, y: 70 + Math.floor(slot / 4) * 180 });
     if (!draft.entry_node_id) draft.entry_node_id = draft.nodes[0].id; changed(); canvas.select({ kind: "node", id }); canvas.reveal(id); renderInspector();
   }
-  function closeDialog() {
-    if (dirty && !confirm(t("Discard unsaved changes?"))) return;
+  function backToTeams() {
+    if (!dialog.open) return false;
+    if (dirty && !confirm(t("Discard unsaved changes?"))) return false;
+    editId = null; dirty = false; editor.hidden = true; overview.hidden = false; title.textContent = t("My Agent teams"); render(); overviewBack.focus();
+    return true;
+  }
+  function closeDialog(exit = false) {
+    if (!dialog.open) return false;
+    if (dirty && !confirm(t("Discard unsaved changes?"))) return false;
     dirty = false; editId = null; draft = null;
-    if (secondary.open) secondary.close(); dialog.close(); restoreFocus();
+    if (secondary.open) secondary.close(); dialog.close(); if (exit) onExit(); restoreFocus();
+    return true;
   }
   function restoreFocus() {
     if (dialog.open || doc.querySelector?.("dialog[open]")) return;
@@ -485,7 +518,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   // WebKit can restore BODY when the opener lives in a now-closed mobile
   // tools dialog. Run again after the native close focus steps have completed.
   dialog.addEventListener("close", restoreFocus);
-  dialog.addEventListener("cancel", event => { event.preventDefault(); closeDialog(); });
+  dialog.addEventListener("cancel", event => { event.preventDefault(); if (editor.hidden) closeDialog(); else backToTeams(); });
   hostButton.addEventListener("click", () => { updateContext(); if (hostButton.disabled) return; returnFocus = doc.activeElement;
     overview.hidden = false; editor.hidden = true; title.textContent = t("My Agent teams"); dialog.showModal(); render(); void refresh();
     const gen = generation; void refreshSources().then(() => { if (current(gen)) updateContext(); }).catch(() => {}); });
@@ -771,6 +804,8 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   }
   return { updateContext, refresh, open: () => hostButton.click(),
     refreshLanguage() { translations.forEach(update => update());
+      for (const navigation of [overviewBack, back, secondaryBack]) navigation.refreshLabel(t("Back"));
+      for (const navigation of [close, secondaryClose]) navigation.refreshLabel(t("Close"));
       for (const surface of [dialog, secondary]) for (const node of surface.querySelectorAll("[data-team-i18n]")) node.textContent = t(node.dataset.teamI18n);
       hostButton.textContent = t("Agent teams");
       title.textContent = t(editor.hidden ? "My Agent teams" : "Edit my Agent team");

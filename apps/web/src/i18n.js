@@ -2,6 +2,11 @@ import { SHARED_AGENT_ZH_CN } from "./shared-agent-i18n.js";
 import { WORKSPACE_FILES_ZH_CN } from "./workspace-files.js";
 
 const ZH_CN = Object.freeze({
+  "Manage my Agents": "管理我的 Agent",
+  "Add my Agent": "添加我的 Agent",
+  "Close Agent management": "关闭 Agent 管理",
+  "More Agent connections": "更多 Agent 连接",
+  "Set up local Agent connections in Desktop mode on a computer. You can use online Agents here.": "请在电脑的桌面模式中设置本地 Agent 连接；这里可以使用已在线的 Agent。",
   "Session creator": "会话创建者",
   "The session creator can change visibility here without changing project roles.": "会话创建者可在此设置可见性，不影响项目角色。",
   "Only its creator writes.": "只有创建者能写入。",

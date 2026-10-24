@@ -105,6 +105,128 @@ async function tools(page, id) {
   if (id) await page.locator(`#${id}`).click();
 }
 
+async function checkAgentManagement(page, nativeConnections) {
+  const entry = page.locator("#manage-agents-button");
+  assert.equal(await entry.isVisible(), true, "Agent management stays in the conversation composer");
+  assert.equal(await entry.evaluate(node => node.parentElement.id), "composer-agent-controls");
+  // Sample both controls in one frame: separate boundingBox calls can straddle
+  // responsive reflow while a viewport or interface-mode change settles.
+  await page.waitForFunction(() => {
+    const model = document.getElementById("mobile-agent-button").getBoundingClientRect();
+    const management = document.getElementById("manage-agents-button").getBoundingClientRect();
+    return Math.abs(model.height - management.height) < 1 && management.height >= 44
+      && management.x >= model.x + model.width - 1 && Math.abs(model.y - management.y) < 1;
+  });
+  await entry.click();
+  await page.locator("#agent-management-dialog[open]").waitFor();
+  for (const id of ["agent-management-add", "agent-sharing-button", "agent-teams-button"]) {
+    assert.equal(await page.locator(`#${id}`).isVisible(), true);
+    assert.equal(await page.locator(`#${id}`).evaluate(node => node.closest("dialog")?.id), "agent-management-dialog");
+  }
+  await page.locator("#agent-management-add").click();
+  await page.locator("#agent-management-connections:not([hidden])").waitFor();
+  for (const id of ["connect-codex-button", "connect-dsh-button", "add-agent-button"]) {
+    assert.equal(await page.locator(`#${id}`).isVisible(), nativeConnections,
+      "opening management preserves native-device capability");
+  }
+  await page.locator("#agent-management-back").click();
+  await page.locator("#agent-management-overview:not([hidden])").waitFor();
+  await page.locator("#agent-management-close").click();
+  await page.locator("#agent-management-dialog").waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.activeElement?.id === "manage-agents-button");
+}
+
+async function checkManagementDialogs(page) {
+  await page.locator("#manage-agents-button").click();
+  await page.locator("#agent-sharing-button").click();
+  await page.locator("#agent-sharing-dialog[open]").waitFor();
+  await page.locator("#agent-sharing-overview-back").click();
+  await page.locator("#agent-sharing-dialog").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#agent-management-dialog").evaluate(node => node.open), true);
+  await page.locator("#agent-sharing-button").click();
+  await page.locator("#agent-sharing-close").click();
+  await page.locator("#agent-management-dialog").waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.activeElement?.id === "manage-agents-button");
+
+  await page.locator("#manage-agents-button").click();
+  await page.locator("#agent-teams-button").click();
+  await page.locator("#agent-team-dialog[open]").waitFor();
+  await page.locator("#team-library-back").click();
+  await page.locator("#agent-team-dialog").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#agent-management-dialog").evaluate(node => node.open), true);
+  await page.locator("#agent-teams-button").click();
+  await page.locator("#team-add").click();
+  await page.locator("#team-name").fill("Unsaved navigation fixture");
+  await page.locator(".team-config-link").click();
+  await page.locator("#team-secondary-back").click();
+  assert.equal(await page.locator("#team-name").inputValue(), "Unsaved navigation fixture");
+  const refused = page.waitForEvent("dialog").then(dialog => dialog.dismiss());
+  await page.locator("#team-dialog-close").click(); await refused;
+  assert.equal(await page.locator("#agent-team-dialog").evaluate(node => node.open), true);
+  assert.equal(await page.locator("#team-name").inputValue(), "Unsaved navigation fixture");
+  await page.locator(".team-config-link").click();
+  const accepted = page.waitForEvent("dialog").then(dialog => dialog.accept());
+  await page.locator("#team-secondary-close").click(); await accepted;
+  await page.locator("#agent-team-dialog").waitFor({ state: "hidden" });
+  await page.locator("#agent-management-dialog").waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.activeElement?.id === "manage-agents-button");
+}
+
+async function setLocaleThroughSettings(page, locale) {
+  await openSettings(page, "general");
+  await page.locator("#settings-locale").selectOption(locale);
+  await page.locator("#settings-form button[type=submit]").click();
+  await page.locator("#settings-dialog").waitFor({ state: "hidden" });
+  await page.waitForFunction(locale => document.documentElement.lang === locale, locale);
+  if (await page.locator("#mobile-tools-dialog[open]").isVisible()) await page.keyboard.press("Escape");
+}
+
+async function checkSmallEnglishComposer(page, originalLocale) {
+  if (originalLocale !== "en") await setLocaleThroughSettings(page, "en");
+  try {
+    for (const width of [320, 375]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.waitForFunction(() => document.querySelector("#workspace").dataset.mobileUi === "true");
+      assert.match(await page.locator("#manage-agents-button").innerText(), /Manage my Agents/);
+      const firstRow = ["mobile-compose-tools-button", "mobile-agent-button", "manage-agents-button"];
+      const secondRow = ["send-chat-button", "send-agent-button"];
+      const boxes = new Map();
+      const composer = await page.locator("#composer").boundingBox();
+      for (const id of [...firstRow, ...secondRow]) {
+        const box = await page.locator(`#${id}`).boundingBox();
+        assert.ok(box && box.width > 0 && box.height > 0, `${id} is visible at ${width}px in English`);
+        assert.ok(box.x >= composer.x - 1 && box.x + box.width <= composer.x + composer.width + 1,
+          `${id} fits the composer at ${width}px in English`);
+        boxes.set(id, box);
+      }
+      for (const group of [firstRow, secondRow]) {
+        const center = boxes.get(group[0]).y + boxes.get(group[0]).height / 2;
+        for (const id of group) {
+          const box = boxes.get(id);
+          assert.ok(Math.abs(box.y + box.height / 2 - center) < 1,
+            `${group.join(" / ")} share one row at ${width}px in English`);
+        }
+      }
+      const firstBottom = Math.max(...firstRow.map(id => boxes.get(id).y + boxes.get(id).height));
+      const secondTop = Math.min(...secondRow.map(id => boxes.get(id).y));
+      assert.ok(secondTop >= firstBottom - 1, `send actions follow the management row at ${width}px in English`);
+      const entries = [...boxes.entries()];
+      for (let left = 0; left < entries.length; left++) for (let right = left + 1; right < entries.length; right++) {
+        const [aName, a] = entries[left], [bName, b] = entries[right];
+        const intersectionWidth = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+        const intersectionHeight = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+        assert.ok(intersectionWidth <= 1 || intersectionHeight <= 1,
+          `${aName} and ${bName} do not overlap at ${width}px in English`);
+      }
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true,
+        `English composer has no horizontal overflow at ${width}px`);
+    }
+  } finally {
+    await page.setViewportSize({ width: 390, height: 844 });
+    if (originalLocale !== "en") await setLocaleThroughSettings(page, originalLocale);
+  }
+}
+
 async function chooseAgent(page, harness, model) {
   await page.locator("#mobile-agent-button").click();
   await page.locator("#mobile-agent-dialog[open]").waitFor();
@@ -188,7 +310,8 @@ try {
           const me = (await (await context.request.get(origin + "/v1/me")).json()).data;
           assert.equal(me.id, f.identity.actor.user_id);
           assert.notEqual(me.device_id, f.identity.actor.device_id, "computer runtime belongs to another device of the same account");
-          assert.equal(await page.locator("#connect-codex-button").isVisible(), false);
+          await checkAgentManagement(page, false);
+          await checkManagementDialogs(page);
           assert.equal(await page.locator("#session-header").count(), 0); // The semantic header is retained, just folded.
           assert.equal(await page.locator(".session-header").isVisible(), false);
           await page.locator("#toggle-session-rail-button").click();
@@ -247,9 +370,13 @@ try {
           await page.screenshot({ path: join(output, `${name}-${locale}-tools.png`) });
           await page.locator("#session-options-button").click();
           await page.locator("#session-context-details > summary").click();
-          await page.keyboard.press("Tab");
           assert.equal(await page.locator("#session-context-panel").evaluate(node => node.closest("dialog")?.id), "mobile-tools-dialog");
           assert.equal(await page.locator("#session-context-panel").isVisible(), true);
+          await page.keyboard.press("Tab");
+          assert.equal(await page.evaluate(() => document.activeElement?.closest("dialog")?.id), "mobile-tools-dialog",
+            "Tab keeps keyboard focus inside the mobile tools modal");
+          assert.equal(await page.evaluate(() => document.activeElement === document.querySelector("#session-context-details > summary")), false,
+            "an informational disclosure without controls must not trap Tab on its summary");
           await page.locator("#mobile-tools-dialog [data-mobile-close]").click();
           await tools(page);
           assert.equal(await page.locator("#mobile-tools-dialog #mentions-button").count(), 0,
@@ -288,6 +415,7 @@ try {
           // Draft and native control identity survive mobile/desktop reparenting.
           await page.locator("#message-input").fill("Resize draft");
           await page.evaluate(() => { window.originalProfile = document.querySelector("#agent-request-profile"); });
+          await checkSmallEnglishComposer(page, locale);
           for (const [width, height] of [[320, 720], [390, 460], [844, 390], [768, 1024], [820, 1180],
             [1024, 768], [1180, 820], [1366, 1024], [1440, 900], [390, 844]]) {
             await page.setViewportSize({ width, height });
@@ -299,7 +427,7 @@ try {
               await page.waitForFunction(() => Math.abs(document.querySelector('#workspace').getBoundingClientRect().height - visualViewport.height) < 2);
               const bounds = await page.locator("#composer").boundingBox();
               assert.ok(bounds.y + bounds.height <= height + 1, `composer fits ${width}x${height}: ${JSON.stringify(bounds)}`);
-              for (const id of ["mobile-compose-tools-button", "mobile-agent-button", "send-chat-button", "send-agent-button"]) {
+              for (const id of ["mobile-compose-tools-button", "mobile-agent-button", "manage-agents-button", "send-chat-button", "send-agent-button"]) {
                 const button = await page.locator(`#${id}`).boundingBox();
                 assert.ok(button.x >= bounds.x && button.x + button.width <= bounds.x + bounds.width, `${id} stays inside composer at ${width}`);
                 assert.ok(button.y >= bounds.y && button.y + button.height <= Math.min(height, bounds.y + bounds.height) + 1,
@@ -320,7 +448,7 @@ try {
           await setInterfaceMode(page, "desktop");
           assert.equal(await page.locator("#mobile-sessions-dialog").evaluate(node => node.open), false);
           assert.equal(await page.locator("#toggle-session-rail-button").getAttribute("aria-expanded"), "true");
-          assert.equal(await page.locator("#connect-codex-button").isVisible(), false, "forced desktop cannot grant native phone capability");
+          await checkAgentManagement(page, false); // Desktop presentation cannot grant native phone capability.
           assert.equal(await page.locator("#message-input").inputValue(), "Resize draft");
           assert.equal(await page.evaluate(() => window.originalProfile === document.querySelector("#agent-request-profile")), true);
           assert.equal(await page.locator("#agent-request-profile").evaluate(node => node.parentElement.id), "mobile-agent-content");
@@ -414,7 +542,7 @@ try {
             assert.equal(await page.locator("#message-input").inputValue(), "Device layout draft");
             assert.equal(await page.locator("#agent-request-profile").evaluate(node => node.parentElement.id), "mobile-agent-content");
             assert.equal(await page.locator("#settings-button").evaluate(node => node.closest(".account-cluster") !== null), !mobile);
-            assert.equal(await page.locator("#connect-codex-button").evaluate(node => getComputedStyle(node).display === "none"), device.mobile);
+            await checkAgentManagement(page, !device.mobile);
             assert.match(await page.locator("#send-agent-button").innerText(), mobile ? /Ask AI/ : /Request my agent/);
             if (mobile) {
               await page.waitForFunction(() => Math.abs(document.querySelector('#workspace').getBoundingClientRect().height - visualViewport.height) < 2);
