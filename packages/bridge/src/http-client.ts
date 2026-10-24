@@ -102,14 +102,21 @@ export class HttpCollaborationClient implements CollaborationApi {
 
   async createSession(
     projectId: string,
-    input: { sessionId?: string; title: string; mode: "solo" | "multi"; idempotencyKey: string },
+    input: { sessionId?: string; title: string; mode: "solo" | "multi"; visibility?: "project" | "private"; idempotencyKey: string },
   ): Promise<SessionSummary> {
+    if (input.visibility === "private") {
+      const capabilities = requiredObject(await this.#request(`/projects/${encodeURIComponent(projectId)}`));
+      if (!Array.isArray(capabilities.session_visibility_options) || !capabilities.session_visibility_options.includes("private")) {
+        throw new Error("This server does not support private Solo sessions");
+      }
+    }
     const body = requiredObject(await this.#request(`/projects/${encodeURIComponent(projectId)}/sessions`, {
       method: "POST",
       body: JSON.stringify({
         ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
         title: input.title,
         mode: input.mode,
+        ...(input.visibility === undefined ? {} : { visibility: input.visibility }),
         idempotency_key: input.idempotencyKey,
       }),
     }));
@@ -676,6 +683,7 @@ function fromWireSession(value: unknown): SessionSummary {
     ...(typeof input.project_id === "string" ? { projectId: input.project_id } : {}),
     ...(typeof input.owner_user_id === "string" ? { ownerUserId: input.owner_user_id } : {}),
     mode: requiredString(input.mode, "session.mode") as SessionSummary["mode"],
+    ...(input.visibility === "private" || input.visibility === "project" ? { visibility: input.visibility } : {}),
     ...(input.state === "active" || input.state === "archived" ? { state: input.state } : {}),
     ...(name === undefined ? {} : { name }),
     ...(role === undefined ? {} : { role }),

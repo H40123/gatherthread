@@ -73,6 +73,16 @@ never a route, request body or exception. Stable recovery controls use
 duplicate IDs. Startup readiness follows `data-boot-state` through asynchronous
 session restoration and back/forward cache restoration, not module import alone.
 
+### Session member visibility
+
+`CreateSessionInputSchema` retains optional `visibility: "project" | "private"` as the initial audience for compatibility; both modes support the same subsequent per-member controls. Omission preserves project visibility, and existing private rows are not broadened. `PATCH` rejects direct base-audience assignment; mode changes preserve the existing readers. The Web creation form now contains only name and mode. Session list metadata adds optional `visibility_revision` for older consumers.
+
+`GET /v1/sessions/:id/members` includes all current project members for the conversation creator. When that creator has a non-viewer project role, each member additionally has `session_visible: boolean` and `visibility_revision: nonnegative integer`. Other readers receive ordinary visible-session members without management metadata. Web shows per-member switches only when this authoritative metadata exists, not solely because the current UI thinks it owns a session. The creator's own switch is omitted. Desktop Members and mobile Manage member reuse the same controls.
+
+`PUT /v1/sessions/:id/members/:user_id/visibility` accepts strict `{visible:boolean,expected_revision:nonnegative integer,idempotency_key}` (2 KiB limit). Current authenticated device, creator identity, readable session, non-viewer project role and current target project membership are rechecked in one write transaction. Self-denial is forbidden. Returns `{data:{user_id,visible,revision,replayed}}`; a new mutation requires matching revision or returns `409 session_visibility_conflict`. Receipts bind actor, session, target, expected revision and exact choice. Exact retries return current authorization metadata without reapplying a former grant; changed retries conflict. Web bounds the full exchange, retains an uncertain request/body/key for explicit retry, prevents another change until it is resolved, and fences late results by account/project/session. This is authorization metadata, not a new canonical content event.
+
+`session_member_visibility`, `session_visibility_receipts` and `sessions.visibility_revision` migrate additively. The `session_readers` view is authoritative for membership, HTTP/MCP/native discovery, visible counts and mentions. Hiding invalidates live sockets and unused tickets immediately, revokes runtime access, fails unfinished snapshot jobs, pauses claimed requests and records a monotonic blocked-through sequence. All request-current checks reject those older requests even after access is granted again; active runner capacity stays occupied until confirmed exit. Role, Solo/Multi write rules, event-level visibility, source files and retained local copies remain independent. Rollback to servers ignoring these controls is unsafe. The older project capability and private-creation preflight remain supported for compatibility, but the new browser no longer chooses an audience at creation. Tests: `apps/server/test/session-visibility.test.ts`, `apps/web/test/session-member-visibility.test.js`.
+
 ### Message quotes and mentions
 
 `human_chat` and ordinary `agent_request` events may quote an existing event in the same session using `reply_to_event_id`. This does not change Agent-response linkage or claim fencing. Shared messages cannot quote owner-only history. A quote is a reference, not a new copy of the source event; its original content remains authoritative.
@@ -260,6 +270,8 @@ binding. Unknown active requests and snapshots never supply exit proof.
 ## Snapshot and visible-history boundary
 
 Snapshot requests are requester-private control-plane records with frozen `through_sequence` values and bounded result metadata.
+
+Detail reads require the requester's current session read permission in every job state, including completed results; loss of visibility or project membership returns `404`. Lists apply the same `session_readers` boundary before ordering, limiting and byte bounds, with or without a session/status filter. Hidden records are omitted, so a filtered list may be empty. Revocation preserves terminal records and retry receipts; a later visibility grant restores access to retained results without restarting failed jobs.
 
 - `snapshot_connector` jobs create immutable read-only local snapshots and cannot claim Agent requests or publish local turns.
 - Each manual Codex history import creates and verifies a new writable local task. The `visible_history_replace` operation retains its Alpha wire name for compatibility, switches the binding and Hook allowlist after verification, and leaves the previous task untouched for the user to archive. The private registry marks that previous task `local_only`, so its later prompts cannot enter first-prompt discovery or create cloud state.

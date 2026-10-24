@@ -4,6 +4,8 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 ## [Unreleased]
 
+- Add creator-managed per-member conversation visibility for both Solo and Multi in Members, keeping the creation dialog to name and mode. Server read/discovery checks, immediate socket/ticket revocation and durable execution fences enforce hide/show without changing project roles. Preserve existing private audiences and legacy defaults, with additive SQLite migration, revision CAS and exact retry recovery. Downgrading to a server without these authorization boundaries is unsupported. Local implementation only; no version or publication change.
+
 ## [0.1.0-beta.4] - 2026-10-24
 
 - Patch Undici to `7.30.1` in the server and hosted image for upstream

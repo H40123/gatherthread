@@ -89,7 +89,8 @@ export class CollaborationService {
 
   getProject(actor: Actor, projectId: string) {
     const role = this.requireProjectMembership(actor, projectId);
-    return { project: this.database.requireProject(projectId), role };
+    return { project: this.database.requireProject(projectId), role,
+      session_visibility_options: ["project", "private"] };
   }
 
   getProjectContextPolicy(actor: Actor, projectId: string) {
@@ -176,7 +177,13 @@ export class CollaborationService {
 
   listMembers(actor: Actor, sessionId: string) {
     const role = this.requireMembership(actor, sessionId);
-    return this.database.listSessionMembers(sessionId).map((member) => {
+    const session = this.database.requireSession(sessionId);
+    const mayManage = session.owner_user_id === actor.user_id && role !== "viewer";
+    return this.database.listSessionMembers(sessionId, actor.user_id).map((record) => {
+      const member = { ...record, ...(mayManage ? {
+        session_visible: this.database.membershipRole(sessionId, record.user_id) !== null,
+        visibility_revision: session.visibility_revision ?? 0,
+      } : {}) };
       if (member.runtime === null || role === "owner" || member.user_id === actor.user_id) return member;
       return {
         ...member,
@@ -188,6 +195,11 @@ export class CollaborationService {
         },
       };
     });
+  }
+
+  setSessionMemberVisibility(actor: Actor, sessionId: string, userId: string,
+    input: Parameters<CollaborationDatabase["setSessionMemberVisibility"]>[3]) {
+    return this.database.setSessionMemberVisibility(actor, sessionId, userId, input);
   }
 
   listOwnExecutionRuntimes(actor: Actor, sessionId: string) {
