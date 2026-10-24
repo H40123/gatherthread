@@ -111,7 +111,7 @@ test("repo marketplace and current install surfaces preserve exact source and lo
   assert.match(rootEnglish, /launcher/i);
   assert.match(rootChinese, /启动器/);
   for (const readme of [rootEnglish, rootChinese]) {
-    assert.match(readme, /0\.1\.0-beta\.4/);
+    assert.match(readme, /0\.1\.0-beta\.5/);
     assert.doesNotMatch(readme, /npm install -g @openai\/codex/);
   }
   for (const guide of [html, english, chinese]) {
