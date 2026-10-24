@@ -312,7 +312,8 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
     }
   }
   function canAttemptAction(intent) {
-    const emergency = intent.kind === "disable" || intent.kind === "run" && ["pause", "stop"].includes(intent.input.action);
+    const emergency = intent.kind === "control" && intent.input.enabled === false
+      || intent.kind === "run" && ["pause", "stop"].includes(intent.input.action);
     return Boolean(context().writable || emergency && canControl());
   }
   async function attempt(intent) {

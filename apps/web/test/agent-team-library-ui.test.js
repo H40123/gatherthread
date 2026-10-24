@@ -2392,3 +2392,21 @@ test("an uncertain emergency Stop remains recoverable without normal write permi
   assert.equal(f.calls.length, 2); assert.deepEqual(f.calls[1], f.calls[0]);
   assert.equal(f.button("Check the previous action").hidden, true);
 });
+
+
+test("an uncertain Team Disable keeps its exact recovery key without normal write permission", async () => {
+  let attempts = 0;
+  const f = fixture({ initial: [team("team-a", { enabled: true })], overrides: { controlAgentTeam: async (session, id, input) => {
+    f.calls.push(["control", session, id, structuredClone(input)]);
+    if (++attempts === 1) throw Object.assign(new Error("Lost Disable receipt"), { status: 0 });
+    const accepted = team(id, { enabled: false, revision: 2 }); f.teams = [accepted];
+    return { team: accepted, replayed: true };
+  } } }); await open(f); f.update({ writable: false, controlWritable: true });
+  assert.equal(f.el("team-enable").disabled, false);
+  f.el("team-enable").click(); await flush();
+  assert.equal(f.calls.length, 1, "Disable uses current control authority without requiring new-task authority");
+  assert.equal(f.button("Check the previous action").disabled, false);
+  await f.ui.recover(); await flush();
+  assert.equal(f.calls.length, 2); assert.deepEqual(f.calls[1], f.calls[0]);
+  assert.equal(f.calls[1][3].enabled, false); assert.equal(f.button("Check the previous action").hidden, true);
+});
