@@ -21,7 +21,7 @@ class ClaudeBundleTests(unittest.TestCase):
         (output / ".claude-plugin").mkdir(parents=True)
         (output / ".claude-plugin/marketplace.json").write_text(json.dumps({
             "name": "gatherthread-claude", "plugins": [{"name": "gatherthread", "source": "./plugins/gatherthread",
-                                                         "version": "0.1.0-beta.4", "description": "fixture"}]}))
+                                                         "version": "0.1.0-beta.5", "description": "fixture"}]}))
         return plugin
 
     def test_build_uses_fixed_preparer_and_preserves_codex_connector(self):

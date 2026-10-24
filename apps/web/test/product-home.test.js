@@ -55,8 +55,8 @@ test("home distinguishes bounded Team preview from broader autonomous collaborat
   assert.match(en, /Work together.*Continue anywhere/iu);
   assert.match(zh, /普通聊天不会启动 AI/u);
   assert.match(en, /chat message does not start AI/iu);
-  assert.match(zh, /多 Agent 团队.*Beta 4 有限预览/u);
-  assert.match(en, /Multi-Agent teams.*Bounded Beta 4 preview/iu);
+  assert.match(zh, /多 Agent 团队.*Beta 5 有限预览/u);
+  assert.match(en, /Multi-Agent teams.*Bounded Beta 5 preview/iu);
   assert.match(zh, /多个 Agent.*组成团队.*测试后启用.*限额内分工.*相互交流/u);
   assert.match(en, /connected Agents as a team.*test and enable.*divide work.*communicate directly within limits/iu);
   assert.match(zh, /跨成员协作.*所有者明确授权.*逐个执行.*Claude Code 团队模块.*仍在开发/u);
@@ -67,7 +67,7 @@ test("home distinguishes bounded Team preview from broader autonomous collaborat
 test("readmes and product guides describe the same bounded Team release scope", async () => {
   for (const path of ["README.zh-CN.md", "docs/PRODUCT_GUIDE.zh-CN.md"]) {
     const copy = await readFile(new URL(path, repositoryRoot), "utf8");
-    assert.match(copy, /多 Agent.*Beta 4.*预览/u, path);
+    assert.match(copy, /多 Agent.*Beta 5.*预览/u, path);
     assert.match(copy, /测试.*启用/u, path);
     assert.match(copy, /跨成员协作.*所有者明确授权/u, path);
     assert.match(copy, /逐个执行/u, path);
@@ -77,7 +77,7 @@ test("readmes and product guides describe the same bounded Team release scope", 
   }
   for (const path of ["README.md", "docs/PRODUCT_GUIDE.md"]) {
     const copy = await readFile(new URL(path, repositoryRoot), "utf8");
-    assert.match(copy, /Multi-Agent teams.*(?:Beta 4.*preview|preview.*Beta 4)/iu, path);
+    assert.match(copy, /Multi-Agent teams.*(?:Beta 5.*preview|preview.*Beta 5)/iu, path);
     assert.match(copy, /test.*enable/iu, path);
     assert.match(copy, /(?:Cross-member collaboration.*owner's explicit permission|explicitly shared native connections)/iu, path);
     assert.match(copy, /(?:one at a time|call\/time limits)/iu, path);

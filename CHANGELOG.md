@@ -4,7 +4,22 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 ## [Unreleased]
 
-- Add creator-managed per-member conversation visibility for both Solo and Multi in Members, keeping the creation dialog to name and mode. Server read/discovery checks, immediate socket/ticket revocation and durable execution fences enforce hide/show without changing project roles. Preserve existing private audiences and legacy defaults, with additive SQLite migration, revision CAS and exact retry recovery. Downgrading to a server without these authorization boundaries is unsupported. Local implementation only; no version or publication change.
+## [0.1.0-beta.5] - 2026-10-25
+
+- Exclude Codex Desktop's app-generated next-message suggestions from cloud
+  conversation discovery, live/offline Hook capture and local-history recovery.
+  Suppress older unsubmitted suggestion drafts without retrying or falsely
+  acknowledging uncertain commits.
+- Show connector readiness and short live logs immediately in the Launcher.
+  Preserve final error logs and prevent an old child process from overwriting
+  the current connection's status on macOS and Windows.
+- Present one unconfigured sharing connection per device and Agent. Preserve
+  existing grants, Stop controls, distinct devices, editor selection and focus.
+- Include creator-managed per-member conversation visibility for both Solo and Multi in Members, keeping the creation dialog to name and mode. Server read/discovery checks, immediate socket/ticket revocation and durable execution fences enforce hide/show without changing project roles. Preserve existing private audiences and legacy defaults, with additive SQLite migration, revision CAS and exact retry recovery. Downgrading to a server without these authorization boundaries is unsupported.
+
+Matching npm packages/plugins use `0.1.0-beta.5`; the macOS Launcher displays
+`0.1.5`, build `15`. Preserve Beta 4 downloads and reused hosted-image provenance.
+See the [release record](docs/releases/0.1.0-beta.5.md) for upgrade boundaries.
 
 ## [0.1.0-beta.4] - 2026-10-24
 
