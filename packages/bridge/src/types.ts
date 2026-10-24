@@ -26,7 +26,8 @@ export type CanonicalEventType =
 export interface RuntimeProvenance {
   userId: string;
   deviceId: string;
-  runtimeId: string;
+  /** Server-contained Cloud replies have provenance without a local runtime. */
+  runtimeId?: string;
   harness: HarnessName;
   provider: string;
   model: string;
@@ -258,7 +259,11 @@ export interface CollaborationApi {
   appendEvent(sessionId: string, event: AppendEventInput): Promise<CanonicalEvent>;
   registerRuntime(runtime: RuntimeRegistration): Promise<RegisteredRuntime>;
   heartbeatRuntime?(runtimeId: string): Promise<RegisteredRuntime>;
-  claimAgentRequest(sessionId: string, requestId: string, runtimeId: string): Promise<AgentRequestClaim>;
+  claimAgentRequest(sessionId: string, requestId: string, runtimeId: string, executionControlVersion?: 1): Promise<AgentRequestClaim>;
+  /** Read exact execution authority without renewing its lease or claiming work. */
+  readAgentExecution?(sessionId: string, requestId: string, runtimeId: string, claimAttempt: number): Promise<{ active: boolean }>;
+  /** Only acknowledge after the owned native turn/process actually terminated. */
+  acknowledgeAgentExecutionStopped?(sessionId: string, requestId: string, runtimeId: string, claimAttempt: number): Promise<void>;
   appendAgentProgress?(
     sessionId: string,
     requestId: string,
@@ -284,7 +289,9 @@ export interface HarnessExecutionInput {
   /** Optional server-authorized derived context frozen before this request. Raw history remains available. */
   historyContext?: HistoryContext;
   runtime: RegisteredRuntime;
-  /** Privacy revocation, independent of progress uploads. Stop the owned turn before returning. */
+  /** Exact server claim generation, never inferred from a local process id. */
+  claimAttempt?: number;
+  /** Claim cancellation or privacy revocation. Stop the owned turn before returning. */
   signal?: AbortSignal;
   publishProgress?: (update: HarnessProgressUpdate) => Promise<boolean | void>;
 }
@@ -296,8 +303,21 @@ export interface HarnessExecutionResult {
   observedReasoningEffort?: string;
 }
 
+export interface NativeExecutionExitReceipt {
+  sessionId: string;
+  requestId: string;
+  runtimeId: string;
+  claimAttempt: number;
+}
+
 export interface HarnessExecutor {
+  /** Advertise only with signal cancellation, physical-exit evidence and durable exact-attempt recovery. */
+  readonly executionControlVersion?: 1 | undefined;
+  /** Indeterminate native ownership must reject with HarnessExecutionUnconfirmedError, never an exit acknowledgment. */
   execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult>;
+  readStoppedExecutions?(): Promise<NativeExecutionExitReceipt[]>;
+  acknowledgeExecutionExit?(receipt: NativeExecutionExitReceipt): Promise<void>;
+  acknowledgeCanonicalCompletion?(request: CanonicalEvent, runtime: RegisteredRuntime, claimAttempt: number): Promise<void>;
   shouldExecute?(request: CanonicalEvent, runtime: RegisteredRuntime): Promise<boolean> | boolean;
   /**
    * Ensure the harness-native conversation exists and report the canonical

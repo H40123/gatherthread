@@ -26,6 +26,7 @@ Prerelease status never permits silent reinterpretation of persisted data, ident
 | DSH native plugin RPC and persisted state | Public prerelease package / internal versioned state | `packages/dsh-host/src/native-plugin.ts`, `connector.ts`, `state-store.ts`, `types.ts` | DSH Host and bundled settings client |
 | Browser entry routes and legacy deep-link forwarding | Public prerelease | `site/index.html`, `site/boot.js`, `apps/web/scripts/build.mjs`, `apps/server/src/server.ts` | Browsers, invitations, DSH pairing, shared project/session links |
 | Stable Web control IDs and accessible names | Internal versioned | `apps/web/index.html`, `apps/web/test/static-accessibility.test.js` | Web event bindings, accessibility, browser tests |
+| Independent page recovery and startup readiness | Internal versioned | `apps/web/src/page-recovery.js`, `apps/web/src/bootstrap.js`, `apps/web/test/page-recovery.test.js`, `apps/web/test/bootstrap.test.js` | Browser shell, HTTP acknowledgment deadlines, isolated example |
 | Codex Launcher URI (Windows/macOS) | Internal versioned | `apps/web/src/domain.js`, `prototypes/codex-launcher/launcher.py`, `prototypes/codex-launcher/macos/Launcher.swift`, shared `contract-vectors.json` | GatherThread Web, per-user Windows and macOS URL Scheme handlers |
 | Opt-in code repository snapshots, review and merge | Public prerelease, Beta 2 | `packages/protocol/src/code-sync.ts`, `apps/server/src/code-repository.ts` | Web, shared local code-sync module, Codex, DSH |
 | Shared manual history summaries and derived context | Public prerelease, Beta 2 | `packages/protocol/src/history-summary.ts`, `apps/server/src/database.ts` | Web, bridge, MCP, Codex, DSH |
@@ -57,6 +58,20 @@ The same-origin API is rooted at `/v1`.
 - Connectors use an HTTP bearer credential kept in the connector process. Credentials never belong in URLs, WebSocket query strings, page storage, MCP arguments, logs, or canonical events.
 - Cookie-authenticated writes require an allowed `Origin`. Bearer-authenticated connectors remain device- and role-scoped.
 - Retryable mutations carry a stable `idempotency_key`. An exact same-actor retry returns the original result; a changed actor, operation, target, or canonical payload conflicts.
+
+The Web API client bounds one HTTP acknowledgment, including response-body JSON
+decoding, to 45 seconds while retaining shorter explicit caller deadlines. It
+aborts the transport and rejects with client-side `ApiError` status `0`, code
+`request_timeout`, even if that transport does not honor abort. A timeout is an
+unknown receipt, not a server failure or execution cancellation; no mutation is
+automatically retried. Caller abort reasons propagate without a timeout notice.
+All timers and caller-signal listeners are released after settlement. The
+independent recovery layer receives only the fixed `request_timeout` category,
+never a route, request body or exception. Stable recovery controls use
+`page-recovery-help`, `page-recovery-dialog`, `page-recovery-dismiss` and
+`page-recovery-reload`; modal-local help uses `data-page-recovery-help` without
+duplicate IDs. Startup readiness follows `data-boot-state` through asynchronous
+session restoration and back/forward cache restoration, not module import alone.
 
 ### Session member visibility
 
@@ -160,7 +175,7 @@ An `agent_request` names an exact harness/model profile and eligible runtime. Th
 - The final response does not close the claim until it is durably committed.
 - Other connected harnesses may passively project the result but cannot execute the same request.
 - A claim carries a server-assigned lease and is renewed only by accepted `agent_progress` from its holder. Runtime presence never extends a lease.
-- A lapsed exact-runtime claim may be reclaimed only by the runtime recorded in the request profile. Reclaim never changes device, harness, provider, model, or runtime implicitly. Legacy requests without a runtime target retain their existing fail-closed selection rules. Only a live claim occupies a runtime's single active slot.
+- A lapsed exact-runtime claim may be reclaimed only by the runtime recorded in the request profile. Reclaim never changes device, harness, provider, model, or runtime implicitly. Legacy requests without a runtime target retain their existing fail-closed selection rules. Ordinary claims occupy the runtime slot only while live; native Team execution additionally retains the exit-confirmation hold described below.
 - Claim success includes `attempt_count`. Progress and completion may send it as `claim_attempt`; current connectors always do. The server rejects an expired lease or a superseded attempt. For compatibility with Alpha connectors, omission is accepted only on attempt 1.
 - Reclaim is bounded. A request past the attempt budget terminates as `failed`: claiming it returns `agent_request_failed`, the server commits and publishes exactly one canonical `agent_response` with `status: "failed"` and no capture-fidelity or runtime-provenance claim, and a connector treats that conflict as terminal rather than retrying it.
 - The author of a request may **pause** it. Pausing is authorized to that author alone — a project owner who did not ask has no more right to stop it than to have asked it — and it is idempotent. A paused request is never handed to a runtime: claiming it returns `status: "paused"`, which is neither an execution nor a failure. A connector skips it, and no later lease lapse re-opens it.
@@ -169,6 +184,88 @@ An `agent_request` names an exact harness/model profile and eligible runtime. Th
 - A paused request is a record, not a queue entry. Continuing is a **new** `agent_request`, exactly as retrying a failed one is: the new request's position in the log is what lets the resumed run see anything said while it was stopped.
 
 The Web composer reuses `send-agent-button` for its author's latest ordinary request, with `data-agent-action=request|wait|pause|resume`, bilingual accessible names and `aria-busy` during control writes. `POST /v1/sessions/:id/agent-requests/:eventId/pause` retains its strict empty JSON body and existing author/write checks. Resume uses the existing event append route with the original execution profile and message references and one stable retry key; it does not reopen a claim or change native connector contracts. `add-agent-button` opens the existing Agents settings section without changing the project/session URL or granting permissions.
+
+Native Team claims require `execution_control_version:1` in the claim input;
+older native clients receive 409 `agent_execution_control_required` before work
+is admitted. Ordinary non-Team claims retain their previous compatibility.
+Updated bridges and DSH must be installed together with this preview server.
+The bridge advertises this capability only when its selected executor explicitly
+implements it. Official POSIX CLI/subprocess entries require a configured durable
+execution journal and verify that the owned process group has exited; merely
+observing the parent process close is insufficient. Their Windows process
+fallback does not advertise Team execution control and refuses Team work before
+claiming it; ordinary request compatibility is unchanged.
+`GET /v1/sessions/:session_id/agent-requests/:request_id/execution` takes strict
+`runtime_id,claim_attempt` query fields and returns `{ data:{ active:boolean } }`.
+It observes current authority, context, lease and Team control without renewing
+the lease or exposing content. The native executor requires an initial active
+confirmation and watches it during execution; explicit invalidation aborts the
+exact native turn. Unknown transport results are not exit confirmation.
+After the native executor has actually settled, the same device posts strict
+`{ runtime_id,claim_attempt }` to `/execution/stopped`, returning
+`{ data:{ active:false } }`. Only that exact attempt's capacity hold is cleared;
+an old acknowledgment cannot clear another attempt. Exact authenticated-device cleanup can acknowledge an archived/read-only
+session or revoked runtime/membership without gaining read, execution or write permission.
+Deletion of a session, project, runtime or claim preserves an outstanding native
+hold in a separate content-free identity record. The original active device can
+acknowledge that exact identity even after its history resources are gone.
+Cleanup and pool scope use the original canonical request envelope. A runtime
+with an unresolved hold cannot change session or purpose (409
+`agent_team_native_exit_pending`); same-route metadata refresh remains allowed.
+Detached holds carry additive `origin_verified` metadata. Existing rows are
+repaired only from a surviving canonical request; if that origin is unavailable,
+the original device/harness is conservatively held across projects. Exact
+original-device acknowledgment of such an unverified legacy row does not treat
+its old session URL as proof of origin; all other exact attempt fields still
+match. Verified rows require the original session as well.
+Missing and unauthorized identities receive the same content-free no-op reply,
+without modifying another device's hold or revealing whether a claim exists.
+A generic HTTP 404 is never interpreted as exit confirmation by a client.
+After a client has observed the execution-control surface, a later 404 invalidates
+the execution but does not downgrade that surface to an unsupported old server;
+the client still records and retries its exact exit acknowledgment after stopping.
+Team pause, deadline, lease expiry, private Forget and restart retain the hold
+until confirmed native exit or accepted completion. Additive `execution_pending`
+claim metadata survives restart; earlier claimed/paused/failed rows with a
+surviving Team marker or an erased request are conservatively backfilled. A server-generated
+failure answer after lease expiry is not native-exit evidence. A disconnected
+client cannot imply process exit.
+New Team native holds are bounded at 1,000 per account and 100,000 globally;
+legacy holds are preserved even above these admission limits. Ordinary claims
+do not acquire new Team holds, but all native and shared admission respects a
+detached hold in the same device/project/harness pool. Live and detached copies
+of one exact attempt count once. `agent_team_native_exit_pending` explains a
+queued call blocked by a previous exit; `agent_team_native_hold_capacity`
+explains the separate safety-record limit without exposing another account.
+This is a coordinated preview upgrade: stop old connectors and confirm their
+native turns have exited before replacing them. Conservative legacy holds with
+no surviving local exit receipt cannot be cleared merely by reconnecting or
+waiting; the owning exact device must confirm the old attempt's actual exit.
+Content-free pending exit receipts are persisted locally and retried on reconnect
+without rerunning a turn. These APIs remain connector-only, outside user MCP.
+Official CLI entries use `${statePath}.execution.json`; subprocess adapter
+entries use `${cursorPath}.execution.json`; App Server Team execution uses
+`${statePath}.native-execution.json` alongside its existing projection journal.
+These private bounded journals bind
+the exact session/runtime/request/attempt and an input fingerprint, with prepared,
+started and settled states for CLI/subprocess work; App Server retains native
+turn-start tracking in its existing projection journal. Only settled native work
+can produce cleanup receipts. For these bridge executors, receipt persistence
+and retry precede a new runtime registration, so
+deletion or rebinding cannot block old cleanup.
+Project startup independently scans only the exact device/project/workspace's
+known cursor and native-execution sidecars before project/session discovery and
+native preflight, including deleted sessions. The scan is limited to 4,096 direct
+entries and 64 MiB; regular-file/link/session-key checks and OS-supported
+ownership/private-mode checks precede cleanup. It never searches native
+conversations or interprets a missing process as exit. Current cursor updates
+survive delayed acknowledgments. Lost completion acknowledgments replay the
+settled outcome instead of launching another process. Prepared or
+started ownership is never reclaimed merely because a PID is absent; unknown
+exit requires operator verification. Evidence is not evicted to admit new work.
+DSH likewise replays confirmed private exit receipts before session reads,
+host startup or registration, after verifying its persisted project/session/native
+binding. Unknown active requests and snapshots never supply exit proof.
 
 ## Snapshot and visible-history boundary
 
@@ -239,6 +336,10 @@ GitHub file-write receipts are small metadata, not source snapshots. A per-user/
 
 ## MCP and local relay boundaries
 
+Claude adds an optional validated `claude-code` local relay namespace; omitting it retains the legacy Codex endpoint. Its plugin MCP discovers only the selected workspace/harness, not an arbitrary matching global registration. This changes no bearer, ACL, canonical event or claim authority. Claude's native Hook envelope is distinct from Codex's `turn_id`/model contract and must never be interpreted as a Codex Hook. [ADR-0060](adr/0060-claude-code-plugin-and-local-connector.md) owns these integration decisions.
+
+The Claude connector's default `--permission-mode native` leaves local Claude settings and tools intact, replacing the unreleased file/plan-only execution policy. Existing explicit manual/plan options remain valid. Required `--permission-prompts none` support keeps new approvals local; a native `permission_denials` result produces fixed `claude_permission_required` guidance without its input bodies. Own-execution Hook suppression is keyed by the fresh private native UUID, never a title or model; it cannot enable another user's execution or publication. The execution journal fingerprints the chosen permission mode, so an older or changed configuration cannot silently replay an uncertain task. No HTTP, Launcher URI, account, shared-Agent or persisted state schema changes are required.
+
 The published MCP surface is intentionally narrower than the internal collaboration API.
 
 - User-facing tools/resources expose authorized project/session discovery, canonical event reads/writes, and explicit local sync controls.
@@ -273,6 +374,8 @@ The Cloud Git dialog keeps `project-code-button` and `project-code-dialog` as it
 
 ### Windows/macOS Codex Launcher URI v1/v2
 
+The Claude-compatible source Launcher additionally accepts v3: exactly the v2 fields plus `harness=codex|claude-code`. Web continues emitting v2 for the unchanged Codex flow and emits v3 for Claude. Unsupported/duplicate/unknown harness fields fail closed. v3 routes locally to the separately bundled connector/plugin; it reuses the same password-protected account/project handoff and does not claim the existing grant is harness-bound. Old installed Launchers will reject v3 and must be updated using matching reviewed artifacts. No old Release asset is silently overwritten. Shared contract vectors cover all three versions.
+
 Windows and macOS Launchers use `gatherthread-connect://connect`. The primary Web flow emits v2 with the six original settings plus `email` and `authorization_id`. It is offered only on the exact HTTPS production/test origins for desktop Windows/macOS, never phones/tablets. Terminal instructions are collapsed on supported desktops and remain available for Linux/self-hosted instances. The Windows handler and branded shortcut are per-user; macOS uses its `.app` URL Scheme. The browser cannot assume installation.
 
 v1 retains exactly the original six fields and accepts production only; old links continue to use the compatible hidden authorization input. v2 requires exactly eight fields and permits only `https://gatherthread.cn` or `https://test.gatherthread.cn`. `email` is a normalized conventional ASCII mailbox (the registration bounds); `authorization_id` is a public UUID, not a bearer capability. `project` is 1–128 ASCII letters/digits/`.`, `_`, `:`, `-`, beginning with a letter/digit; `model` is nonempty, at most 120 characters, without controls or leading `-`; `context_window_tokens` is decimal 4096–2000000; `visible_history_sync` is `first-connect|never`. URI size is at most 2048 UTF-8 bytes. Unknown/duplicate/missing fields, fragments, userinfo, ports, paths, unsupported versions and other origins fail closed. Both handlers retain the validated origin and pass it unchanged to `--url`. Shared producer/consumer vectors are in `prototypes/codex-launcher/contract-vectors.json`.
@@ -281,7 +384,7 @@ v2 pre-fills email and environment, then asks for the account password only in t
 
 Opening the new Launcher directly guides users back to the signed-in Web project; legacy v1 manual settings remain compatible. Workspace selection stays local, with mutually exclusive `--create-workspace` or `--workspace <existing absolute path>` flags, revalidated by the connector. An old v1 app intentionally rejects v2, so publication must include updated native archives rather than replacing Web alone. Windows bundles multiresolution ICO/PNG for window, taskbar, protocol and shortcut; macOS bundles an ICNS declared in Info.plist and used at runtime. Build verification refuses missing icons. Signing/notarization and actual Windows smoke remain separate release gates. See [ADR-0044](adr/0044-email-password-codex-launchers.md).
 
-Mac distribution adds `GatherThreadLauncher-macOS-<architecture>.dmg`, `*.dmg.sha256` and `*.dmg.provenance.json`; the ZIP remains compatible. The image shows only Applications on the left and the expected app on the right, joined by a leftward background arrow. Bilingual installation/safety/Hook text appears on the approved static background; detailed `READ ME FIRST.html`, `BUILD_PROVENANCE.json`, background and layout assets remain in the hidden `.gatherthread` directory. Build-only hash-pinned tools write a strictly verified `.DS_Store` on a private intermediate; the published image remains read-only. Schema 1 provenance stays unchanged: clean source commit, connector/release-source and Node versions, architecture, minimum macOS, explicit ad-hoc/non-notarized status and app-file hashes. Launcher 0.1.3/build 13 is the required numeric app version, covered by those same hashes; its product release and bundled connector/plugin versions are `0.1.0-beta.3`. The publisher verifies the actual mounted bytes, Finder view/icon placement/background target and signature against the pre-build record and detaches before promoting the local artifact. Only Git-reviewed plugin paths are packaged. This changes neither the v1/v2 URI nor authorization/API/connector boundaries. `codex-launcher-macos-install` is a presentation-only, Mac-only guide; all prior control IDs remain. See [ADR-0047](adr/0047-macos-launcher-dmg-installation.md).
+Mac distribution adds `GatherThreadLauncher-macOS-<architecture>.dmg`, `*.dmg.sha256` and `*.dmg.provenance.json`; the ZIP remains compatible. The image shows only Applications on the left and the expected app on the right, joined by a leftward background arrow. Bilingual installation/safety/Hook text appears on the approved static background; detailed `READ ME FIRST.html`, `BUILD_PROVENANCE.json`, background and layout assets remain in the hidden `.gatherthread` directory. Build-only hash-pinned tools write a strictly verified `.DS_Store` on a private intermediate; the published image remains read-only. Schema 1 provenance stays unchanged: clean source commit, connector/release-source and Node versions, architecture, minimum macOS, explicit ad-hoc/non-notarized status and app-file hashes. Launcher 0.1.4/build 14 is the required numeric app version, covered by those same hashes; its product release and bundled connector/plugin versions are `0.1.0-beta.4`. The publisher verifies the actual mounted bytes, Finder view/icon placement/background target and signature against the pre-build record and detaches before promoting the local artifact. Only Git-reviewed plugin paths are packaged. This changes neither the v1/v2 URI nor authorization/API/connector boundaries. `codex-launcher-macos-install` is a presentation-only, Mac-only guide; all prior control IDs remain. See [ADR-0047](adr/0047-macos-launcher-dmg-installation.md).
 
 Web HTML IDs, form names, accessible labels, dialog relationships, and the separate chat/Agent actions are integration points between static markup, JavaScript, tests, assistive technology, and browser automation.
 
@@ -449,6 +552,13 @@ revocation cannot free an unconfirmed execution slot. The browser bounds reads
 and mutation acknowledgments independently; unknown acceptance retains the same
 body/key for explicit recovery before another request. Emergency disable remains
 available during an uncertain enable.
+Confirmed shared-stop outboxes also drain independently of current source
+availability or registration. Startup recovery reads only the bounded private
+control directory for the exact project/device, validates original source and
+attempt identities, and removes a receipt only after a verified terminal cleanup
+acknowledgment. Codex may locate an existing managed workspace by its exact
+server/project marker before project discovery; it does not guess a deleted
+project's workspace or inspect unrelated native conversations.
 
 Web sharing reads, sends, recovery and cancel operations each bound the whole
 HTTP exchange (including the response body) to eight seconds and abort their
@@ -482,3 +592,263 @@ schemas; unsupported native platforms refuse sharing rather than broadening tool
 Retention, erasure and native permission requirements are owned by
 [Security](SECURITY.md#native-agent-sharing-preview-boundary); the decision is in
 [ADR-0056](adr/0056-project-scoped-native-agent-sharing.md).
+
+## Saved Agent Team preview contract
+
+`packages/protocol/src/agent-team-library.ts` owns the strict account-library
+schemas; `agent-team.ts` owns frozen plans, targets, runs, steps, control actions
+and server-reserved request metadata. New library, test, enable and start routes
+require a browser session, with the normal active-device and mutation
+Origin/admission/JSON gates. All JSON fields use snake_case and the existing
+`{data}` / `{error:{code,message,details?}}` envelopes.
+
+| Route | Authority and shape |
+| --- | --- |
+| `GET /v1/agent-teams` | Current account only; `{teams,modules,team_limit:5,module_limit:5}`. Definitions and favorites are account-wide, not project-owned. |
+| `PUT /v1/agent-teams/:team` | Owner only; `{draft,max_calls?,max_duration_minutes?,expected_revision,idempotency_key}` returns `{team,replayed}`. Creation requires null revision; edits require the exact saved revision. |
+| `PUT /v1/agent-team-modules/:module` | Owner only; creates an immutable `{module,idempotency_key}` favorite and returns `{favorite,replayed}`. The module snapshot has `label,role,prompt?,target` without graph identity or position. |
+| `DELETE /v1/agent-teams/:team` / `DELETE /v1/agent-team-modules/:module` | Owner only; strict `{idempotency_key}` returns `{deleted:true,replayed}` and releases the library slot. Team deletion cancels its pending connectivity test, not accepted task snapshots. |
+| `POST /v1/sessions/:session/agent-teams/:team/test` | Saved owner/current session writer; `{expected_revision,content_revision,solo_transfer_ack?,idempotency_key}`. 202 `{run,replayed}` with `purpose:test`. |
+| `POST /v1/sessions/:session/agent-teams/:team/control` | Saved owner; `{enabled,expected_revision?,idempotency_key}` returns `{team,replayed}`. Enable requires exact passed revision plus current writable session and exact available targets. Disable may omit revision and does not require a new execution authorization. |
+| `POST /v1/sessions/:session/agent-teams/:team/start` | Saved owner/current session writer; test input plus nonblank `content` (at most 3,000 characters), optional `reply_to_event_id` (ID or null) and `mentions`. 202 `{run,replayed}`. The server supplies the saved plan and limits; client plans cannot override them. |
+| `GET /v1/sessions/:session/agent-team-runs` / `GET .../:run` | Authenticated requester with current session access; at most 50 own-run summaries, active runs first, ordinary tasks before hidden connectivity probes within each group, then newest first, or `{run}` detail. Another member's private run is not exposed. |
+| `POST /v1/sessions/:session/agent-team-runs/:run/control` | Original requester with current write access; `{action:pause\|resume\|stop\|continue,idempotency_key}` returns `{run}`. Resume/continue recheck the frozen original device and original deadline; any new execution also requires remaining calls and an available exact target. |
+| `DELETE /v1/sessions/:session/agent-team-runs/:run` | Original requester/current writer; strict `{}` forgets only a terminal private record and returns 204. Canonical events remain. |
+
+A draft contains `name,team_prompt,entry_node_id?,nodes,edges`, at most 16 modules,
+32 edges and 64 KiB serialized JSON. Module `target:null` supports saving an
+unbound draft; executable plans require every target and directional
+reachability from the entry module. Targets are an exact own local runtime,
+provider/model/effort; an exact shared grant/revision and advertised profile; or
+a cloud profile/provider/model with its private API configuration revision and
+explicit `include_code` flag. Missing or removed selections fail closed. A cloud
+target has no independently writable native reasoning-effort field. Edges use
+`source,target,direction:one_way|bidirectional`, with unique IDs/routes, existing
+endpoints and no self-loop. They are permission to call, not a mandatory task
+schedule or an extra tool grant; the subordinate's return follows the recorded
+caller stack without implicitly authorizing arbitrary reverse delegation.
+Bounds/defaults and library/editor behavior are owned
+by [Product specification](PRODUCT_SPEC.md#my-agent-teams-local-implementation-preview).
+
+Definition output adds `id,revision,enabled,tested_revision,test_run_id,
+test_session_id,test_status,updated_at` to the saved draft/limits. Test status is
+`not_tested|running|passed|failed`; enabling/disabling advances the revision and
+preserves a valid test stamp only while configuration is unchanged. A saved edit
+invalidates the stamp and disables future starts. Revisions are opaque positive
+integers allocated by a durable account clock, not consecutive per-Team counters.
+Deleting and recreating an ID cannot reuse an older revision or accept another
+device's stale save, enable or start. Migration reserves the new revision namespace
+at or above `2^40`; surviving legacy definitions keep their existing revisions
+until changed, while recreations cannot recycle the earlier preview's counters
+even when every old definition was already deleted. Test completion persists its successful
+stamp on the server without requiring a library read; forgetting or pruning the
+private test record does not erase that stamp. Replacing or deleting a definition
+atomically fences its old connectivity test before acknowledging the library
+mutation; exact receipt recovery can retry physical cleanup. A replacement test
+must pass admission in that same transaction: a rejected replacement preserves
+the old probe, claims, canonical head and allowances. Physical cancellation runs
+only after the replacement transaction commits. Accepted task runs
+remain independent. A favorite inserted into a
+graph receives a new node identity and position. At the atomic five-item limit,
+new entries return 409 `agent_team_limit` or `agent_team_favorite_limit`; unbound
+or disconnected test/start inputs return 422 `agent_team_incomplete` or
+`agent_team_disconnected`. Stale revisions and changed idempotent retries conflict.
+
+Before reporting private run-storage exhaustion, start admission may reclaim
+the same account's terminal connectivity caches no longer referenced by a saved
+definition. Current probes, task records and consumed-key receipts are excluded;
+the reclamation rolls back if replacement admission fails. Web run records expose
+the existing terminal-only DELETE route. After a lost 204, an authenticated
+`not_found` for that exact private record is treated as already cleared only
+after the current session list remains readable and does not contain it;
+membership-hidden 404s, revoked authority and active-run conflicts remain failures.
+
+Run acknowledgments are acceptance receipts, not versioned status updates. A
+client must not replace a later observed run status with a delayed Start or
+control response; it still settles the original intent and refreshes current
+state. A confirmed removal also fences outstanding run/favorite creation
+responses so reconnect cannot restore an already cleared private record or
+deleted favorite. Access denial and content-revision invalidation also fence
+pending Start/control cache writes, including runs never previously listed.
+Receipt acceptance may still settle the original composer intent without
+restoring invalid private data. Reauthorization requires a fresh authorized read.
+The same authority/content-revision fences apply to delayed failures and already
+displayed diagnostics, including later locale rerenders. A stale failure cannot
+restore an old module label or overwrite a newer validation message or draft;
+an unknown transport result still retains its original retry body and key.
+At equal definition revision, delayed Save/Test acknowledgments cannot replace
+newer observed test metadata; a new exact recovery may read current state.
+A new exact-key recovery attempt can read the current receipt.
+Pause/Stop fence execution before acknowledging. If native cancellation fails
+after that durable transition, same-state receipt recovery, startup and bounded
+coordinator retries repair the outstanding claim; they do not reopen the run,
+consume another call or let an old Pause receipt cancel resumed work.
+Web Pause and Stop use current control authority independently of WebSocket
+replay readiness; Resume, Continue and new work still require normal writable
+state. A pending Pause transport cannot block the independent Stop path.
+
+Run summaries may add a strict `issue` object containing `code`, nullable
+`node_id`, `node_label`, `target_kind:local|shared|cloud` and `retry_at` (ISO
+timestamp or null). Current clients can still read older summaries without it;
+earlier preview Web builds using a strict schema do not accept the new field and
+must be refreshed together with the server update. Module
+identity comes from the immutable run plan, not a later library edit. Global
+authorization, context and total-budget issues have no blamed module. Diagnostic
+codes are allowlisted; raw provider messages, native exceptions, headers and
+tool output are never diagnostic fields. Unknown retained error codes are
+returned as a generic safe category. Existing `error_code:agent_timeout`
+continues to control explicit Continue; `issue.code` may explain the more
+specific trusted timeout cause.
+
+Cloud cooldowns expose a running issue and earliest retry time without accepting
+another call. Accepted native work may expose queued, offline or expired-claim
+observations while its result is pending; these observations do not themselves
+authorize a retry or declare the work failed. A nullable private `wait_reason`
+column migrates in place and clears on acceptance or state transition. Rejected
+Team controls may preserve `error.code:conflict` while adding an allowlisted
+`error.details.issue_code` so clients can distinguish expired budgets, ended
+runs, cleared receipts and an inappropriate recovery action. Preflight errors
+may include the owning configuration's bounded module label and target kind.
+
+Test/start acceptance binds its exact input digest, definition ID/revision,
+session content revision and caller's stable key. While the private run exists,
+an exact retry recovers that original accepted run without reserving another task,
+including after the saved definition changes, is disabled or is deleted; current
+caller/session authority still applies. A different action/body with that key
+conflicts. A content-free consumed-key receipt is committed in the same
+transaction as acceptance and survives private-run Forget, expiry pruning and
+author-erasure cache cleanup. Once the private run is gone, the old key returns
+409 `conflict`, or `idempotency_conflict` for a known changed input; it cannot
+start another task, publish another canonical request or consume another call,
+provider allowance or shared reservation. This also applies when the original
+run stopped before publishing its first canonical step. The receipt does not
+restore cleared run details. Browser requests
+must bound response headers and bodies, preserve unknown acceptance and retain
+an independent Stop/recovery path. Saved-plan edits never rewrite a frozen run.
+While a start acknowledgment is unknown, composer recovery and Stop bind only
+to the same authenticated scope/current user, original start idempotency key
+and its verified run identity. Equal task text is not an identity match and
+cannot authorize stopping another device's run. Before a matching canonical
+request confirms that binding, recovery repeats the exact original body/key
+rather than guessing a run from conversation content.
+
+A paused run may consume its already completed canonical result without another
+call or an online executor; this does not permit a new delegation or parent
+return past its call limit. A human-paused shared step's verified broker
+cancellation retires that interrupted attempt on Resume, which creates a new
+counted step subject to shared cleanup and concurrency fences. Native online
+preflight uses effective heartbeat presence, not a stale persisted online flag.
+The saved-Team action routes accept at most 64 KiB of JSON so valid multilingual
+tasks and mention ranges fit; task text remains bounded to 3,000 UTF-16 units.
+
+Saved-Team and internal formal-run start schemas accept the existing in-session
+quote and mention shapes. `mentions` uses `MessageMentionsSchema` (at most 32
+UTF-16 ranges in the exact submitted task `content`, not in the generated Team
+prompt). The browser omits empty quote/mention metadata. Parsed start input,
+including explicit null or empty arrays, participates in the original digest;
+omitted, null and empty values are not silently coalesced for same-key retries.
+A changed quote or mention list with the same key conflicts. New acceptance and
+first canonical publication enforce the existing quote visibility and current
+member/text-range checks from
+[Message quotes and mentions](#message-quotes-and-mentions). Receipt recovery
+retains the original metadata while rechecking caller/session authority and
+current deletion/context fences; it does not send another mention notification.
+
+Only the first formal canonical step carries the original quote and mentions,
+through own-native, cloud or shared execution. Its assembled prompt retains one
+server-owned step boundary before the assigned task. Redaction processes the
+whole assembled prompt, preserving cross-fragment credential detection. Only
+the final safe result may locate that unique boundary, verify the exact original
+task is unchanged and translate UTF-16 mention ranges; searching repeated task
+text or redacting fragments separately is not sufficient. Safe content must be
+a redaction fixed point before dispatch. Native, cloud and shared acceptance
+validate the actual final safe payload, including its mention ranges. Missing or
+ambiguous boundaries, changed task text, unstable redaction or invalid ranges
+fail closed before canonical step acceptance and call charging. Generated-prompt
+mapping failures use `agent_team_sensitive_input`; invalid reservation payloads
+retain the existing validation/authorization errors. This does not change the
+original parsed-start digest, wire fields or database schema.
+The mentions inbox uses the original `agent_team.task_content` for
+its excerpt. Later automatic steps do not re-notify the original mentions or
+repeat the quote. Connectivity-probe input rejects both fields, and probes do
+not publish them. This adds no new quote visibility or notification authority.
+
+Task dispatch derives its instruction brief from the frozen run and trusted
+step state. Each module's first invocation in that run includes an allowlisted
+public overview: overall task/Team rules, all module names and identities, the
+full directed relationships and entry, and run limits. Another module's private
+`prompt`, exact native runtime routing and credentials are not overview fields.
+Every invocation includes the current module, actual caller, allowed targets,
+return recipient, phase and remaining call/time allowance. A module's first-call
+status is scoped to its node in the run, not to a reused Agent connection.
+The brief marks `first_contact` on the first invocation and safely refreshes the
+same frozen public overview on later invocations; it does not assume persistent
+model memory across native, cloud or shared executions. This is instruction
+content, not permission to expose another module's prompt or serialize a private
+definition into the overview.
+Retries retain the accepted step identity; neither relationship nor budget is
+accepted from model assertions. Identity/prompt interpretation follows
+[Product specification](PRODUCT_SPEC.md#my-agent-teams-local-implementation-preview).
+
+Run summaries add optional `purpose:task|test` and `definition_id`; detail adds
+the frozen `plan,content,steps`. Canonical step requests use trusted `agent_team`
+metadata (`run_id,step_id,node_id,node_label,task_content,purpose?,clarification_event_id?,start_idempotency_key?`); generic
+client payloads cannot create it. Native/shared/cloud result provenance remains
+independently validated. `start_idempotency_key` is optional only for reading
+older canonical records; fresh engine dispatches always supply it, and a fresh
+Team reservation must match its run's original start key. It is an execution
+identity binding, not an authorization credential. The terminal version-1 directive is one final fenced
+`gatherthread-team` JSON block with `step_id` and `action:complete`,
+`action:delegate,target_node_id,task`, or strict
+`{"version":1,"step_id":"<current step>","action":"clarify"}`. Graph permission is checked server-side.
+Successful leaves may return plain final text. Clarify requires a current-step
+final response with verified provenance and a nonblank public explanation outside
+the directive. It pauses a task with `error_code:agent_team_instruction_conflict`;
+probe runs retain their exact marker protocol and do not accept Clarify.
+
+The existing `action:resume` control has no new input field. For a paused conflict,
+its first acceptance transaction selects and freezes the latest non-deleted,
+nonblank `human_chat` by the run's original requester in the same session after
+the conflict response, plus that response reference. Without such a message the
+run remains paused. Resume clears the current step and schedules a new counted
+call to the same module under the original plan, model, limits and deadline.
+The resumed request's optional server-owned `clarification_event_id` identifies
+the frozen human message; retries with the same control key neither replace that
+choice nor add another call. Both references remain canonical erasure
+dependencies after private-run Forget. Identity/rules/prompt/graph edits require
+a new saved/tested run rather than mutation of this snapshot. The server gates
+references and authorization, not semantic contradiction detection or proof of
+resolution.
+
+A test's first phase requires the exact `GT_TEAM_OK:<node_id>:<step_id>` marker.
+Its second calls each destination
+with incoming edges once, retains its current-step OK marker and requires one
+`GT_TEAM_ROUTE:<edge_id>:<source_id>:<target_id>:<source_first_phase_step_id>` line
+per incoming direction, including reverse directions for bidirectional edges.
+The prompt supplies the complete expected line array after `Respond exactly with
+these lines:`; the server checks its exact newline-joined response and source
+provenance rather than accepting a model-declared success or delegation. Total
+probe calls are module count plus distinct incoming destinations, at most 32.
+For cloud/shared test dispatch, the server supplies metadata-only context with
+`items:[]` and the currently authorized head/content revision; cloud test requests
+force `include_code:false`. Task dispatch retains its ordinary context/code contract.
+
+Persistence is additive: account definitions/favorites/metadata receipts plus
+private session runs/steps/controls, consumed-key receipts and migration columns
+for purpose and library binding. Existing private runs seed consumed-key receipts
+on database open. Earlier canonical Team requests with a start key also fence
+reuse after their private run was already removed; when their original input
+digest is unavailable, every retry fails closed rather than replaying cleared
+content. A previously removed pre-upgrade run that published no canonical step
+has no recoverable key record. Existing ordinary/shared requests retain their
+current contracts.
+Earlier unreleased session-plan schemas remain internal compatibility data;
+there is no public raw-plan save/start route or automatic enabled-Team migration.
+Startup retires legacy connectivity runs that have lost their current saved
+definition/test binding; accepted task snapshots are not invalidated by deletion
+of their definition.
+The server and Web preview must be updated together; older strict-schema pages
+require a reload rather than silently ignoring new response fields. No client
+can start a saved Team through ordinary request/continuation paths. No new user-facing MCP execution authority,
+package version, publication or deployment is introduced by this preview. See
+[ADR-0061](adr/0061-account-private-saved-agent-teams.md) for the durable boundary.

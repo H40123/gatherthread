@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 import { cloudRequestInput, composerAgentAction, mountAgentRequestControl, resumeAgentRequestInput, retryAgentRequestPermission } from "../src/agent-request-control.js";
 import { MockCollaborationApi } from "../src/api.js";
 
@@ -93,6 +95,14 @@ test("resume retains Codex/DSH exact original routing, quote and mentions", () =
 });
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+const mainSource = await readFile(new URL("../src/main.js", import.meta.url), "utf8");
+function composerCleanerSource(source) {
+  const normalized = source.replace(/\r\n?/gu, "\n");
+  const start = normalized.indexOf("function clearStaleTeamComposerProblem() {");
+  const end = normalized.indexOf("\n}\n", start);
+  assert.ok(start >= 0 && end > start, "the actual composer invalidation function must be present");
+  return normalized.slice(start, end + 2);
+}
 function fixture(api = {}, options = {}) {
   const own = request();
   let context = { scope: "scope1", contentRevision: 0, userId: "me", sessionId: "s1", writable: true, sending: false, events: [own, progress(own.id)] };
@@ -107,6 +117,52 @@ function fixture(api = {}, options = {}) {
   control.update();
   return { control, button, targetLabel, errorNode, setContext: (value) => { context = { ...context, ...value }; control.update(); },
     context: () => context, changes: () => changes };
+}
+
+test("Team Stop uses its safe error formatter and drops a late failure after navigation", async () => {
+  const f = fixture(); let reject;
+  const safe = "Team Stop is unconfirmed. Check the previous action.";
+  f.setContext({ teamRun: { id: "team-a", status: "running" }, stopTeam: async () => { throw Error("SYNTHETIC_PRIVATE_ERROR"); },
+    teamError: () => safe });
+  assert.equal(f.control.handleClick(), true); await flush(); assert.equal(f.errorNode.textContent, safe);
+  f.setContext({ stopTeam: () => new Promise((_resolve, no) => { reject = no; }) });
+  f.control.handleClick(); f.setContext({ scope: "scope2", teamRun: null, events: [] });
+  reject(Error("LATE_SYNTHETIC_PRIVATE_ERROR")); await flush(); assert.equal(f.errorNode.textContent, "");
+});
+
+for (const obsolete of [false, true]) {
+  test(`a ${obsolete ? "fenced" : "delayed"} Team Stop failure preserves newer composer validation`, async () => {
+    let reject;
+    const f = fixture();
+    f.setContext({ teamRun: { id: "team-a", status: "running" },
+      stopTeam: () => new Promise((_resolve, no) => { reject = no; }),
+      teamError: () => obsolete ? "" : "Team Stop is unconfirmed." });
+    f.control.handleClick();
+    const newer = { kind: "new-validation" };
+    f.errorNode.teamProblemIntent = newer;
+    f.errorNode.textContent = "Write a message first.";
+    reject(Error("OLD_STOP_FAILURE")); await flush();
+    assert.equal(f.errorNode.textContent, "Write a message first.");
+    assert.equal(f.errorNode.teamProblemIntent, newer);
+  });
+}
+
+for (const lineEnding of ["\n", "\r\n"]) for (const newer of [false, true]) {
+  test(`an already displayed Stop failure is cleared by the real composer invalidation without clearing newer text (${newer}, ${JSON.stringify(lineEnding)})`, async () => {
+    const problem = Object.assign(Error("safe failure"), { code: "agent_team_model_unavailable" });
+    const f = fixture(); let obsolete = false;
+    f.setContext({ teamRun: { id: "team-a", status: "running" }, stopTeam: async () => { throw problem; },
+      teamError: () => "OLD_PRIVATE_MODULE unavailable" });
+    f.control.handleClick(); await flush();
+    assert.equal(f.errorNode.teamProblemIntent.problem, problem);
+    assert.equal(f.errorNode.teamProblemIntent.text, f.errorNode.textContent);
+    const context = vm.createContext({ sendError: f.errorNode, teamsUi: { isObsoleteError: value => obsolete && value === problem } });
+    vm.runInContext(composerCleanerSource(mainSource.replace(/\r?\n/gu, lineEnding)), context);
+    if (newer) f.errorNode.textContent = "Keep the new input validation";
+    obsolete = true; context.clearStaleTeamComposerProblem();
+    assert.equal(f.errorNode.textContent, newer ? "Keep the new input validation" : "");
+    assert.equal(f.errorNode.teamProblemIntent, undefined);
+  });
 }
 
 test("personal cloud resume waits for its private selection and cannot write after navigation", async () => {
@@ -203,4 +259,14 @@ test("timeout continuation is a fresh request with exact cloud target and origin
   assert.deepEqual(result, { content: cloud.payload.content, profileId: "cloud-free", includeCode: true,
     idempotencyKey: "stable-continue-key", replyTo: "quote-1", continueFromEventId: "timeout-request" });
   assert.throws(() => continueCloudRequestInput(cloud, "key", [{ id: "cloud-free", provider: "deepseek-official", model: "changed" }]), /original cloud model/);
+});
+
+test("the composer Team Stop remains independently usable while realtime replay gates new writes", async () => {
+  let stops = 0;
+  const f = fixture(); f.setContext({ writable: false, controlWritable: true, sending: true,
+    teamRun: { id: "accepted-team", status: "running" }, stopTeam: async () => { stops++; } });
+  assert.equal(f.control.action(), "stop_team"); assert.equal(f.button.disabled, false);
+  f.control.handleClick(); await flush(); assert.equal(stops, 1);
+  f.setContext({ controlWritable: false }); assert.equal(f.button.disabled, true);
+  f.control.handleClick(); await flush(); assert.equal(stops, 1, "current role loss still blocks an emergency HTTP action");
 });

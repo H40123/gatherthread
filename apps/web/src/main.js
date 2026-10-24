@@ -2,6 +2,9 @@ import { renderAvatar, isAgentReply, eventAuthorLabel, eventExecutionOwner } fro
 import { mountAvatarSettings } from "./avatar-settings.js?v=20261018-tabs-2";
 import { mountCloudGithub } from "./cloud-github-view.js?v=20261018-tabs-2";
 import { mountSharedAgents } from "./shared-agent-view.js?v=20261018-tabs-2";
+import { mountAgentTeams } from "./agent-team-library-view.js?v=20261016-team-v2";
+import { mountTeamRunNotice } from "./agent-team-run-notice.js?v=20261018-team-errors";
+import { teamEventPresentation } from "./agent-team-event.js?v=20261016-team-v2";
 import { mountDeviceAuthorization } from "./device-authorization.js";
 import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261018-tabs-2";
 import { mountAccountDevices } from "./account-devices.js";
@@ -110,6 +113,8 @@ import {
   CONTEXT_BUDGET_MIN_BYTES,
   contextBudgetToTokenCeiling,
   createSettingsStore,
+  projectClaudeProfile,
+  withProjectClaudeProfile,
   SHARED_LANGUAGE_STORAGE_KEY,
   DEFAULT_SETTINGS,
   effectiveContextBudget,
@@ -200,6 +205,8 @@ const LOCAL_SYNC_REQUEST_KINDS = new Set([
 ]);
 let selectedCodexLocalRuntimeId = "";
 let sharedComposerActive = false;
+let teamComposerActive = false;
+let teamComposerScope = "";
 let sharedComposerScope = "";
 let sharingSourceRuntimes = [];
 let pendingSharedAgentIntent = null;
@@ -252,6 +259,8 @@ const deleteCloudForm = element("delete-cloud-form");
 const leaveProjectDialog = element("leave-project-dialog");
 const leaveProjectForm = element("leave-project-form");
 const connectCodexDialog = element("connect-codex-dialog");
+const connectClaudeDialog = element("connect-claude-dialog");
+const connectClaudeButton = element("connect-claude-button");
 
 const connectCodexButton = element("connect-codex-button");
 const connectDshDialog = element("connect-dsh-dialog");
@@ -336,14 +345,18 @@ const agentRequestControl = mountAgentRequestControl({
     contentRevision: state.sync.contentRevision ?? 0,
     scope: `${authenticationGeneration}:${selectedSessionGeneration}:${state.project?.id}:${state.session?.id}:${state.sync.contentRevision ?? 0}`,
     writable: canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase, kind: "human_chat" }).allowed,
+    // Stopping accepted work uses authenticated HTTP and needs no new history
+    // append. Realtime replay must not disable this emergency control.
+    controlWritable: canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: "live", kind: "human_chat" }).allowed,
     sending: Boolean(pendingMessageSend?.()),
-    requestLabel: currentProjectHarness() === "shared" ? "Request shared Agent" : "Request my agent",
+    requestLabel: currentProjectHarness() === "team" ? "Request Team" : currentProjectHarness() === "shared" ? "Request shared Agent" : "Request my agent",
     cloudProfiles: hostedAgentStatus.profiles,
+    teamRun: teamsUi.activeRun(), stopTeam: () => teamsUi.stopActive(), teamError: error => teamsUi.describeError(error, "run"),
   }),
   confirmResume: () => !state.settings.composer.confirmAgentRequest
     || window.confirm(localizer.t("Resume with the original Agent and latest history? This starts a new request and may consume model quota.")),
   onChange: renderComposerPermissions, makeKey: createIdempotencyKey,
-  t: (text) => localizer.t(document.documentElement.dataset.mobileWorkspace === "true" ? mobileControlLabel(text) : text),
+  t: (text) => teamsUi.t(localizer.t(document.documentElement.dataset.mobileWorkspace === "true" ? mobileControlLabel(text) : text)),
 });
 settingsDialog.querySelector(".settings-navigation").addEventListener("click", (event) => {
   const link = event.target.closest("a[href^='#']");
@@ -456,6 +469,13 @@ const codexLauncher = mountCodexLauncher({ document, api, localizer, emailHint: 
     model: currentProjectProfile().model, contextWindowTokens: contextBudgetToTokenCeiling(state.settings),
     visibleHistorySync: state.settings.sync.visibleHistorySync,
   } : null });
+const claudeLauncher = mountCodexLauncher({ document, api, localizer, emailHint: accountEmailHint, harness: "claude-code",
+  context: () => state.currentUser && state.project ? {
+    scope: `${authenticationGeneration}:${state.currentUser.id}:${state.project.id}`,
+    userId: state.currentUser.id, baseUrl: location.origin, projectId: state.project.id,
+    model: element("claude-launcher-model").value.trim(), visibleHistorySync: "never",
+    contextWindowTokens: contextBudgetToTokenCeiling(state.settings),
+  } : null });
 const registrationUi = mountRegistration({ document, api, localizer,
   identity: () => authenticationIdentity({ required: activeAuthEntry === "register" }),
   busy: (value) => { authRequestInProgress = value; },
@@ -512,6 +532,28 @@ const sharedAgentsUi = mountSharedAgents({ document, api, localizer,
   }),
 });
 
+const teamsUi = mountAgentTeams({ document, api, hostButton: element("agent-teams-button"),
+  refreshSources: () => Promise.allSettled([refreshDshRuntimes(), refreshHostedAgentStatus(), sharedAgentsUi.refresh()]),
+  makeKey: createIdempotencyKey, confirm: message => window.confirm(message), onChange: () => renderComposerPermissions(),
+  getContext: () => ({ scope: `${authenticationGeneration}:${selectedSessionGeneration}:${state.currentUser?.id}:${state.project?.id}:${state.session?.id}`,
+    userId: state.currentUser?.id, projectId: state.project?.id, sessionId: state.session?.id, sessionMode: state.session?.mode,
+    contentRevision: state.sync.contentRevision ?? 0,
+    // /sessions/:id/runtimes returns only the actor's execution runtimes and omits owner/purpose.
+    runtimes: state.executionRuntimes.map(runtime => ({ ...runtime, userId: runtime.userId ?? state.currentUser?.id,
+      purpose: runtime.purpose ?? "execution", sessionId: state.session?.id })), devices: state.devices,
+    events: state.sync.events,
+    sharedAgents: sharedAgentsUi.agents(), cloudProfiles: hostedAgentStatus.profiles,
+    writable: canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase, kind: "human_chat" }).allowed,
+    controlWritable: canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: "live", kind: "human_chat" }).allowed,
+  }),
+});
+
+const teamRunNotice = mountTeamRunNotice({
+  host: element("team-task-notice"), message: element("team-task-notice-message"), advice: element("team-task-notice-advice"),
+  button: element("team-task-notice-open"), getNotice: () => teamsUi.runNotice(), openRecords: () => teamsUi.openRunRecords(),
+  t: text => teamsUi.t(text), fallbackFocus: element("agent-teams-button"),
+});
+
 const onboarding = mountOnboarding({
   document,
   getContext: () => ({
@@ -524,6 +566,7 @@ const onboarding = mountOnboarding({
   openSettings: openSettingsDialog,
   prepareScenario: exampleMode ? prepareExampleScenario : undefined,
   exampleApi: exampleMode ? api : undefined,
+  fileWorkspace: exampleMode ? filesUi : undefined,
 });
 for (const button of document.querySelectorAll("[data-onboarding-topic]")) {
   button.addEventListener("click", () => {
@@ -553,6 +596,11 @@ const historySummaryUi = mountHistorySummaries({
 });
 function prepareExampleScenario(item) {
   if (!exampleMode || !state.project || !state.session) return;
+  if (item.fileSelection) {
+    // Tutorial-only fixture preparation, never a real repository mutation.
+    const repository = api.codeRepositories.get(state.project.id)?.repository;
+    if (repository) repository.enabled = true;
+  }
   if (item.view === "code-github" && !api.githubConnections.has(state.project.id)) {
     api.githubConnections.set(state.project.id, { repository: "example-club/signup-page",
       base_branch: "main", enabled: true, revision: "example-revision" });
@@ -1042,6 +1090,7 @@ leaveProjectForm.addEventListener("submit", async (event) => {
     }
     codeSyncUi.close();
     codexLauncher.clear();
+    claudeLauncher.clear();
     sync.disconnect();
     stopMemberRefresh();
     stopSnapshotPolling();
@@ -1071,6 +1120,12 @@ deleteCloudDialog.addEventListener("close", () => {
   requestAnimationFrame(() => returnFocus?.isConnected && returnFocus.focus());
 });
 connectCodexButton.addEventListener("click", openConnectCodexDialog);
+connectClaudeButton.addEventListener("click", openConnectClaudeDialog);
+element("close-connect-claude-button").addEventListener("click", () => connectClaudeDialog.close());
+element("done-connect-claude-button").addEventListener("click", () => connectClaudeDialog.close());
+connectClaudeDialog.addEventListener("close", () => { claudeLauncher.close(); agentPackageDownloads.close("claude"); connectClaudeButton.focus(); });
+element("claude-launcher-model").addEventListener("input", () => claudeLauncher.close());
+element("claude-launcher-model").addEventListener("change", () => { void claudeLauncher.open(); });
 element("close-connect-codex-button").addEventListener("click", () => connectCodexDialog.close());
 element("done-connect-codex-button").addEventListener("click", () => connectCodexDialog.close());
 connectCodexDialog.addEventListener("close", () => {
@@ -1262,6 +1317,7 @@ deleteCloudForm.addEventListener("submit", async (event) => {
       await api.deleteProject(target.id);
       if (!isCurrent()) return;
       codexLauncher.clear();
+      claudeLauncher.clear();
       sync.disconnect();
       stopMemberRefresh();
       stopSnapshotPolling();
@@ -1501,6 +1557,8 @@ function resetWorkspaceToAuth() {
   mobileWorkspace.close();
   codexDeviceAuthorization.clear();
   codexLauncher.clear();
+  claudeLauncher.clear();
+  if (connectClaudeDialog.open) connectClaudeDialog.close();
   accountEmailHint.clear(state.currentUser?.id);
   onboarding.cancel();
   sessionContextDetails.open = false;
@@ -1658,6 +1716,8 @@ async function selectProject(projectId) {
   sessionToolbar.reset();
   if (state.project?.id !== projectId) filesUi.clear();
   codexLauncher.clear();
+  claudeLauncher.clear();
+  if (connectClaudeDialog.open) connectClaudeDialog.close();
   codexDeviceAuthorization.clear();
   mobileWorkspace.close();
   onboarding.cancel();
@@ -1844,6 +1904,7 @@ function renderProjectAgentButtons(settings = state.settings) {
   const enabled = state.project ? new Set(projectEnabledHarnesses(settings, state.project.id)) : new Set();
   connectCodexButton.hidden = !mobileWorkspace.canConnectLocally() || !enabled.has("codex");
   connectDshButton.hidden = !mobileWorkspace.canConnectLocally() || !enabled.has(DSH_HARNESS);
+  connectClaudeButton.hidden = !mobileWorkspace.canConnectLocally() || !enabled.has("claude-code");
 }
 
 function renderProjectPermissions() {
@@ -1875,7 +1936,7 @@ function startDshRuntimePolling() {
   const generation = dshRuntimePollGeneration;
   const poll = async () => {
     if (generation !== dshRuntimePollGeneration || !state.session) return;
-    await Promise.allSettled([refreshDshRuntimes(), refreshHostedAgentStatus(), sharedAgentsUi.refresh()]);
+    await Promise.allSettled([refreshDshRuntimes(), refreshHostedAgentStatus(), sharedAgentsUi.refresh(), teamsUi.refresh()]);
     if (generation !== dshRuntimePollGeneration || !state.session) return;
     dshRuntimePollTimer = setTimeout(poll, mockEnabled ? 350 : 5_000);
     dshRuntimePollTimer.unref?.();
@@ -1906,11 +1967,11 @@ async function refreshDshRuntimes({ sessionId = state.session?.id, generation = 
     state.executionRuntimes = runtimesResult.value;
     state.devices = devicesResult.status === "fulfilled" ? devicesResult.value : [];
     sharingSourceRuntimes = sharingSourcesResult.status === "fulfilled" ? sharingSourcesResult.value : [];
-    if (state.project && projectAgentHarness(state.settings, state.project.id) === DSH_HARNESS) {
-      const storedProfile = projectDshProfile(state.settings, state.project.id);
-      const resolved = resolveDshRuntime(state.executionRuntimes, state.devices, storedProfile);
+    if (state.project && isAlternativeNative(projectAgentHarness(state.settings, state.project.id))) {
+      const storedProfile = nativeProjectProfile(state.settings, state.project.id);
+      const resolved = currentDshResolution();
       if (resolved.runtime) {
-        const selected = dshExecutionSelection(resolved.runtime, storedProfile);
+        const selected = nativeExecutionSelection(resolved.runtime, storedProfile);
         const normalizedProfile = dshStoredProjectProfile(resolved.runtime, selected);
         const profileChanged = storedProfile === null
           || storedProfile.runtimeId !== normalizedProfile.runtimeId
@@ -1919,7 +1980,7 @@ async function refreshDshRuntimes({ sessionId = state.session?.id, generation = 
           || storedProfile.model !== normalizedProfile.model
           || (storedProfile.effort ?? "") !== (normalizedProfile.effort ?? "");
         if (profileChanged) {
-          state.settings = settingsStore.set(withProjectDshProfile(
+          state.settings = settingsStore.set(withNativeProjectProfile(
             state.settings,
             state.project.id,
             normalizedProfile,
@@ -1948,9 +2009,21 @@ async function refreshDshRuntimes({ sessionId = state.session?.id, generation = 
 }
 
 function currentDshResolution(settings = state.settings) {
-  const profile = state.project ? projectDshProfile(settings, state.project.id) : null;
-  return resolveDshRuntime(state.executionRuntimes, state.devices, profile);
+  const harness = currentProjectHarness(settings) === "claude-code" ? "claude-code" : DSH_HARNESS;
+  const profile = state.project ? nativeProjectProfile(settings, state.project.id, harness) : null;
+  return resolveDshRuntime(state.executionRuntimes, state.devices, profile, harness);
 }
+
+function isAlternativeNative(harness) { return [DSH_HARNESS, "claude-code"].includes(harness); }
+function nativeProjectProfile(settings, projectId, harness = currentProjectHarness(settings)) {
+  return harness === "claude-code" ? projectClaudeProfile(settings, projectId) : projectDshProfile(settings, projectId);
+}
+function withNativeProjectProfile(settings, projectId, profile) {
+  return currentProjectHarness(settings) === "claude-code"
+    ? withProjectClaudeProfile(settings, projectId, profile) : withProjectDshProfile(settings, projectId, profile);
+}
+function nativeExecutionSelection(runtime, profile) { return dshExecutionSelection(runtime, profile, runtime?.harness); }
+function nativeExecutionProfile(runtime, profile) { return dshExecutionProfile(runtime, profile, runtime?.harness); }
 
 function currentCodexResolution() {
   return resolveCodexRuntime(state.executionRuntimes);
@@ -2510,7 +2583,8 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     actor.textContent = eventAuthorLabel(event, localizer.t);
     if (sharedStatus) { actor.textContent = localizer.t("Shared Agent status"); avatar.hidden = true; }
     type.className = "event-type";
-    type.textContent = localizer.t(eventLabel(event.type));
+    const teamPresentation = teamEventPresentation(event, state.sync.events, teamsUi.t);
+    type.textContent = teamPresentation?.label ?? localizer.t(eventLabel(event.type));
     sequence.className = "event-sequence";
     sequence.textContent = `#${event.sequence}`;
     time.dateTime = event.createdAt;
@@ -2529,7 +2603,7 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     const canonicalContent = event.deleted ? localizer.t(event.deleted.reason === "author"
       ? "Message deleted" : "Unavailable because its source was deleted")
       : event.contentUnavailable ? localizer.t("Refreshing history…") : eventContent(event);
-    const content = sharedCancelled ? localizer.t("Shared Agent request cancelled.") : canonicalContent;
+    const content = sharedCancelled ? localizer.t("Shared Agent request cancelled.") : teamPresentation?.content ?? canonicalContent;
     const quoted = messageActions.quoted(event, events);
     article.append(header);
     if (quoted) article.append(quoted);
@@ -2558,7 +2632,7 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
         : "This Agent request failed before it produced an answer.");
       article.append(notice);
       const request = failedRequestFor(state.sync.events, event);
-      if (request && canRetryFailedAgentRequest(request, state.currentUser)) {
+      if (request && !request.payload?.agent_team && canRetryFailedAgentRequest(request, state.currentUser)) {
         const retry = document.createElement("button");
         retry.className = "text-button agent-retry-button";
         retry.type = "button";
@@ -2604,7 +2678,9 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     if (event.type === "agent_request" && progressByRequest.get(event.id)?.some((progress) => progress.payload?.status === "paused")) {
       const notice = document.createElement("p");
       notice.className = "agent-paused-notice";
-      notice.textContent = localizer.t("Agent paused by its author.");
+      notice.textContent = teamPresentation
+        ? teamsUi.t("Team module execution was interrupted.")
+        : localizer.t("Agent paused by its author.");
       item.append(notice);
     }
     timeline.append(item);
@@ -2786,10 +2862,14 @@ function renderProgressEntryContent(entry) {
 
 function renderAgentPendingStatus(request, progressEvents = []) {
   const member = state.session?.members.find((candidate) => candidate.userId === request.actor.id);
+  const team = request.payload?.agent_team;
   const cloud = request.payload?.execution_profile?.harness === "opencode";
   const shared = request.sharedExecution;
   const sharedStarted = shared && progressEvents.some(event => event.sharedExecution?.job_id === shared.job_id);
-  const online = cloud || (shared ? sharedStarted : isExecutionRuntime(member?.runtime));
+  const selectedRuntimeId = request.payload?.execution_profile?.runtime_id;
+  const runtime = team ? state.executionRuntimes?.find(candidate => candidate.id === selectedRuntimeId)
+    ?? (member?.runtime?.id === selectedRuntimeId ? member?.runtime : null) : member?.runtime;
+  const online = cloud || (shared ? sharedStarted : team && !runtime ? progressEvents.length > 0 : isExecutionRuntime(runtime));
   const status = document.createElement("div");
   const dots = document.createElement("span");
   const label = document.createElement("span");
@@ -2805,10 +2885,10 @@ function renderAgentPendingStatus(request, progressEvents = []) {
   dots.className = "agent-thinking-dots";
   dots.setAttribute("aria-hidden", "true");
   for (let index = 0; index < 3; index += 1) dots.append(document.createElement("i"));
-  const runtime = member?.runtime;
   const agentName = runtime?.harness || "Agent";
   if (streamed) label.className = "agent-streamed-line";
-  label.textContent = shared ? localizer.t(online ? "Shared Agent is responding…" : "Shared Agent request is queued.")
+  label.textContent = team ? `${teamsUi.t(team.purpose === "test" ? "Team test" : "Team")} · ${team.node_label}: ${localizer.t(online ? "Working" : "Waiting for Agent…")}`
+    : shared ? localizer.t(online ? "Shared Agent is responding…" : "Shared Agent request is queued.")
     : streamed ? `${agentName}: ${localizer.t("Working")}` : cloud ? localizer.t("Cloud Agent is working…") : online
     ? `${agentName} is responding…`
     : `${agentName} request is queued until the local runtime reconnects.`;
@@ -2966,14 +3046,16 @@ function visibleHistoryImportFailureMessage(message) {
 }
 
 function onlineCodexLocalRuntimes() {
+  const enabled = currentProjectEnabledHarnesses();
   return state.executionRuntimes.filter((runtime) =>
-    isExecutionRuntime(runtime) && String(runtime.harness).toLowerCase() === "codex",
+    isExecutionRuntime(runtime) && ["codex", "claude-code"].includes(String(runtime.harness).toLowerCase())
+    && enabled.includes(String(runtime.harness).toLowerCase()),
   );
 }
 
 function codexLocalRuntimeLabel(runtime) {
   const deviceName = state.devices.find((device) => device.id === runtime.deviceId)?.name?.trim();
-  const base = deviceName || localizer.t("Codex device");
+  const base = deviceName || (runtime.harness === "claude-code" ? "Claude Code" : localizer.t("Codex device"));
   return runtime.model ? `${base} · ${runtime.model}` : base;
 }
 
@@ -2986,7 +3068,7 @@ function codexLocalSyncRequests(runtimeId) {
 function renderCodexLocalSyncControls() {
   const available = Boolean(state.session)
     && !composer.hidden
-    && currentProjectEnabledHarnesses().includes("codex");
+    && currentProjectEnabledHarnesses().some(harness => ["codex", "claude-code"].includes(harness));
   codexLocalSyncControls.hidden = !available;
   if (!available) return;
 
@@ -3016,7 +3098,7 @@ function renderCodexLocalSyncControls() {
     codexAutoUploadToggle.disabled = true;
     uploadLocalTurnsButton.disabled = true;
     codexLocalSyncStatus.textContent = localizer.t(selectedCodexLocalRuntimeId ? "Selected device is offline"
-      : runtimes.length ? "Choose a local Agent device" : "No online Codex device is available.");
+      : runtimes.length ? "Choose a local Agent device" : "No online Agent device is available.");
     return;
   }
 
@@ -3246,6 +3328,13 @@ function renderCloudStatus() {
   element("settings-cloud-status").textContent = cloudStatusText(profile);
 }
 
+function clearStaleTeamComposerProblem() {
+  const problem = sendError.teamProblemIntent;
+  if (!problem?.problem || !teamsUi.isObsoleteError?.(problem.problem)) return;
+  if (sendError.textContent === problem.text) sendError.textContent = "";
+  delete sendError.teamProblemIntent;
+}
+
 function renderComposerPermissions() {
   if (pendingMessageSend && !pendingMessageSend()) {
     pendingMessageSend.restore();
@@ -3255,12 +3344,16 @@ function renderComposerPermissions() {
   cloudCodeConsent.updateContext();
   cloudGithubUi.updateContext();
   sharedAgentsUi.updateContext();
+  teamsUi.updateContext();
+  clearStaleTeamComposerProblem();
   const common = { session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase };
   const chat = canAppend({ ...common, kind: "human_chat" });
   const harness = currentProjectHarness();
-  const resolution = harness === DSH_HARNESS ? currentDshResolution() : currentCodexResolution();
+  const resolution = isAlternativeNative(harness) ? currentDshResolution() : currentCodexResolution();
   const cloud = harness === "cloud";
   const shared = harness === "shared";
+  const team = harness === "team";
+  const selectedTeam = teamsUi.selected();
   const sharedChoice = sharedAgentsUi.selected();
   const sharedIntentScope = `${authenticationGeneration}:${state.currentUser?.id}:${state.session?.id}:${state.sync.contentRevision ?? 0}`;
   if (pendingSharedAgentIntent?.scope !== sharedIntentScope) pendingSharedAgentIntent = null;
@@ -3284,28 +3377,31 @@ function renderComposerPermissions() {
   element("shared-agent-recover").hidden = !pendingSharedAgentIntent;
   element("shared-agent-pending-status").hidden = !pendingSharedAgentIntent;
   const cloudProfile = currentCloudProfile();
-  const contextNotice = cloud || shared ? "" : agentContextUpdateReason(resolution.runtime, state.sync.contentRevision ?? 0);
+  const contextNotice = cloud || shared || team ? "" : agentContextUpdateReason(resolution.runtime, state.sync.contentRevision ?? 0);
   const codeSubmission = cloud ? cloudCodeConsent.submission() : null;
-  const agentAllowed = chat.allowed && !contextNotice && (shared ? sharedChoice?.available === true && !pendingSharedAgentIntent
+  const agentAllowed = chat.allowed && !contextNotice && (team ? selectedTeam?.enabled === true && !teamsUi.pendingStart() && !teamsUi.activeRun()
+    : shared ? sharedChoice?.available === true && !pendingSharedAgentIntent
     : cloud ? CLOUD_AGENT_ENTRY_ENABLED && cloudProfile?.available === true && codeSubmission.allowed : resolution.runtime !== null);
-  const agentReason = chat.allowed ? (contextNotice || (shared ? localizer.t(pendingSharedAgentIntent
+  const agentReason = chat.allowed ? (contextNotice || (team ? teamsUi.t(teamsUi.activeRun() ? "A Team task is already active. Stop or finish it before starting another."
+    : "The Team is no longer enabled. Your selection is kept; choose or enable it again.") : shared ? localizer.t(pendingSharedAgentIntent
     ? "Confirm the previous shared request before sending a new task." : "Choose an available shared Agent.")
     : cloud ? localizer.t(codeSubmission.reason) || cloudStatusText(cloudProfile) : resolution.reason)) : chat.reason;
   const sending = Boolean(pendingMessageSend?.());
+  element("team-agent-recover").hidden = !teamsUi.pendingStart();
   sendChatButton.disabled = sending || !chat.allowed;
   sendAgentButton.disabled = sending || !agentAllowed;
   element("send-cloud-agent-help").hidden = !cloud || !CLOUD_AGENT_ENTRY_ENABLED;
   element("cloud-agent-include-code").closest("label").hidden = element("cloud-agent-source").value === "github";
   messageInput.disabled = !chat.allowed && !agentAllowed;
   element("composer-permission").textContent = localizer.t(chat.allowed ? contextNotice : chat.reason);
-  const dshSelection = harness === DSH_HARNESS && resolution.runtime
-    ? dshExecutionSelection(
+  const dshSelection = isAlternativeNative(harness) && resolution.runtime
+    ? nativeExecutionSelection(
       resolution.runtime,
-      state.project ? projectDshProfile(state.settings, state.project.id) : null,
+      state.project ? nativeProjectProfile(state.settings, state.project.id) : null,
     )
     : null;
   element("agent-target-label").textContent = agentAllowed
-    ? shared ? sharedChoice.label : cloud ? cloudStatusText(cloudProfile) : harness === DSH_HARNESS
+    ? team ? selectedTeam.draft.name : shared ? sharedChoice.label : cloud ? cloudStatusText(cloudProfile) : isAlternativeNative(harness)
       ? `${resolution.runtime.deviceName} · ${dshSelection.provider} · ${dshSelection.model}${dshSelection.reasoningEffort ? ` · ${dshSelection.reasoningEffort}` : ""}`
       : `${resolution.runtime.harness} · ${resolution.runtime.provider} · ${agentModelSelect.value}`
     : agentReason;
@@ -3319,12 +3415,13 @@ function renderComposerPermissions() {
   renderAgentProfileControls();
   historySummaryUi.updateContext();
   agentRequestControl.update();
+  teamRunNotice.update();
 }
 
 function historySummaryExecutionProfile() {
   if (!state.session || !state.project) return null;
   // Sharing grants execution only; they do not grant native history/snapshot authority.
-  if (currentProjectHarness() === "shared") return null;
+  if (["shared", "team"].includes(currentProjectHarness())) return null;
   if (currentProjectHarness() === "cloud") {
     const profile = currentCloudProfile();
     return CLOUD_AGENT_ENTRY_ENABLED && hostedAgentStatus.enabled && profile
@@ -3332,14 +3429,14 @@ function historySummaryExecutionProfile() {
         ...(profile.api_config_revision === undefined ? {} : { apiConfigRevision: profile.api_config_revision }) } : null;
   }
   const harness = currentProjectHarness();
-  const resolution = harness === DSH_HARNESS ? currentDshResolution() : currentCodexResolution();
+  const resolution = isAlternativeNative(harness) ? currentDshResolution() : currentCodexResolution();
   const runtime = resolution.runtime;
   const advertised = state.executionRuntimes.find((candidate) => candidate.id === runtime?.id);
   if (!runtime || advertised?.purpose === "snapshot_connector"
     || (advertised?.userId && advertised.userId !== state.currentUser?.id)) return null;
   try {
-    return harness === DSH_HARNESS
-      ? dshExecutionProfile(runtime, dshExecutionSelection(runtime, projectDshProfile(state.settings, state.project.id)))
+    return isAlternativeNative(harness)
+      ? nativeExecutionProfile(runtime, nativeExecutionSelection(runtime, nativeProjectProfile(state.settings, state.project.id)))
       : codexExecutionProfile(runtime, { model: agentModelSelect.value, reasoningEffort: agentEffortSelect.value });
   } catch { return null; }
 }
@@ -3349,19 +3446,23 @@ async function sendMessage(kind) {
   if (kind === "agent_request" && agentRequestControl.action() !== "request") return;
   if (kind === "agent_request" && currentProjectHarness() === "cloud") kind = "hosted_agent";
   if (kind === "agent_request" && currentProjectHarness() === "shared") kind = "shared_agent";
+  if (kind === "agent_request" && currentProjectHarness() === "team") kind = "team_agent";
   if (kind === "hosted_agent" && !CLOUD_AGENT_ENTRY_ENABLED) {
+    delete sendError.teamProblemIntent;
     sendError.textContent = localizer.t("Cloud Agent · coming later");
     return;
   }
   const cloudProfile = kind === "hosted_agent" ? currentCloudProfile() : null;
   const content = messageInput.value.trim();
   if (!content || !state.session) {
+    delete sendError.teamProblemIntent;
     sendError.textContent = content ? "Choose a session first." : "Write a message first.";
     messageInput.focus();
     return;
   }
   const button = kind === "human_chat" ? sendChatButton : sendAgentButton;
   if (button.disabled || pendingMessageSend?.()) return;
+  delete sendError.teamProblemIntent;
   sendError.textContent = "";
   if (kind === "shared_agent" && (state.session.mode === "solo" || state.settings.composer.confirmAgentRequest)
     && !window.confirm(sharedAgentsUi.disclosure(state.session.mode))) {
@@ -3386,11 +3487,25 @@ async function sendMessage(kind) {
   renderComposerPermissions();
   button.textContent = "Sending…";
   let sharedAttempt = null;
+  const teamProblem = { text: sendError.textContent };
+  if (kind === "team_agent") sendError.teamProblemIntent = teamProblem;
   try {
     const leading = messageInput.value.length - messageInput.value.trimStart().length;
     const input = { content, idempotencyKey: createIdempotencyKey(kind), replyTo: metadata.replyTo,
       mentions: metadata.mentions.map((mention) => ({ ...mention, start: mention.start - leading, end: mention.end - leading })) };
     if (kind === "human_chat") await api.appendHumanChat(sessionId, input);
+    else if (kind === "team_agent") {
+      if (state.settings.composer.confirmAgentRequest && !window.confirm(teamsUi.t("Start this Team with its saved modules and limits?"))) return;
+      const receipt = await teamsUi.startTask(content, { replyTo: input.replyTo, mentions: input.mentions, onAccepted: () => {
+        if (isCurrent() && sendError.teamProblemIntent === teamProblem && sendError.textContent === teamProblem.text) {
+          sendError.textContent = ""; delete sendError.teamProblemIntent;
+        }
+        if (isCurrent() && messageInput.value === draft && JSON.stringify(messageActions.metadata()) === metadataFingerprint) {
+          messageInput.value = ""; messageActions.sent();
+        }
+      } });
+      if (!receipt) return;
+    }
     else if (kind === "shared_agent") {
       const choice = sharedAgentsUi.selected();
       if (!choice?.available) throw new Error(localizer.t("Choose an available shared Agent."));
@@ -3422,12 +3537,12 @@ async function sendMessage(kind) {
     }
     else {
       const harness = currentProjectHarness();
-      const executionProfile = harness === DSH_HARNESS
-        ? dshExecutionProfile(
+      const executionProfile = isAlternativeNative(harness)
+        ? nativeExecutionProfile(
           currentDshResolution().runtime,
-          dshExecutionSelection(
+          nativeExecutionSelection(
             currentDshResolution().runtime,
-            projectDshProfile(state.settings, state.project.id),
+            nativeProjectProfile(state.settings, state.project.id),
           ),
         )
         : codexExecutionProfile(currentCodexResolution().runtime, {
@@ -3443,7 +3558,15 @@ async function sendMessage(kind) {
     }
   } catch (error) {
     if (kind === "shared_agent" && pendingSharedAgentIntent === sharedAttempt && error.status >= 400 && error.status < 500) pendingSharedAgentIntent = null;
-    if (isCurrent() && !sharedAttempt?.accepted) sendError.textContent = error.message ?? "The event was not accepted.";
+    const currentTeamProblem = kind !== "team_agent" || (!teamsUi.isObsoleteError?.(error)
+      && contentRevision === (state.sync.contentRevision ?? 0)
+      && sendError.teamProblemIntent === teamProblem && sendError.textContent === teamProblem.text);
+    if (isCurrent() && !sharedAttempt?.accepted && currentTeamProblem) {
+      sendError.textContent = kind === "team_agent" ? teamsUi.describeError(error, "start") : error.message ?? "The event was not accepted.";
+      teamProblem.text = sendError.textContent;
+      teamProblem.problem = error;
+      sendError.teamProblemIntent = kind === "team_agent" ? teamProblem : null;
+    }
   } finally {
     if (pendingMessageSend === isCurrent) {
       pendingMessageSend = null;
@@ -3453,10 +3576,25 @@ async function sendMessage(kind) {
   }
 }
 
+element("team-agent-recover").addEventListener("click", async () => {
+  const isCurrent = captureWorkspaceScope();
+  const contentRevision = state.sync.contentRevision ?? 0;
+  const previousProblem = sendError.teamProblemIntent, previousText = sendError.textContent;
+  try { await teamsUi.recover(); } catch (error) {
+    if (isCurrent() && !teamsUi.isObsoleteError?.(error) && contentRevision === (state.sync.contentRevision ?? 0)
+      && sendError.teamProblemIntent === previousProblem && sendError.textContent === previousText) {
+      sendError.textContent = teamsUi.describeError(error, "recover");
+      const problem = previousProblem ?? {};
+      problem.text = sendError.textContent; problem.problem = error; sendError.teamProblemIntent = problem;
+    }
+  }
+  if (isCurrent()) renderComposerPermissions();
+});
+
 element("shared-agent-recover").addEventListener("click", async () => {
   const intent = pendingSharedAgentIntent, isCurrent = captureWorkspaceScope();
   if (!intent || intent.scope !== `${authenticationGeneration}:${state.currentUser?.id}:${state.session?.id}:${state.sync.contentRevision ?? 0}`) return;
-  const button = element("shared-agent-recover"); button.disabled = true; sendError.textContent = "";
+  const button = element("shared-agent-recover"); button.disabled = true; delete sendError.teamProblemIntent; sendError.textContent = "";
   try {
     await api.startSharedAgentRequest(intent.sessionId, intent.input);
     if (!isCurrent() || pendingSharedAgentIntent !== intent) return;
@@ -3467,7 +3605,7 @@ element("shared-agent-recover").addEventListener("click", async () => {
   } catch (error) {
     if (isCurrent() && pendingSharedAgentIntent === intent) {
       if (error.status >= 400 && error.status < 500) pendingSharedAgentIntent = null;
-      sendError.textContent = error.message ?? localizer.t("Shared Agent request failed. Refresh and try again.");
+      delete sendError.teamProblemIntent; sendError.textContent = error.message ?? localizer.t("Shared Agent request failed. Refresh and try again.");
     }
   } finally { if (isCurrent()) { button.disabled = false; renderComposerPermissions(); } }
 });
@@ -3558,7 +3696,7 @@ async function retryAgentRequest(requestId, button, continuing = false) {
       const message = localizer.t(error.code === "hosted_user_busy" || error.code === "hosted_agent_busy"
         ? "Your cloud request is still running. Pause it first or wait for it to finish."
         : error.message ?? "The event was not accepted.");
-      sendError.textContent = message;
+      delete sendError.teamProblemIntent; sendError.textContent = message;
       if (status.isConnected) status.textContent = message;
     }
   } finally {
@@ -3688,6 +3826,21 @@ function openConnectCodexDialog() {
   void agentPackageDownloads.open("codex");
   if (launcherAvailable) void codexLauncher.open();
   requestAnimationFrame(() => element("close-connect-codex-button").focus());
+}
+
+function openConnectClaudeDialog() {
+  if (!state.project || !mobileWorkspace.canConnectLocally()) return;
+  claudeLauncher.clear();
+  const available = canOpenCodexLauncher({ origin: location.origin,
+    platform: navigator.userAgentData?.platform ?? navigator.platform, maxTouchPoints: navigator.maxTouchPoints });
+  element("claude-launcher-option").hidden = !available;
+  element("claude-launcher-model").value = projectClaudeProfile(state.settings, state.project.id)?.model ?? "";
+  element("claude-launcher-environment").textContent = localizer.t(location.origin === "https://test.gatherthread.cn"
+    ? "Test environment · separate account" : "Production environment");
+  connectClaudeDialog.showModal();
+  void agentPackageDownloads.open("claude");
+  if (available) void claudeLauncher.open();
+  requestAnimationFrame(() => element("claude-launcher-model").focus());
 }
 
 async function copyCodexCommand(platform) {
@@ -3945,7 +4098,7 @@ function applyVisualSettings(settings) {
   localizer.apply(normalized.general.locale);
   interfaceMode.refresh();
   mobileSettings.refresh();
-  if (localeChanged) sharedAgentsUi.refreshLanguage();
+  if (localeChanged) { sharedAgentsUi.refreshLanguage(); teamsUi.refreshLanguage(); }
   if (localeChanged) filesUi.refreshLanguage();
   if (localeChanged) accountDevices.refreshLanguage();
   if (localeChanged) personalCloudApi.refreshLanguage();
@@ -4054,6 +4207,7 @@ function currentProjectProfile(settings = state.settings) {
 }
 
 function currentProjectHarness(settings = state.settings) {
+  if (settings === state.settings && teamComposerActive && teamComposerScope === `${authenticationGeneration}:${selectedSessionGeneration}:${state.project?.id}`) return "team";
   if (settings === state.settings && sharedComposerActive && sharedComposerScope === `${authenticationGeneration}:${selectedSessionGeneration}:${state.project?.id}`) return "shared";
   return state.project ? projectAgentHarness(settings, state.project.id) : "codex";
 }
@@ -4067,11 +4221,17 @@ function renderDshRuntimeOptions(select, settings = state.settings) {
   const resolution = currentDshResolution(settings);
   select.replaceChildren();
   if (resolution.choices.length === 0) {
-    select.setAttribute("title", localizer.t("No connected DSH runtime"));
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = localizer.t("No connected Agent runtime");
+    option.disabled = true;
+    option.selected = true;
+    select.append(option);
+    select.setAttribute("title", localizer.t("No connected Agent runtime"));
     select.disabled = true;
     return;
   }
-  select.setAttribute("title", localizer.t(resolution.runtime ? "Choose a DSH runtime" : resolution.reason));
+  select.setAttribute("title", localizer.t(resolution.runtime ? "Choose an Agent runtime" : resolution.reason));
   for (const runtime of resolution.choices) {
     const option = document.createElement("option");
     option.value = runtime.id;
@@ -4101,7 +4261,7 @@ function dshModelOptionValue(provider, model) {
 function renderDshExecutionControls(runtime, storedProfile) {
   const profiles = runtime?.executionProfiles ?? [];
   const dynamic = profiles.length > 0;
-  const selection = runtime ? dshExecutionSelection(runtime, storedProfile) : null;
+  const selection = runtime ? nativeExecutionSelection(runtime, storedProfile) : null;
   const modelLabel = element("agent-dsh-model-label");
   const effortLabel = element("agent-dsh-effort-label");
   const hasReasoning = dynamic && selection.reasoningEfforts.length > 0;
@@ -4148,7 +4308,7 @@ function renderAgentProfileControls() {
   for (const enabledHarness of enabledHarnesses) {
     const option = document.createElement("option");
     option.value = enabledHarness;
-    option.textContent = enabledHarness === "cloud" ? localizer.t(CLOUD_AGENT_ENTRY_ENABLED ? "Cloud Agent" : "Cloud Agent · coming later") : enabledHarness === DSH_HARNESS ? "DeepSeek Harness" : "Codex";
+    option.textContent = enabledHarness === "cloud" ? localizer.t(CLOUD_AGENT_ENTRY_ENABLED ? "Cloud Agent" : "Cloud Agent · coming later") : enabledHarness === DSH_HARNESS ? "DeepSeek Harness" : enabledHarness === "claude-code" ? "Claude Code" : "Codex";
     option.disabled = enabledHarness === "cloud" && !CLOUD_AGENT_ENTRY_ENABLED;
     option.selected = enabledHarness === harness;
     agentHarnessSelect.append(option);
@@ -4158,18 +4318,24 @@ function renderAgentProfileControls() {
     option.textContent = `${choice.label}${choice.available ? "" : ` · ${localizer.t("Unavailable")}`}`;
     option.disabled = !choice.available; agentHarnessSelect.append(option);
   }
+  for (const choice of teamsUi.choices()) {
+    const option = document.createElement("option"); option.value = choice.key; option.textContent = choice.label; agentHarnessSelect.append(option);
+  }
+  if (harness === "team" && !teamsUi.choices().some(choice => choice.key === teamsUi.selectionKey())) {
+    const option = document.createElement("option"); option.value = teamsUi.selectionKey(); option.textContent = teamsUi.t("Unavailable"); option.disabled = true; agentHarnessSelect.append(option);
+  }
   if (harness === "shared" && !sharedAgentsUi.agents().some(choice => choice.key === sharedAgentsUi.selectionKey())) {
     const option = document.createElement("option"); option.value = sharedAgentsUi.selectionKey();
     option.textContent = localizer.t("Unavailable"); option.disabled = true; agentHarnessSelect.append(option);
   }
-  agentHarnessSelect.value = harness === "shared" ? sharedAgentsUi.selectionKey() : harness;
+  agentHarnessSelect.value = harness === "team" ? teamsUi.selectionKey() : harness === "shared" ? sharedAgentsUi.selectionKey() : harness;
   renderModelOptions(agentModelSelect, profile.model, state.settings);
   const hasEffortChoice = updateEffortControl(agentModelSelect, agentEffortSelect, profile.effort, state.settings);
   renderDshRuntimeOptions(agentDshRuntimeSelect, state.settings);
   const dshResolution = currentDshResolution();
   renderDshExecutionControls(
     dshResolution.runtime,
-    state.project ? projectDshProfile(state.settings, state.project.id) : null,
+    state.project ? nativeProjectProfile(state.settings, state.project.id) : null,
   );
   const disabled = !state.project;
   agentHarnessSelect.disabled = disabled;
@@ -4180,11 +4346,26 @@ function renderAgentProfileControls() {
   agentEffortSelect.hidden = !hasEffortChoice;
   agentEffortSelect.disabled = disabled || !hasEffortChoice;
   element("codex-agent-profile-fields").hidden = harness !== "codex";
-  element("dsh-agent-profile-fields").hidden = harness !== DSH_HARNESS;
+  element("dsh-agent-profile-fields").hidden = !isAlternativeNative(harness);
   element("cloud-agent-profile-fields").hidden = harness !== "cloud" || !CLOUD_AGENT_ENTRY_ENABLED;
   element("shared-agent-profile-fields").hidden = harness !== "shared";
+  element("team-agent-profile-fields").hidden = harness !== "team";
+  element("team-agent-recover").textContent = teamsUi.t("Check the previous action");
+  renderTeamProfileLabels();
   renderCloudModelOptions(agentCloudModelSelect, state.project ? projectCloudProfile(state.settings, state.project.id) : null);
-  if (harness !== DSH_HARNESS) element("agent-request-profile").dataset.layout = "codex";
+  if (!isAlternativeNative(harness)) element("agent-request-profile").dataset.layout = "codex";
+}
+
+function renderTeamProfileLabels() {
+  for (const [id, text, accessibleName] of [
+    ["team-agent-model-select", "Model", "Team model"],
+    ["team-agent-effort-select", "Reasoning effort", "Team reasoning effort"],
+  ]) {
+    const select = element(id), label = select.parentElement;
+    select.setAttribute("aria-label", teamsUi.t(accessibleName));
+    if (label?.firstChild?.nodeType === 3) label.firstChild.textContent = teamsUi.t(text);
+  }
+  element("team-agent-profile-fields").querySelector("p").textContent = teamsUi.t("Models and reasoning effort are configured in Team modules.");
 }
 
 function updateComposerAgentProfile(changed) {
@@ -4208,6 +4389,10 @@ function updateComposerAgentProfile(changed) {
 
 function updateComposerHarness() {
   if (!state.project) return;
+  const teamChoice = teamsUi.choices().find(choice => choice.key === agentHarnessSelect.value);
+  teamComposerActive = Boolean(teamChoice);
+  teamComposerScope = `${authenticationGeneration}:${selectedSessionGeneration}:${state.project.id}`;
+  if (teamComposerActive) { sharedComposerActive = false; teamsUi.select(teamChoice.key); renderComposerPermissions(); return; }
   const sharedChoice = sharedAgentsUi.agents().find(choice => choice.key === agentHarnessSelect.value);
   sharedComposerActive = Boolean(sharedChoice);
   sharedComposerScope = `${authenticationGeneration}:${selectedSessionGeneration}:${state.project.id}`;
@@ -4217,11 +4402,11 @@ function updateComposerHarness() {
     return;
   }
   state.settings = settingsStore.set(withProjectAgentHarness(state.settings, state.project.id, agentHarnessSelect.value));
-  if (agentHarnessSelect.value === DSH_HARNESS) {
+  if (isAlternativeNative(agentHarnessSelect.value)) {
     const resolution = currentDshResolution();
     if (resolution.runtime) {
-      const selected = dshExecutionSelection(resolution.runtime, projectDshProfile(state.settings, state.project.id));
-      state.settings = settingsStore.set(withProjectDshProfile(
+      const selected = nativeExecutionSelection(resolution.runtime, nativeProjectProfile(state.settings, state.project.id));
+      state.settings = settingsStore.set(withNativeProjectProfile(
         state.settings,
         state.project.id,
         dshStoredProjectProfile(resolution.runtime, selected),
@@ -4234,14 +4419,16 @@ function updateComposerHarness() {
 
 function updateComposerDshRuntime() {
   if (!state.project || !agentDshRuntimeSelect.value) return;
-  const selected = dshRuntimeChoices(state.executionRuntimes, state.devices)
+  const selected = dshRuntimeChoices(state.executionRuntimes, state.devices, currentProjectHarness())
     .find((runtime) => runtime.id === agentDshRuntimeSelect.value && runtime.status === "online");
   if (!selected) {
     renderComposerPermissions();
     return;
   }
-  const executionSelection = dshExecutionSelection(selected, projectDshProfile(state.settings, state.project.id));
-  state.settings = settingsStore.set(withProjectDshProfile(
+  // Choosing a device is explicit consent to its currently advertised Claude
+  // profile. Passive refresh and unrelated settings saves keep the old pin.
+  const executionSelection = nativeExecutionSelection(selected, selected.harness === "claude-code" ? null : nativeProjectProfile(state.settings, state.project.id));
+  state.settings = settingsStore.set(withNativeProjectProfile(
     state.settings,
     state.project.id,
     dshStoredProjectProfile(selected, executionSelection),
@@ -4256,13 +4443,13 @@ function updateComposerDshExecutionProfile(changed) {
   if (!resolution.runtime?.executionProfiles?.length) return;
   const option = agentDshModelSelect.selectedOptions[0];
   if (!option) return;
-  const previous = projectDshProfile(state.settings, state.project.id);
-  const selected = dshExecutionSelection(resolution.runtime, {
+  const previous = nativeProjectProfile(state.settings, state.project.id);
+  const selected = nativeExecutionSelection(resolution.runtime, {
     provider: option.dataset.provider,
     model: option.dataset.model,
     effort: changed === "model" ? previous?.effort : agentDshEffortSelect.value,
   });
-  state.settings = settingsStore.set(withProjectDshProfile(
+  state.settings = settingsStore.set(withNativeProjectProfile(
     state.settings,
     state.project.id,
     dshStoredProjectProfile(resolution.runtime, selected),
@@ -4274,11 +4461,13 @@ function settingsEnabledHarnesses() {
   return [
     ["settings-enabled-codex", "codex"],
     ["settings-enabled-dsh", DSH_HARNESS],
+    ["settings-enabled-claude", "claude-code"],
     ["settings-enabled-cloud", "cloud"],
   ].filter(([id, harness]) => element(id).checked && (harness !== "cloud" || CLOUD_AGENT_ENTRY_ENABLED)).map(([, harness]) => harness);
 }
 
 function settingsAgentSummary(harness) {
+  if (harness === "claude-code") return localizer.t("Claude Code handles requests on your connected computer. Your model and native permissions stay local.");
   if (harness === "cloud" && !CLOUD_AGENT_ENTRY_ENABLED) return localizer.t("Cloud Agent · coming later");
   if (harness === "cloud") return localizer.t("Cloud Agent runs on this server. Choose a model without connecting a local Agent.");
   return harness === DSH_HARNESS
@@ -4287,7 +4476,7 @@ function settingsAgentSummary(harness) {
 }
 
 function syncSettingsAgentControls({ changedCheckbox } = {}) {
-  const controls = [element("settings-enabled-codex"), element("settings-enabled-dsh"), element("settings-enabled-cloud")];
+  const controls = [element("settings-enabled-codex"), element("settings-enabled-dsh"), element("settings-enabled-claude"), element("settings-enabled-cloud")];
   let enabled = settingsEnabledHarnesses();
   if (enabled.length === 0) {
     (changedCheckbox && (changedCheckbox.value !== "cloud" || CLOUD_AGENT_ENTRY_ENABLED)
@@ -4298,15 +4487,24 @@ function syncSettingsAgentControls({ changedCheckbox } = {}) {
     || (control.checked && enabled.includes(control.value) && enabled.length === 1);
   const harnessSelect = element("settings-agent-harness");
   for (const option of harnessSelect.options) {
-    if (["codex", DSH_HARNESS, "cloud"].includes(option.value)) option.disabled = !enabled.includes(option.value) || (option.value === "cloud" && !CLOUD_AGENT_ENTRY_ENABLED);
+    if (["codex", DSH_HARNESS, "claude-code", "cloud"].includes(option.value)) option.disabled = !enabled.includes(option.value) || (option.value === "cloud" && !CLOUD_AGENT_ENTRY_ENABLED);
   }
   if (!enabled.includes(harnessSelect.value)) harnessSelect.value = enabled[0];
-  const dsh = harnessSelect.value === DSH_HARNESS;
+  const dsh = isAlternativeNative(harnessSelect.value);
   element("settings-codex-agent-fields").hidden = harnessSelect.value !== "codex";
   element("settings-dsh-agent-fields").hidden = !dsh;
+  renderNativeSettingsRuntimeOptions(harnessSelect.value);
   element("settings-cloud-agent-fields").hidden = !enabled.includes("cloud") || !CLOUD_AGENT_ENTRY_ENABLED;
   renderCloudStatus();
   element("settings-agent-summary").textContent = settingsAgentSummary(harnessSelect.value);
+}
+
+function renderNativeSettingsRuntimeOptions(harness) {
+  const settings = normalizeSettings(settingsPreview);
+  if (state.project) settings.agents.projectProfiles[state.project.id] = {
+    ...settings.agents.projectProfiles[state.project.id], harness,
+  };
+  renderDshRuntimeOptions(element("settings-dsh-runtime"), settings);
 }
 
 function populateSettingsForm(settings) {
@@ -4338,6 +4536,7 @@ function populateSettingsForm(settings) {
     ? projectEnabledHarnesses(normalized, state.project.id) : normalized.agents.enabledHarnesses);
   element("settings-enabled-codex").checked = enabledHarnesses.has("codex");
   element("settings-enabled-dsh").checked = enabledHarnesses.has(DSH_HARNESS);
+  element("settings-enabled-claude").checked = enabledHarnesses.has("claude-code");
   element("settings-enabled-cloud").checked = enabledHarnesses.has("cloud");
   renderCloudModelOptions(element("settings-cloud-model"), state.project ? projectCloudProfile(normalized, state.project.id) : null);
   element("settings-agent-harness").value = harness;
@@ -4392,16 +4591,31 @@ function readSettingsForm(baseSettings = settingsPreview) {
     next = withProjectCloudProfile(next, state.project.id, element("settings-cloud-model").value);
     next = withProjectEnabledHarnesses(next, state.project.id, settingsEnabledHarnesses());
     next = withProjectAgentHarness(next, state.project.id, element("settings-agent-harness").value);
-    if (element("settings-agent-harness").value === DSH_HARNESS) {
-      const selected = dshRuntimeChoices(state.executionRuntimes, state.devices)
+    if (isAlternativeNative(element("settings-agent-harness").value)) {
+      const selected = dshRuntimeChoices(state.executionRuntimes, state.devices, element("settings-agent-harness").value)
         .find((runtime) => runtime.id === element("settings-dsh-runtime").value && runtime.status === "online");
       if (selected) {
-        const executionSelection = dshExecutionSelection(selected, projectDshProfile(next, state.project.id));
-        next = withProjectDshProfile(next, state.project.id, dshStoredProjectProfile(selected, executionSelection));
+        try {
+          const executionSelection = nativeExecutionSelection(selected, nativeProjectProfile(next, state.project.id));
+          next = withNativeProjectProfile(next, state.project.id, dshStoredProjectProfile(selected, executionSelection));
+        } catch (error) {
+          // A stale picker must not repin a re-registered Claude device just
+          // because the user saved an unrelated preference.
+          if (selected.harness !== "claude-code") throw error;
+        }
       }
     }
   }
   return next;
+}
+
+function selectSettingsNativeRuntime() {
+  if (!state.project || element("settings-agent-harness").value !== "claude-code") return;
+  const selected = dshRuntimeChoices(state.executionRuntimes, state.devices, "claude-code")
+    .find(runtime => runtime.id === element("settings-dsh-runtime").value && runtime.status === "online");
+  if (!selected) return;
+  const next = withProjectAgentHarness(settingsPreview, state.project.id, "claude-code");
+  settingsPreview = withNativeProjectProfile(next, state.project.id, dshStoredProjectProfile(selected, nativeExecutionSelection(selected, null)));
 }
 
 function openSettingsDialog(sectionId) {
@@ -4652,7 +4866,7 @@ function handleNumericPresetSelection(target, { focusCustom = false } = {}) {
 }
 
 function handleSettingsControlInput(event) {
-  if (["settings-enabled-codex", "settings-enabled-dsh", "settings-enabled-cloud", "settings-agent-harness"].includes(event.target.id)) return;
+  if (["settings-enabled-codex", "settings-enabled-dsh", "settings-enabled-claude", "settings-enabled-cloud", "settings-agent-harness"].includes(event.target.id)) return;
   if (handleNumericPresetSelection(event.target)) return;
   if (event.target.classList?.contains("digits-only-input")) {
     const sanitized = digitsOnly(event.target.value);
@@ -4667,14 +4881,15 @@ function handleSettingsControlInput(event) {
 }
 
 function handleSettingsControlChange(event) {
+  if (event.target.id === "settings-dsh-runtime") selectSettingsNativeRuntime();
   if (event.target.id === "settings-default-model") {
     updateEffortControl(event.target, element("settings-default-effort"), element("settings-default-effort").value, settingsPreview);
   }
-  if (["settings-enabled-codex", "settings-enabled-dsh", "settings-enabled-cloud"].includes(event.target.id)) {
+  if (["settings-enabled-codex", "settings-enabled-dsh", "settings-enabled-claude", "settings-enabled-cloud"].includes(event.target.id)) {
     syncSettingsAgentControls({ changedCheckbox: event.target });
   }
   if (event.target.id === "settings-agent-harness") {
-    const selectedCheckbox = event.target.value === "cloud" ? element("settings-enabled-cloud") : event.target.value === DSH_HARNESS
+    const selectedCheckbox = event.target.value === "claude-code" ? element("settings-enabled-claude") : event.target.value === "cloud" ? element("settings-enabled-cloud") : event.target.value === DSH_HARNESS
       ? element("settings-enabled-dsh")
       : element("settings-enabled-codex");
     selectedCheckbox.checked = true;
@@ -4852,6 +5067,8 @@ function renderContextDiagnostic(settings) {
   diagnostic.dataset.state = "valid";
   const connectorGuidance = enabledHarnesses.map((harness) => harness === DSH_HARNESS
     ? "DeepSeek Harness: automatic compaction follows its native model and plugin settings, not this browser value. Oversized first imports may still exceed native limits."
+    : harness === "claude-code" ? localizer.t("Claude Code: each Web request uses current shared context in a separate execution. Native conversations keep their own context settings.")
+    : harness === "cloud" ? localizer.t("Cloud Agent uses the server's execution limits.")
     : `Codex: use the native model window first; fallback ${formatBytes(result.configuredBytes)} (about ${new Intl.NumberFormat().format(approximateTokens)} tokens). Reconnect Codex after changing the fallback. Codex Desktop Hooks retain a separate 7 KiB transfer capsule.`).join(" ");
   diagnostic.textContent = `Native context management. ${connectorGuidance}`;
 }

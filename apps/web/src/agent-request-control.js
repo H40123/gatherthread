@@ -42,7 +42,7 @@ export function composerAgentAction(events, userId) {
   let request;
   // Keep the unbundled browser path compatible with Safari 15/Chrome 100.
   for (let index = history.length - 1; index >= 0; index--) {
-    if (history[index].type === "agent_request" && history[index].actor?.id === userId && !history[index].payload?.history_summary) {
+    if (history[index].type === "agent_request" && history[index].actor?.id === userId && !history[index].payload?.history_summary && !history[index].payload?.agent_team) {
       request = history[index];
       break;
     }
@@ -83,6 +83,7 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
 
   function view() {
     const context = getContext();
+    if (context.teamRun && ["running", "paused"].includes(context.teamRun.status)) return { ...context, action: "stop_team" };
     return { ...context, ...composerAgentAction(context.events, context.userId) };
   }
 
@@ -96,24 +97,25 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
       operation = null;
     }
     const busy = operation?.scope === current.scope;
-    const labels = { request: current.requestLabel ?? "Request my agent", wait: "Waiting for Agent…", pause: "Pause Agent", resume: "Resume Agent", stop: "Stop shared Agent" };
-    const label = busy ? operation.action === "stop" ? "Stopping…" : operation.action === "pause" ? "Pausing…" : "Resuming…" : labels[current.action];
+    const labels = { request: current.requestLabel ?? "Request my agent", wait: "Waiting for Agent…", pause: "Pause Agent", resume: "Resume Agent", stop: "Stop shared Agent", stop_team: "Stop Team" };
+    const label = busy ? ["stop", "stop_team"].includes(operation.action) ? "Stopping…" : operation.action === "pause" ? "Pausing…" : "Resuming…" : labels[current.action];
     // Reuse the same stable button and keep its accessible name meaningful.
     // A canonical shared request is independently stoppable even while its
     // original send/recovery HTTP response is still incomplete.
-    const independentStop = current.action === "stop";
+    const independentStop = ["stop", "stop_team"].includes(current.action);
     if (!current.sending || independentStop) {
       const icon = button.ownerDocument.createElement("span");
       icon.setAttribute("aria-hidden", "true");
-      icon.textContent = current.action === "stop" ? "■" : current.action === "pause" ? "Ⅱ" : current.action === "resume" ? "▶" : "✦";
+      icon.textContent = independentStop ? "■" : current.action === "pause" ? "Ⅱ" : current.action === "resume" ? "▶" : "✦";
       button.replaceChildren(icon, ` ${t(label)}`);
       button.setAttribute("aria-label", t(label));
     }
     button.dataset.agentAction = current.action;
     button.setAttribute("aria-busy", String(busy));
     if (current.action !== "request") {
-      button.disabled = busy || current.sending && !independentStop || !current.writable || current.action === "wait";
-      targetLabel.textContent = t(current.action === "stop" ? "Stops your shared request and cancels queued work; your draft stays here." : current.action === "resume"
+      const permitted = current.action === "stop_team" ? current.controlWritable ?? current.writable : current.writable;
+      button.disabled = busy || current.sending && !independentStop || !permitted || current.action === "wait";
+      targetLabel.textContent = t(current.action === "stop_team" ? "Stops the Team task; your draft stays here." : current.action === "stop" ? "Stops your shared request and cancels queued work; your draft stays here." : current.action === "resume"
         ? "Starts a new request with latest history, using the original Agent and model."
         : current.action === "wait" ? current.cloud ? "Cloud Agent is working…" : "Waiting for your Agent to start this request."
           : "Pauses your current request; your draft stays here.");
@@ -130,10 +132,12 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
         && !event.deleted && !event.contentUnavailable && event.actor?.id === latest.userId);
     };
     if (current.action === "request") return false;
-    if (button.disabled || operation?.scope === current.scope || !current.writable) return true;
+    const permitted = current.action === "stop_team" ? current.controlWritable ?? current.writable : current.writable;
+    if (button.disabled || operation?.scope === current.scope || !permitted) return true;
     if (current.action === "resume" && !confirmResume(current.request)) return true;
     const pending = { scope: current.scope, action: current.action, requestId: current.request?.id };
     operation = pending;
+    delete errorNode.teamProblemIntent;
     errorNode.textContent = "";
     onChange();
     // Reuse one key after an uncertain resume acknowledgement; another click
@@ -144,7 +148,9 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
     const key = resumeIntent?.key;
     void (async () => {
       try {
-        if (current.action === "stop") {
+        if (current.action === "stop_team") {
+          await current.stopTeam();
+        } else if (current.action === "stop") {
           if (stopIntent?.requestId !== current.request.id || stopIntent.scope !== current.scope) {
             stopIntent = { requestId: current.request.id, scope: current.scope, key: makeKey("shared-cancel") };
           }
@@ -164,7 +170,16 @@ export function mountAgentRequestControl({ button, targetLabel, errorNode, api, 
           await api.appendAgentRequest(current.sessionId, { ...resumeAgentRequestInput(source, key), contentRevision });
         }
       } catch (error) {
-        if (getContext().scope === current.scope && !pending.confirmed) errorNode.textContent = t(error.message ?? "Unable to control this Agent request. Try again.");
+        if (getContext().scope === current.scope && !pending.confirmed) {
+          const message = current.action === "stop_team" && current.teamError
+            ? current.teamError(error) : t(error.message ?? "Unable to control this Agent request. Try again.");
+          // Empty means this intent has been fenced. A newer validation or
+          // action owns its own hint, even when this transport finishes later.
+          if (message && !errorNode.textContent && !errorNode.teamProblemIntent) {
+            if (current.action === "stop_team") errorNode.teamProblemIntent = { problem: error, text: message };
+            errorNode.textContent = message;
+          }
+        }
       } finally {
         if (operation === pending) operation = null;
         if (getContext().scope === current.scope) onChange();

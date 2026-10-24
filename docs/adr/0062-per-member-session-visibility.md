@@ -1,10 +1,10 @@
-# ADR-0060: Manage Solo and Multi visibility per project member
+# ADR-0062: Manage Solo and Multi visibility per project member
 
 **Date**: 2026-10-20
 
 **Status**: proposed / local implementation
 
-**Supersedes**: ADR-0061's creation-only Web audience choice; further refines ADR-0006/0015's project-wide session read assumption
+**Supersedes**: ADR-0063's creation-only Web audience choice; further refines ADR-0006/0015's project-wide session read assumption
 
 ## Context
 
@@ -14,7 +14,7 @@ The creator needs one common member-management surface for Solo and Multi, inclu
 
 Keep project roles and conversation authorship independent from a per-member read override. The Members sidebar owns these controls for both modes, and the creator always retains visibility while a project member. Canonical product behavior is in [Product specification](../PRODUCT_SPEC.md#session-visibility), security in [Security](../SECURITY.md#security-invariants), and wire, migration, recovery and enforcement semantics in [Interface contracts](../INTERFACE_CONTRACTS.md#session-member-visibility).
 
-Authorization is a live SQLite read model, not a rewrite of shared history. A denial additionally creates a durable sequence fence for that user's old requests, so regrant cannot revive an interrupted execution. Existing private defaults and their scopes are preserved; new Web sessions use the established project-visible creation default. No release version, publication or deployment is part of this implementation.
+Authorization is a live SQLite read model, not a rewrite of shared history. A denial additionally creates a durable sequence fence for that user's old requests and terminally retires accepted Team runs, including those between steps, so regrant cannot revive an interrupted execution. Exact native-exit identities remain available for cleanup; account-private Team definitions are unchanged. Existing private defaults and their scopes are preserved; new Web sessions use the established project-visible creation default. No release version, publication or deployment is part of this implementation.
 
 ## Consequences
 

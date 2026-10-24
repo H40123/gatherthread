@@ -15,6 +15,48 @@ test("visibility PUT is session-scoped, cookie-authenticated, bounded and strict
   } finally {globalThis.fetch=original;}
 });
 
+test("visibility updates work without AbortSignal.timeout on supported older browsers", async t => {
+  const originalFetch = globalThis.fetch;
+  const descriptor = Object.getOwnPropertyDescriptor(AbortSignal, "timeout");
+  Object.defineProperty(AbortSignal, "timeout", { configurable: true, value: undefined });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (descriptor) Object.defineProperty(AbortSignal, "timeout", descriptor);
+    else delete AbortSignal.timeout;
+  });
+  globalThis.fetch = async (_url, options) => {
+    assert.ok(options.signal instanceof AbortSignal);
+    assert.equal(Object.hasOwn(options, "deadlineMs"), false);
+    return Response.json({ data: { user_id: "member", visible: false, revision: 1, replayed: false } });
+  };
+  const result = await new HttpCollaborationApi().setSessionMemberVisibility("session", "member", {
+    visible: false, expectedRevision: 0, idempotencyKey: "visibility-old-browser",
+  });
+  assert.equal(result.visible, false);
+});
+
+for (const phase of ["headers", "body"]) {
+  test(`visibility acknowledgement bounds stalled ${phase} to eight seconds without automatic retry`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const originalFetch = globalThis.fetch;
+    t.after(() => { globalThis.fetch = originalFetch; });
+    let calls = 0, signal, settled = false;
+    globalThis.fetch = async (_url, options) => {
+      calls++; signal = options.signal;
+      return phase === "headers" ? new Promise(() => {})
+        : { ok: true, status: 200, json: () => new Promise(() => {}) };
+    };
+    const pending = new HttpCollaborationApi().setSessionMemberVisibility("session", "member", {
+      visible: false, expectedRevision: 0, idempotencyKey: `visibility-hung-${phase}`,
+    });
+    pending.catch(() => { settled = true; });
+    t.mock.timers.tick(7999); await Promise.resolve(); assert.equal(settled, false);
+    const checked = assert.rejects(pending, error => error.status === 0 && error.code === "request_timeout");
+    t.mock.timers.tick(1); await checked;
+    assert.equal(signal.aborted, true); assert.equal(calls, 1);
+  });
+}
+
 test("uncertain saves block another change and retry the exact body/key until acceptance is confirmed", async()=>{
   const calls=[]; let succeed=false, saved;
   const context={userId:"author",projectId:"p",sessionId:"s",canManage:true};

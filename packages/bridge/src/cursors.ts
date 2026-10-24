@@ -5,6 +5,7 @@ import type { TranscriptCursor } from "@gatherthread/adapters";
 export interface BridgeCursorState {
   server: Record<string, number>;
   local: Record<string, TranscriptCursor>;
+  stoppedExecutions?: { sessionId: string; requestId: string; runtimeId: string; claimAttempt: number }[];
 }
 
 export interface CursorStore {
@@ -35,11 +36,7 @@ export class FileCursorStore implements CursorStore {
 
   async load(): Promise<BridgeCursorState> {
     try {
-      const parsed = JSON.parse(await readFile(this.#path, "utf8")) as Partial<BridgeCursorState>;
-      return {
-        server: isNumberRecord(parsed.server) ? parsed.server : {},
-        local: isCursorRecord(parsed.local) ? parsed.local : {},
-      };
+      return parseBridgeCursorState(JSON.parse(await readFile(this.#path, "utf8")));
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") return structuredClone(EMPTY_STATE);
       throw error;
@@ -52,6 +49,23 @@ export class FileCursorStore implements CursorStore {
     await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
     await rename(temporaryPath, this.#path);
   }
+}
+
+export function parseBridgeCursorState(value: unknown): BridgeCursorState {
+  if (!isObject(value)) throw new Error("Invalid bridge cursor state");
+  return {
+    server: isNumberRecord(value.server) ? value.server : {},
+    local: isCursorRecord(value.local) ? value.local : {},
+    ...(value.stoppedExecutions === undefined ? {} : { stoppedExecutions: parseStoppedExecutions(value.stoppedExecutions) }),
+  };
+}
+
+function parseStoppedExecutions(value: unknown): NonNullable<BridgeCursorState["stoppedExecutions"]> {
+  if (!Array.isArray(value) || value.length > 1000 || !value.every((item) => isObject(item)
+    && Object.keys(item).length === 4
+    && [item.sessionId, item.requestId, item.runtimeId].every((id) => typeof id === "string" && id.length > 0 && id.length <= 200)
+    && Number.isSafeInteger(item.claimAttempt) && Number(item.claimAttempt) > 0)) throw new Error("Invalid native execution stop receipts");
+  return value as NonNullable<BridgeCursorState["stoppedExecutions"]>;
 }
 
 function isNumberRecord(value: unknown): value is Record<string, number> {

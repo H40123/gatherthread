@@ -10,7 +10,7 @@ Writers may choose their own private API-backed Cloud Agent for requests, shared
 
 Enable multiple people to collaborate on an agent-assisted project while each person keeps using their own local harness, model, credentials, filesystem, and context-management policy.
 
-The current release opens the Cloud Agent choice in Settings and the existing composer beside Codex and DSH, including trial and eligible GitHub repository-task entries. New browser preferences enable the Codex, DeepSeek Harness and Cloud Agent connection shortcuts, with Codex still selected as the default target. Saved global and per-project shortcut choices and exact targets are preserved on upgrade; newly opened projects inherit those saved choices. Enabling a shortcut does not connect a device, authorize a provider or start an Agent request. The server runner remains disabled by default until the operator configures and validates its provider and container; GitHub tasks additionally require their own enabled service, App authorization and adequate resources. Unconfigured services show unavailable status and never reroute to a local Agent or another model. The trial runs OpenCode in a disposable container. Multiple accounts may provide capacity for the same exact provider/model; unavailable capacity never silently switches models. Project GT Cloud code is read only after the requester selects that option; eligible changes are checkpointed to that member's own branch. GitHub connections remain independent. Cloud trial requests support shared-summary generation and author-only Pause/Resume without a local Agent; repository tasks keep their separate lifecycle. The authorized Beta 3 rollout covers test and production; deployment receipts, not UI availability, confirm each live service. See [the user guide](HOSTED_AGENT_GUIDE.md), [ADR-0038](adr/0038-isolated-hosted-trial-agent.md) and [ADR-0042](adr/0042-cloud-request-lifecycle-and-selected-summaries.md).
+The current release opens the Cloud Agent choice in Settings and the existing composer beside Codex and DSH, including trial and eligible GitHub repository-task entries. New browser preferences enable the Codex, DeepSeek Harness and Cloud Agent connection shortcuts, with Codex still selected as the default target. Saved global and per-project shortcut choices and exact targets are preserved on upgrade; newly opened projects inherit those saved choices. Enabling a shortcut does not connect a device, authorize a provider or start an Agent request. The server runner remains disabled by default until the operator configures and validates its provider and container; GitHub tasks additionally require their own enabled service, App authorization and adequate resources. Unconfigured services show unavailable status and never reroute to a local Agent or another model. The trial runs OpenCode in a disposable container. Multiple accounts may provide capacity for the same exact provider/model; unavailable capacity never silently switches models. Project GT Cloud code is read only after the requester selects that option; eligible changes are checkpointed to that member's own branch. GitHub connections remain independent. Cloud trial requests support shared-summary generation and author-only Pause/Resume without a local Agent; repository tasks keep their separate lifecycle. The authorized Beta 4 rollout covers test and production; deployment receipts, not UI availability, confirm each live service. See [the user guide](HOSTED_AGENT_GUIDE.md), [ADR-0038](adr/0038-isolated-hosted-trial-agent.md) and [ADR-0042](adr/0042-cloud-request-lifecycle-and-selected-summaries.md).
 
 The Project file collaboration panel recommends **GitHub** first, with **GT Cloud** as a lightweight-trial alternative. GitHub presents account connection, repository selection and a ready-to-use page sequentially, with separate account/organization and repository-name fields. OAuth completion restores the initiating account's original project and settings using an expiring, single-use navigation hint that contains no credentials or OAuth state/code. Cloud Agent work and optional computer file synchronization appear after account setup, not as an initial mode choice. Computer authorization stays separate; repository prefill never enables uploads. Account settings, branch options and saved task details remain available without crowding the main path. Switching categories or views changes only presentation and never enables, pauses or migrates either repository. New and continued repository tasks require the configured eligible cloud profile and server GitHub service. See [ADR-0048](adr/0048-storage-first-github-setup.md).
 ## Test environment entry
@@ -23,11 +23,11 @@ The entry UI offers email/password sign-in and email registration. The selected 
 
 Opening `/` presents the bilingual product home. Its primary action opens same-origin `/app/`, restores an eligible email account Cookie or shows email registration/password login. Existing forwarding queries and fragments remain supported. The home does not read credentials.
 
-The product home introduces people, devices and their own Agents through seven chapters and a four-step illustrated example: discussion, shared summary, explicit Agent work, and human review. Chinese and English use the workspace's shared `gt-lang` preference, including cross-tab changes. Screenshots come from the isolated product example in both languages. Desktop chapters use native proximity snapping and scroll-linked reveals without wheel interception or delayed repositioning; compact layouts use natural scrolling. Light/dark appearance, reduced-motion, high-contrast, and no-JavaScript fallbacks keep the entry and content usable. File guidance recommends GitHub for ongoing development and distinguishes its direct uploads from the limited GT Cloud trial, conversation uploads, and human-approved merges. Product and connection guides remain separate from future automatic Agent-team plans.
+The product home introduces people, devices and their own Agents through seven chapters and a four-step illustrated example: discussion, shared summary, explicit Agent work, and human review. Chinese and English use the workspace's shared `gt-lang` preference, including cross-tab changes. Screenshots come from the isolated product example in both languages. Desktop chapters use native proximity snapping and scroll-linked reveals without wheel interception or delayed repositioning; compact layouts use natural scrolling. Light/dark appearance, reduced-motion, high-contrast, and no-JavaScript fallbacks keep the entry and content usable. File guidance recommends GitHub for ongoing development and distinguishes its direct uploads from the limited GT Cloud trial, conversation uploads, and human-approved merges. Product and connection guides remain separate from the Agent Team implementation preview.
 
 User accounts register with a verified email address and a self-set password, then sign in with email and password. All new accounts can create projects under the current project roles and resource rules. Registration is closed by default; existing email/password login remains available while signup is disabled or paused. Password recovery is implemented with a browser-bound, single-use email code. Its independent GATHERTHREAD_PASSWORD_RECOVERY switch is closed by default and requires configured providers plus rollout validation; signup may remain closed. No user access token is displayed or saved. First workspace entry on each device displays the required cloud Git notice before other work. The notice explains project-wide visibility, collaboration-only use, optional upload and the limits of disabling sync.
 
-After the cloud Git notice is acknowledged, a first workspace visit offers a bilingual visual guide in an isolated example project. All accounts, including new email accounts with no projects or conversations, can browse the full fourteen-step introduction. Settings orders the other guides as collaboration (seven steps), history synchronization (five), project files (sixteen), summaries (five), and account and devices (four), and provides a separate free-browse entry. The authored example shows a small sign-up-page project from plain-language discussion through summary, AI agent file work, review and handoff. It includes Multi/Solo conversations, three member roles, connected mock AI agents, GitHub and GT Cloud file-sharing surfaces, and completed summaries. The account guide illustrates device and deletion controls without submitting a deletion. Steps prepare the relevant scenario rather than asking users to locate unavailable controls later. Overview cards are centered; other cards and rounded or circular highlights follow fully visible controls, including expanded panels and native dialogs. On the compact workspace, guide targets follow the project drawer, Agent picker and tools sheets; phone guidance explains that local agents run on a connected online computer, while Cloud Agent can be chosen directly when available. The example supplies six dependency-free project files, visible button code, a completed illustrative plan and three behavior checks. Its demo-only Result viewer runs only that authored frontend in a second opaque sandbox, shows the same revision used by file review, and displays source as text. It never executes uploaded project files or invokes a model.
+After the cloud Git notice is acknowledged, a first workspace visit offers a bilingual visual guide in an isolated example project. All accounts, including new email accounts with no projects or conversations, can browse the sixteen-step introduction. Settings orders the other guides as collaboration (seven steps), history synchronization (five), project files (twenty-one desktop steps or thirteen mobile steps), summaries (five), and account and devices (four), and provides a separate free-browse entry. The authored example shows a small sign-up-page project from plain-language discussion through summary, AI agent file work, review and handoff. It includes Multi/Solo conversations, three member roles, connected mock AI agents, GitHub and GT Cloud file-sharing surfaces, and completed summaries. The account guide illustrates device and deletion controls without submitting a deletion. Steps prepare the relevant scenario rather than asking users to locate unavailable controls later. Overview cards are centered; other cards and rounded or circular highlights follow fully visible controls, including expanded panels and native dialogs. On the compact workspace, guide targets follow the project drawer, Agent picker, tools sheets and full-screen file workspace; phone guidance explains that local agents run on a connected online computer, while Cloud Agent can be chosen directly when available. The example supplies six dependency-free project files, visible button code, a completed illustrative plan and three behavior checks. Its Project files entry opens the ordinary file workspace using in-memory branches: code and Markdown use independent tabs, Markdown switches between Code and Preview, and teammate changes use the real read-only diff view. The file guide also returns to the editable personal branch without saving for the user. The demo-only Result viewer runs only the authored frontend in a second opaque sandbox and follows the mock repository revision. It never executes uploaded or user-edited project files or invokes a model. PDF preview remains available in real projects, not in the isolated example's worker-free sandbox.
 
 Completion or skipping is stored only in the parent browser, scoped by origin, authenticated user and device; unavailable storage retains progress for the current page. The example reuses the real application shell with fresh in-memory mock state inside an opaque-origin sandbox. It receives presentation settings and an authored guide topic, never real projects, messages, files, credentials or runtimes. Free practice affects only this disposable example; reset or exit discards it. Guides support Back/Next, keyboard navigation, Escape and returning to Settings, without changing the real workspace, draft, scroll or authorization. See [ADR-0033](adr/0033-isolated-onboarding-example.md) for the isolation boundary.
 
@@ -57,7 +57,40 @@ For both Solo and Multi, the conversation's immutable creator can independently 
 
 Showing a member grants only the rights already allowed by their project role and the conversation mode, not a role promotion. Hiding closes their live connection, invalidates unused realtime tickets, revokes session runtimes, fences pending jobs/claims and prevents pre-denial requests from running or publishing even after a later regrant. Regrant does not restart work. Already delivered local/provider copies cannot be recalled. Project-file, GT Cloud, GitHub and separately consented shared-executor access remain independent. A project owner can still delete an entire project without gaining read access to its hidden conversations.
 
-Conflicting updates require refreshing members; an uncertain acknowledgement offers an exact retry instead of accepting another change. See [ADR-0060](adr/0060-per-member-session-visibility.md) and [the interface contract](INTERFACE_CONTRACTS.md#session-member-visibility).
+Conflicting updates require refreshing members; an uncertain acknowledgement offers an exact retry instead of accepting another change. See [ADR-0062](adr/0062-per-member-session-visibility.md) and [the interface contract](INTERFACE_CONTRACTS.md#session-member-visibility).
+
+## Browser page recovery
+
+An independent, same-origin recovery script loads separately from the workspace module.
+Uncaught page errors, unhandled Promise rejections and failed script or stylesheet
+loads open a bilingual recovery dialog. Startup that has not completed after
+45 seconds of visible page time also explains the delay; background suspension
+does not itself imply a fault. Asynchronous authentication restoration remains
+authoritative: recovery never reveals a workspace or login form ahead of it.
+The static startup screen retains bilingual network/browser-reload guidance even
+when application scripts do not load. The script loads asynchronously so its own
+network load cannot block parsing that screen or wait for a stalled stylesheet.
+Before the main application can apply its language, the recovery layer reads only
+the existing public `gt-lang` preference, with a browser-language fallback;
+unavailable storage never blocks recovery.
+
+"Page stuck?" is an independent manual entry, including inside open modal
+dialogs, for buttons that do nothing without raising an observable error.
+Recovery preserves the current view until the user chooses otherwise, explains
+how to return and manually copy unsent drafts or unsaved configuration, and
+requires confirmation before reloading. It never promises those inputs will
+survive a reload. It also warns that accepted Agent work may continue and must
+be checked before resubmission; reload neither cancels nor restarts a task.
+Repeated automatic errors are deduplicated, while manual help remains available.
+
+Browser API acknowledgments have a 45-second deadline covering response headers
+and JSON body decoding. Existing shorter sharing/Team and avatar deadlines stay
+in effect. An acknowledgment timeout releases the caller's pending state and
+shows an unconfirmed result, without automatically resending a mutation. This
+deadline does not shorten server-side Agent execution. Browser process crashes,
+disabled JavaScript and a completely blocked main thread still require the
+browser's own reload/close controls; page code cannot guarantee an in-page notice
+while it cannot execute.
 
 ## Mobile workspace
 
@@ -121,17 +154,21 @@ The conversation header groups summary selection, summary/original display and e
 
 ## Permissions
 
+Every session-scoped permission below additionally requires current session visibility; project ownership does not bypass a conversation's read boundary.
+
 | Project role | `multi` | `solo` | Project administration |
 |---|---|---|---|
 | `owner` | read, chat, request/live-sync Agent | write own Solo; read/download other Solos | multi sessions, invitations, roles, retention |
 | `participant` | read, chat, request/live-sync Agent | write own Solo; read/download other Solos | create personal Solo only |
 | `viewer` | read and download immutable local snapshots | read and download immutable local snapshots | none |
 
-Solo sessions reject every writer except their immutable creator, and a viewer downgrade also disables that creator. Viewer sessions reject every conversation write and execution-runtime registration. Multi sessions serialize agent turns per local runtime while allowing concurrent human chat. Apart from creator ownership on Solo, session-specific membership overrides are outside the first release.
+Solo sessions reject every writer except their immutable creator, and a viewer downgrade also disables that creator. Viewer sessions reject every conversation write and execution-runtime registration. Multi sessions serialize agent turns per local runtime while allowing concurrent human chat. Creator-managed session visibility changes reading access without changing project roles or Solo writing authority.
 
 Settings → Account & privacy provides self-service deletion with a preflight impact count. A project owner must first transfer each owned project to an existing participant (or delete that project) and resolve personal cloud-code branches. Explicit `DELETE` confirmation removes that account's Solo cloud sessions, revokes its devices and browser sessions, and removes its memberships. Shared Multi events stay in order but their server-side author identity becomes “Deleted member”; user-entered text, shared Git commits, and local Agent data are not rewritten or removed. The public bilingual [privacy notice](../site/privacy/) describes routine backup, unreachable cloud Git, log, and copy-retention limits separately from immediate live-service deletion.
 
 ## Local project synchronization
+
+The Claude Code integration preview provides a separate desktop connection shortcut, exact connected-device selection and a native GatherThread plugin for project/session/context/chat/sync actions. Existing saved Agent defaults remain unchanged until the user enables/selects Claude. Phones call the already-connected computer; local installation remains desktop-only. Calling one's own Claude keeps the computer's native tools/configuration and permission mode, including terminal/dependency work when locally allowed, without an extra file/plan whitelist or automatic approval of new permission prompts. Other members' shared Agents retain their separate project-only boundary; Claude sharing is not offered. Claude local conversation publication is opt-in; installing the plugin alone is not permission to scan private history. The [Claude guide](CLAUDE_CODE.md) owns setup and current limitations, with [ADR-0060](adr/0060-claude-code-plugin-and-local-connector.md) recording the architecture. This is not the planned multi-Agent team feature.
 
 On desktop, **Connect Codex** opens the Launcher-first flow with the current account email and the correct production/test server. The Launcher asks for the account password and authorizes an independent device; users do not paste access tokens. GitHub installation is recommended and the site's verified download remains available. Terminal commands remain an explicitly expanded fallback. Mobile and tablet devices use an already-connected computer Agent or a cloud Agent rather than a local installation flow.
 
@@ -291,3 +328,136 @@ Swift toolchain. Windows shared execution is unsupported in this preview.
 Real provider/account and Windows/Linux acceptance remain separate from
 fictional browser fixtures.
 See [ADR-0056](adr/0056-project-scoped-native-agent-sharing.md).
+
+## My Agent Teams (local implementation preview)
+
+The new Team library and editor are an implementation preview, separate from the
+released workspace and connection guides. Each account can save at most **five
+Teams and five favorite modules** in total across projects, sessions and devices.
+Existing entries remain editable at the limit; deleting an entry releases its
+slot. Only that account can list or change its library. Favorites are module
+snapshots: inserting one makes an independent copy, and later edits never update
+another module, Team or favorite implicitly.
+
+The Agent Teams dialog follows the sharing dialog's compact row layout. Each
+saved Team row opens its editor and has an independent enable/disable switch;
+the final row adds a Team. The editor presents the title, Team name, then Add
+blank module / Add favorite module / Save / Clear. Clear is red; Save is disabled
+when the draft matches the saved configuration. Empty or unbound drafts may be
+saved but cannot be tested or enabled. The zoomable canvas separates modules
+from their selected execution Agent: each module has its own name, Agent, model,
+reasoning effort, identity and prompt. Agent/model/effort choices use the same
+exact advertised profiles as the composer, with no selectable hint option.
+When one connection advertises multiple providers, model labels include the
+provider so identical model names remain distinguishable. An unavailable selected
+model stays selected and is marked unavailable rather than replaced.
+
+Run records expose Pause/Resume/Continue/Stop for active tasks and explicit
+Clear private record for ended tasks. Clearing frees private run/step/control
+storage, keeps canonical conversation messages, and cannot restart the old task.
+The Web client confirms this distinction and can recover a lost clear acknowledgment.
+Pause/Stop remain available under current account/device/session permission when
+WebSocket replay or reconnection temporarily blocks ordinary chat. A successful
+recovery clears only the corresponding old error, including after language changes.
+
+An interrupted or waiting Team explains the affected module, observed cause and
+next action in its run records and a requester-private workspace notice. Failed
+connectivity tests expose the same safe diagnosis. Shared allowances, withdrawn
+sharing, unavailable exact models, executor disconnects, provider failures,
+invalid Team instructions, authorization/context changes and exhausted Team
+budgets have distinct bilingual guidance. Global failures do not blame a module.
+Unknown failures explain that the task did not complete and require reviewing
+existing work before retrying. Browser transport or receipt uncertainty is
+labelled unconfirmed, never inferred to be an execution failure.
+
+Single-call timeout permits explicit Continue only within the original remaining
+call/time budget. Failed, stopped, total-time-expired and call-limit runs require
+a new task rather than a misleading Resume action. A shared daily allowance
+resets at UTC 00:00; changing the grant can require rebinding and retesting the
+saved module. Cloud capacity/rate cooldowns explain automatic waiting. Pending
+native calls identify waiting for their exact executor or interrupted presence
+without silently switching routes or repeating execution. Scope/access changes
+remove cached private diagnostic labels; stale replies cannot restore them.
+
+Adding a module selects it. A module or connection highlights on hover only
+while no selection is fixed; clicking fixes the selection, and clicking blank
+canvas clears it, including the first independent tap after a touch drag or
+cancelled connection. Remote redraws preserve the focused module/port/connection
+by stable identity, or return focus to the canvas if it was removed, without
+overwriting unsaved local edits. Selected modules and connections have Delete. Dragging between ports
+adds an allowed-call relationship; its inspector selects endpoints and one-way/bidirectional
+behavior. A read-only View configuration dialog lists the resulting
+relationships. The lower editor places the selection inspector and call/time
+limits on the left and Test plus Enable/Disable on the right.
+
+A connection means that one module **may call** the other in its configured
+direction. It does not require every task to visit that module or make the
+canvas a fixed execution sequence. A bidirectional connection permits either
+module to initiate a call; both remain subject to the run's limits. Returning a
+subordinate's result follows its actual calling relationship, rather than
+granting an unrelated reverse call.
+
+Test and enable controls save current changes first. Testing first makes one
+minimal connectivity call per module, then passes those public probe markers to
+each destination with incoming edges and verifies their exact return. Every
+configured direction is checked, including both directions of a bidirectional
+flow; reachability from the start module is validated before calls begin. The
+two phases need at most 32 calls for a 16-module Team. A success disables Test and displays
+Successfully connected; only then may the saved Team be enabled. Any saved edit
+invalidates that test and disables new starts; testing or enabling must never
+silently select a replacement Agent, device, model or effort. Disable/delete do
+not stop an already accepted immutable task snapshot; its explicit Stop control
+remains separate. A connectivity check confirms routing and a minimal response,
+not task quality, future availability or permission to access additional tools.
+
+An enabled Team appears as one Agent in the main composer. Selecting it disables
+the outer model and reasoning-effort controls because each module owns those
+choices. The human submits the task explicitly; subsequent delegations follow
+only the configured directions. A subordinate's answer returns to its parent in
+a new counted call. Execution is sequential, with defaults of **12 calls and 30
+minutes**, configurable up to 48 calls and 120 minutes. Cycles and parent returns
+cannot escape either limit. Timeout continuation is explicit and consumes another
+call within the original task deadline; a stopped or exhausted run needs a new
+human-started task.
+
+On each module's first invocation in a task run, it receives the complete public
+Team overview: the overall task goal and Team rules, every module's name and
+identity, all allowed-call directions, the entry module and run limits. This is
+per module, even when several modules use the same Agent connection. It excludes
+other modules' private prompts and native routing credentials. Later invocations
+safely refresh the same frozen public overview as well, because a native, cloud
+or shared call may start with a fresh execution context; no global model memory
+is assumed. A first-contact marker distinguishes the first invocation from a
+refresh. Every invocation
+also identifies itself, its actual current caller, its allowed targets, where to
+return the result, the current phase and remaining call/time budget. Agents do
+not need to infer those relationships from conversation order.
+
+Identity defines the module's responsibility boundary. Its module prompt refines
+methods within that responsibility; it cannot silently replace the identity or
+expand the configured call permissions. A direct contradiction must be reported
+to the human for clarification, without the Agent choosing an interpretation or
+carrying out the conflicting work. This instruction principle does not create
+additional runtime or filesystem authority.
+
+A verified Agent report with a public explanation pauses the task for
+instruction clarification. To resume, the run's original requester sends a
+nonblank human chat message in that same session after the report, then explicitly
+chooses Resume. The server freezes the latest qualifying, non-deleted message
+and the conflict report when accepting Resume, then invokes the same module in
+a new counted call. The frozen Team, model selections, total call allowance and
+original deadline remain unchanged. Changing an identity, module prompt, Team
+rules or graph instead requires Stop → edit → retest → a new run. Conflict
+recognition is an Agent behavior rule, not a guarantee that every contradiction
+is detected or that a human message has semantically resolved it. Connectivity
+probes do not enter this clarification flow.
+
+Modules may target the account's exact authorized Codex/DSH runtimes, an available
+cloud profile, or an Agent shared with that account under the existing project
+grant. Saving a Team does not create a connection or grant access in another
+session. Solo work sent to a shared Agent requires the existing explicit device
+transfer acknowledgment, including for a connectivity test. Test calls have
+their own Team-run allowance and do not debit a later task's configured call/time
+budget; they still consume normal provider and shared-Agent allowances and can
+incur their ordinary usage. See the execution boundary in
+[Security](SECURITY.md#agent-team-preview-boundary).

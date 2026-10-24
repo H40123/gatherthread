@@ -1,8 +1,8 @@
-# ADR-0061: Choose a Solo conversation's read audience at creation
+# ADR-0063: Choose a Solo conversation's read audience at creation
 
 **Date**: 2026-10-20
 
-**Status**: superseded for Web interaction and mutable visibility by [ADR-0060](0060-per-member-session-visibility.md); retained as historical context
+**Status**: superseded for Web interaction and mutable visibility by [ADR-0062](0062-per-member-session-visibility.md); retained as historical context
 
 **Partially supersedes**: ADR-0006 and ADR-0015's always-project-visible Solo read policy
 
@@ -12,7 +12,7 @@ Solo currently separates writing authority but shares every conversation with pr
 
 ## Decision
 
-Use a distinct, immutable session read audience rather than changing Solo's writing model or event-level visibility. The current behavior is specified in [Product specification](../PRODUCT_SPEC.md#session-visibility), authorization in [Security](../SECURITY.md#security-invariants), and migration/client compatibility in [Interface contracts](../INTERFACE_CONTRACTS.md#session-member-visibility). ADR-0060 supersedes the creation-only controls and adds per-member overrides to this initial audience.
+Use a distinct, immutable session read audience rather than changing Solo's writing model or event-level visibility. The current behavior is specified in [Product specification](../PRODUCT_SPEC.md#session-visibility), authorization in [Security](../SECURITY.md#security-invariants), and migration/client compatibility in [Interface contracts](../INTERFACE_CONTRACTS.md#session-member-visibility). ADR-0062 supersedes the creation-only controls and adds per-member overrides to this initial audience.
 
 Existing sessions and omission by older clients keep their current audience. New Web users make an explicit choice, initially private. Runtime selection and project file sharing remain independent. This implementation adds no release version, publication or deployment.
 

@@ -6,6 +6,38 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 - Add creator-managed per-member conversation visibility for both Solo and Multi in Members, keeping the creation dialog to name and mode. Server read/discovery checks, immediate socket/ticket revocation and durable execution fences enforce hide/show without changing project roles. Preserve existing private audiences and legacy defaults, with additive SQLite migration, revision CAS and exact retry recovery. Downgrading to a server without these authorization boundaries is unsupported. Local implementation only; no version or publication change.
 
+## [0.1.0-beta.4] - 2026-10-24
+
+- Patch Undici to `7.30.1` in the server and hosted image for upstream
+  denial-of-service/integrity fixes. Rebuild the hosted image with its own
+  source provenance; do not reuse the affected Beta 3 image.
+
+Beta 4 combines the reviewed updates after Beta 3 for matching npm packages,
+plugins, Launchers and an authorized full test/production upgrade. Preserve
+separate account/data/secret stores and all immutable earlier artifacts. See
+the [release record](docs/releases/0.1.0-beta.4.md) for publication and deployment
+evidence boundaries.
+
+- Add a bounded saved Agent Team preview with a visual module configuration,
+  exact-target connectivity tests, explicit enable/start, serial delegation,
+  call/time budgets and independent Pause/Stop. Keep account-private definitions,
+  canonical task history and each native/cloud execution's existing permissions.
+- Add a Claude Code connector, native commands/MCP tools and
+  separately reviewed Hooks, with exact device/model routing, streamed public
+  work, Pause/Resume and per-conversation upload consent. Extend the Windows/Mac
+  Launcher handoff without changing existing Codex links. Your own Claude Code
+  uses its local terminal/install permission policy, with private-output and
+  owned-process safeguards. Matching installers/npm artifacts are part of this
+  release batch; publication receipts confirm availability.
+  See [Claude Code setup](docs/CLAUDE_CODE.md) and [ADR-0060](docs/adr/0060-claude-code-plugin-and-local-connector.md).
+- Align the free example and tutorials with the file-workspace sidebar while
+  retaining the existing mobile, file-collaboration and connection-sharing flows.
+- Recover exact native exit receipts before current-session discovery; preserve
+  emergency controls during replay and prevent stale Team diagnostics from
+  overwriting newer input. Upgrade Zod to `4.6.6`.
+- Align current packages/plugins/download references at `0.1.0-beta.4`, with Mac
+  Launcher numeric version `0.1.4`/build `14`. Earlier releases remain unchanged.
+
 ## [0.1.0-beta.3] - 2026-10-21
 
 Beta 3 packages the reviewed main-branch changes since Beta 2 for the authorized
