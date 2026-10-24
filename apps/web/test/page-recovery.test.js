@@ -5,6 +5,14 @@ import vm from "node:vm";
 
 const source = await readFile(new URL("../src/page-recovery.js", import.meta.url), "utf8");
 
+test("in-dialog recovery help fills a row without consuming a column dialog's height", async () => {
+  const css = await readFile(new URL("../src/page-recovery.css", import.meta.url), "utf8");
+  const row = css.match(/\.page-recovery-help-row\s*\{([^}]+)\}/u)?.[1];
+  assert.match(row, /flex:\s*0\s+0\s+auto\s*;/u);
+  assert.match(row, /width:\s*100%\s*;/u);
+  assert.doesNotMatch(row, /flex(?:-basis)?:[^;]*100%/u);
+});
+
 class Events {
   constructor() { this.listeners = new Map(); }
   addEventListener(type, handler) { const handlers = this.listeners.get(type) ?? []; handlers.push(handler); this.listeners.set(type, handlers); }
