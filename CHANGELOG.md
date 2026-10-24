@@ -6,6 +6,10 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 ## [0.1.0-beta.4] - 2026-10-24
 
+- Patch Undici to `7.30.1` in the server and hosted image for upstream
+  denial-of-service/integrity fixes. Rebuild the hosted image with its own
+  source provenance; do not reuse the affected Beta 3 image.
+
 Beta 4 combines the reviewed updates after Beta 3 for matching npm packages,
 plugins, Launchers and an authorized full test/production upgrade. Preserve
 separate account/data/secret stores and all immutable earlier artifacts. See
