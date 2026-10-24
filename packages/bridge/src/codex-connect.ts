@@ -23,6 +23,7 @@ import {
   drainCodexHookSpool,
   installCodexHookConfig,
   isAllowedCodexHookEvent,
+  isCodexAppGeneratedPrompt,
   renderCodexHookConfig,
   resolveCodexHookRelayPath,
   resolveWorkspaceCodexHookPaths,
@@ -1152,6 +1153,9 @@ export async function runProjectConnector(options: {
     return operation;
   };
   const dispatchHook = async (event: CodexHookEvent, replay: boolean): Promise<{ additionalContext?: string }> => {
+    // Also fence injected relays and old offline spools before discovery or any
+    // local publishing side effects, independently of registry refresh timing.
+    if (event.hook_event_name === "UserPromptSubmit" && isCodexAppGeneratedPrompt(event.prompt)) return {};
     if (!replay) {
       if (event.hook_event_name === "UserPromptSubmit") activeLocalRuns.add(event.session_id);
       else if (event.hook_event_name === "Stop") activeLocalRuns.delete(event.session_id);
@@ -1214,6 +1218,7 @@ export async function runProjectConnector(options: {
   let visibleSessions: SessionSummary[] = [];
   let nextSnapshotPollAt = 0;
   let authoritativeAclLoaded = false;
+  let readyAnnounced = false;
   const sharedPreflightRetryAt = new Map<string, number>();
   const heartbeatStop = new AbortController();
   const heartbeat = runManagedSessionHeartbeats({
@@ -1319,6 +1324,10 @@ export async function runProjectConnector(options: {
           retryReporter.retrying(session.id, error);
         }
       }
+    }
+    if (!readyAnnounced && authoritativeAclLoaded && (!eligibleSessions.length || managed.size > 0)) {
+      process.stdout.write("GatherThread connector ready.\n");
+      readyAnnounced = true;
     }
     if (options.harness.processSnapshotJobs && Date.now() >= nextSnapshotPollAt) {
       try {

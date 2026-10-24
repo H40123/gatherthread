@@ -51,6 +51,23 @@ test("Hook discovery admits only unknown project tasks and excludes connector-ow
   assert.equal(await isAllowedCodexHookEvent(registryPath, event), false);
 });
 
+test("app-generated next-message suggestions are neither discovered nor spooled", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "gatherthread-codex-app-prompt-"));
+  const registryPath = path.join(directory, "registry.json");
+  const spoolPath = path.join(directory, "spool.jsonl");
+  await updateCodexHookRegistry({ registryPath, workspacePath: "/workspace", discoverUnregistered: true,
+    add: { "thread-1": "execution" } });
+  const prompt = "This is an app-generated request for a suggested next user message. The user did not write this message. Your suggestion should be brief.";
+  assert.equal(await isAllowedCodexHookEvent(registryPath, promptEvent(prompt)), false);
+  assert.equal(await isAllowedCodexHookEvent(registryPath, { ...promptEvent(prompt), session_id: "new-thread" }), false);
+  const stdin = new PassThrough(), stdout = new PassThrough();
+  stdin.end(JSON.stringify(promptEvent(prompt)));
+  await runCodexHookForwarder({ socketPath: path.join(directory, "missing.sock"), spoolPath, registryPath, stdin, stdout });
+  assert.deepEqual(await readCodexHookSpool(spoolPath), []);
+  assert.equal(await isAllowedCodexHookEvent(registryPath, promptEvent("This is my new project. Please build it.")), true);
+  assert.equal(await isAllowedCodexHookEvent(registryPath, promptEvent(`Explain this message: ${prompt}`)), true);
+});
+
 test("Hook workspace checks resolve symlinks and reject a lexical descendant outside the root", {
   skip: process.platform === "win32" ? "POSIX symlink containment fixture" : false,
 }, async () => {

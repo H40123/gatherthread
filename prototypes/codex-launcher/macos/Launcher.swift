@@ -434,6 +434,7 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private let status = NSTextField(labelWithString: "请登录 GatherThread 网页，选择项目后点击‘打开启动器’。")
     private let log = NSTextView()
     private var connector: Process?
+    private var connectorOutputOwner: Process?
     private var pendingLink: URL?
     private var activeLink: ConnectionLink?
     private var connectionOrigin = serverOrigin
@@ -978,20 +979,24 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
         do {
             try process.run()
             connector = process
+            connectorOutputOwner = process
             setBusy(false)
             status.stringValue = "连接器正在启动；请在所选 Agent 中审查并启用已安装的 Hooks。"
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 var pending = Data()
                 var discardingLongLine = false
                 while true {
-                    let chunk = output.fileHandleForReading.readData(ofLength: 4096)
+                    // availableData returns the bytes already in the pipe. A
+                    // fixed-length read waits for 4096 bytes or EOF, hiding the
+                    // short ready receipt of a healthy long-running connector.
+                    let chunk = output.fileHandleForReading.availableData
                     if chunk.isEmpty { break }
                     for byte in chunk {
                         if byte == 10 {
                             if !discardingLongLine {
                                 let line = String(decoding: pending, as: UTF8.self)
                                     .replacingOccurrences(of: credential, with: "[REDACTED]")
-                                DispatchQueue.main.async { self?.appendLog(line + "\n") }
+                                DispatchQueue.main.async { self?.receiveConnectorLine(line, from: process) }
                             }
                             pending.removeAll(keepingCapacity: true)
                             discardingLongLine = false
@@ -1000,7 +1005,7 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
                             if pending.count > 16_384 {
                                 pending.removeAll(keepingCapacity: true)
                                 discardingLongLine = true
-                                DispatchQueue.main.async { self?.appendLog("[过长输出已省略]\n") }
+                                DispatchQueue.main.async { self?.receiveConnectorLine("[过长输出已省略]", from: process) }
                             }
                         }
                     }
@@ -1008,13 +1013,54 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 if !pending.isEmpty && !discardingLongLine {
                     let line = String(decoding: pending, as: UTF8.self)
                         .replacingOccurrences(of: credential, with: "[REDACTED]")
-                    DispatchQueue.main.async { self?.appendLog(line + "\n") }
+                    DispatchQueue.main.async { self?.receiveConnectorLine(line, from: process) }
                 }
             }
         } catch {
             setBusy(false)
             status.stringValue = "连接器启动失败；请检查本机安装，并从网页重新授权。"
         }
+    }
+
+    private func receiveConnectorLine(_ line: String, from process: Process) {
+        guard connectorOutputOwner === process else { return }
+        appendLog(line + "\n")
+        if connector === process && process.isRunning && (line == "GatherThread connector ready." || line.hasPrefix("Connected session: ") || line.hasPrefix("Connected \"claude-code\" session: ")) {
+            status.stringValue = "已连接；保持启动器运行，即可在网页使用此 Agent。"
+        }
+    }
+
+    func verifyConnectorOutput() throws {
+        window.orderOut(nil)
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sh")
+        child.arguments = ["-c", "printf 'Connected session: Fixture [multi] as \"Fixture\"\\n'; exec /bin/sleep 10"]
+        launchConnector(child, node: URL(fileURLWithPath: "/usr/bin/true"), credential: "fixture-only-credential")
+        defer { if child.isRunning { child.terminate() } }
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline && !status.stringValue.contains("已连接") {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        guard child.isRunning, log.string.contains("Connected session:"), status.stringValue.contains("已连接") else {
+            throw LinkError.invalid("Short connector output must reach the log and connected status before process exit")
+        }
+        let currentStatus = status.stringValue
+        receiveConnectorLine("Connected session: Stale [solo] as \"Stale\"", from: Process())
+        guard status.stringValue == currentStatus, !log.string.contains("Stale") else {
+            throw LinkError.invalid("Output from a replaced connector must not update the active connection")
+        }
+        status.stringValue = "Fixture starting"
+        receiveConnectorLine("Codex App Server ready: fixture", from: child)
+        guard status.stringValue == "Fixture starting" else { throw LinkError.invalid("Native startup alone is not connection readiness") }
+        receiveConnectorLine("GatherThread connector ready.", from: child)
+        guard status.stringValue.contains("已连接") else { throw LinkError.invalid("Empty project readiness must be displayed") }
+        connector = nil
+        status.stringValue = "Fixture exited"
+        receiveConnectorLine("Fixture final error", from: child)
+        guard log.string.contains("Fixture final error"), status.stringValue == "Fixture exited" else {
+            throw LinkError.invalid("Final output from the current child must survive its exit without restoring connected status")
+        }
+        print("macOS Launcher: live connection receipt displayed before child exit")
     }
 
     private func appendLog(_ value: String) {
@@ -1360,6 +1406,13 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--icon-self-
     let selected = preferredClaudeCommand(claudeCommandCandidates())
     print("Claude CLI discovery (metadata only): compatible=\(selected.compatible), path=\(selected.path)")
     if !selected.compatible { exit(1) }
+} else if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--connector-output-self-test" {
+    let app = NSApplication.shared
+    let delegate = Launcher()
+    app.delegate = delegate
+    delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+    do { try delegate.verifyConnectorOutput() }
+    catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
 } else if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--form-self-test" {
     let app = NSApplication.shared
     let delegate = Launcher()

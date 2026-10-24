@@ -1,31 +1,31 @@
-import { renderAvatar, isAgentReply, eventAuthorLabel, eventExecutionOwner } from "./avatars.js?v=20261018-tabs-2";
-import { mountAvatarSettings } from "./avatar-settings.js?v=20261018-tabs-2";
-import { mountCloudGithub } from "./cloud-github-view.js?v=20261018-tabs-2";
+import { renderAvatar, isAgentReply, eventAuthorLabel, eventExecutionOwner } from "./avatars.js?v=20261024-launcher-sharing-1";
+import { mountAvatarSettings } from "./avatar-settings.js?v=20261024-launcher-sharing-1";
+import { mountCloudGithub } from "./cloud-github-view.js?v=20261024-launcher-sharing-1";
 import { mountAgentManagement } from "./agent-management.js";
-import { mountSharedAgents } from "./shared-agent-view.js?v=20261018-tabs-2";
+import { mountSharedAgents } from "./shared-agent-view.js?v=20261024-launcher-sharing-1";
 import { mountAgentTeams } from "./agent-team-library-view.js?v=20261016-team-v2";
 import { mountTeamRunNotice } from "./agent-team-run-notice.js?v=20261018-team-errors";
 import { teamEventPresentation } from "./agent-team-event.js?v=20261016-team-v2";
 import { mountDeviceAuthorization } from "./device-authorization.js";
-import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261018-tabs-2";
+import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261024-launcher-sharing-1";
 import { mountAccountDevices } from "./account-devices.js";
-import { mountPersonalCloudApi } from "./personal-cloud-api.js?v=20261018-tabs-2";
-import { mountCloudCodeConsent } from "./cloud-code-consent.js?v=20261018-tabs-2";
-import { cloudRequestInput, continueCloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261018-tabs-2";
-import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261018-tabs-2";
+import { mountPersonalCloudApi } from "./personal-cloud-api.js?v=20261024-launcher-sharing-1";
+import { mountCloudCodeConsent } from "./cloud-code-consent.js?v=20261024-launcher-sharing-1";
+import { cloudRequestInput, continueCloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261024-launcher-sharing-1";
+import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261024-launcher-sharing-1";
 import { mountFileWorkspace } from "./workspace-files.js";
 import { mountSessionToolbar } from "./session-toolbar.js";
 import { mountInterfaceMode } from "./interface-mode.js";
-import { createSessionVisibilityController } from "./session-visibility.js?v=20261018-tabs-2";
+import { createSessionVisibilityController } from "./session-visibility.js?v=20261024-launcher-sharing-1";
 import { mountMobileSettings } from "./mobile-settings-view.js";
 import { mountMobileCodeView } from "./mobile-code-view.js";
 import { mountRegistration } from "./registration.js";
-import { HttpCollaborationApi, MockCollaborationApi } from "./api.js?v=20261018-tabs-2";
-import { mountMessageActions, agentWorkStatus } from "./message-actions.js?v=20261018-tabs-2";
-import { mountMessageDeletion } from "./message-deletion.js?v=20261018-tabs-2";
+import { HttpCollaborationApi, MockCollaborationApi } from "./api.js?v=20261024-launcher-sharing-1";
+import { mountMessageActions, agentWorkStatus } from "./message-actions.js?v=20261024-launcher-sharing-1";
+import { mountMessageDeletion } from "./message-deletion.js?v=20261024-launcher-sharing-1";
 import { positionSessionContextPanel, bindSessionContextPanel } from "./session-context-panel.js";
-import { ExampleCollaborationApi } from "./example-api.js?v=20261018-tabs-2";
-import { mountOnboarding } from "./onboarding.js?v=20261018-tabs-2";
+import { ExampleCollaborationApi } from "./example-api.js?v=20261024-launcher-sharing-1";
+import { mountOnboarding } from "./onboarding.js?v=20261024-launcher-sharing-1";
 import { projectInvitationShareText } from "./invitation-share.js?v=20261012-invite-1";
 import { mountInvitationLink } from "./invitation-link.js?v=20261012-invite-1";
 import {
@@ -62,14 +62,14 @@ import {
   sessionMetadataFromEvent,
   sessionDeliveryMode,
   snapshotStatusView,
-} from "./domain.js?v=20261018-tabs-2";
-import { SessionSync } from "./realtime.js?v=20261018-tabs-2";
-import { mountCodeSync } from "./code-sync-view.js?v=20261018-tabs-2";
-import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20261018-tabs-2";
-import { mountHistorySummaries } from "./history-summary-view.js?v=20261018-tabs-2";
+} from "./domain.js?v=20261024-launcher-sharing-1";
+import { SessionSync } from "./realtime.js?v=20261024-launcher-sharing-1";
+import { mountCodeSync } from "./code-sync-view.js?v=20261024-launcher-sharing-1";
+import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20261024-launcher-sharing-1";
+import { mountHistorySummaries } from "./history-summary-view.js?v=20261024-launcher-sharing-1";
 import { DEFAULT_HISTORY_SUMMARY_INSTRUCTIONS } from "./history-summary-policy.js";
 import { createAmbientCanvas } from "./ambient-canvas.js?v=20260829-14";
-import { createLocalizer, memberRemovalAriaLabel, memberRoleAriaLabel } from "./i18n.js?v=20261018-tabs-2";
+import { createLocalizer, memberRemovalAriaLabel, memberRoleAriaLabel } from "./i18n.js?v=20261024-launcher-sharing-1";
 import { automaticDeviceName } from "./device-name.js?v=20260830-1";
 import {
   CODEX_HARNESS,
@@ -86,7 +86,7 @@ import {
   resolveCodexRuntime,
   resolveDshRuntime,
   withoutDshPairingHash,
-} from "./dsh.js?v=20261018-tabs-2";
+} from "./dsh.js?v=20261024-launcher-sharing-1";
 import { renderMarkdown } from "./markdown.js?v=20260829-1";
 import { calendarDayKey, formatFullTimestamp, formatTimelineDay } from "./timeline-dates.js?v=20260927-1";
 import {

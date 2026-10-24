@@ -34,7 +34,7 @@ Start with the product story and illustrated workflow, then choose the setup or 
 - [Connection modes](CONNECTION_MODES.md) · [中文](CONNECTION_MODES.zh-CN.md)
 - [Single-owner self-hosting](SELF_HOSTING.md)
 - [Operations](OPERATIONS.md)
-- [Isolated test service](TEST_ENVIRONMENT.md): independent accounts and admission; the authorized Beta 4 rollout updates test and production from the same candidate without copying their data or configuration.
+- [Isolated test service](TEST_ENVIRONMENT.md): independent accounts and admission; the authorized Beta 5 rollout updates test and production from the same candidate without copying their data or configuration.
 - [Alibaba Cloud ECS profile](ALIYUN_ECS.md) · [中文](ALIYUN_ECS.zh-CN.md)
 - [Private Tailscale testing](ONLINE_TESTING_TAILSCALE.zh-CN.md)
 - [Legacy Oracle Cloud alternative](ORACLE_CLOUD.md) · [中文](ORACLE_CLOUD.zh-CN.md)
@@ -43,7 +43,7 @@ Start with the product story and illustrated workflow, then choose the setup or 
 
 These are point-in-time records. A source commit, Git tag, npm package and server deployment are separate artifacts; consult the relevant record rather than inferring live state from a branch tip.
 
-- [Changelog](../CHANGELOG.md): Beta 4 changes and preserved earlier release history.
+- [Changelog](../CHANGELOG.md): Beta 5 changes and preserved earlier release history.
 - [Release record index](releases/README.md): which version records have tags or GitHub Releases.
 - [Contributing guide](../CONTRIBUTING.md): review, verification, and ownership rules.
 - [Approved logo assets](../logo/README.md): canonical masters, correct background variants, shared package, integrity checks, and developer adoption rules.

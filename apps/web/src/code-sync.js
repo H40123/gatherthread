@@ -1,4 +1,4 @@
-import { createIdempotencyKey, isExecutionRuntime } from "./domain.js?v=20261018-tabs-2";
+import { createIdempotencyKey, isExecutionRuntime } from "./domain.js?v=20261024-launcher-sharing-1";
 
 export const CODE_JOB_KINDS = new Set([
   "code_sync_status", "code_upload", "code_download", "code_recover",

@@ -711,6 +711,39 @@ test("local turn discovery uses persisted client ids and stable turn ids", () =>
   ], state).length, 1, "an unidentifiable turn must not block later identifiable turns");
 });
 
+test("native next-message suggestions never enter completed local-turn discovery", () => {
+  const state = { threadId: "thread-1", connectorClientMessageIds: [], connectorTurnIds: [], localTurnBindings: {} };
+  const prompt = "This is an app-generated request for a suggested next user message. The user did not write this message. Your suggestion should be brief.";
+  const turns = [completedTurn("suggestion", "native-app-client", prompt, "Try this next"),
+    completedTurn("human", "desktop-user-client", "This is my project. Please continue.", "Done")];
+  assert.deepEqual(discoverCompletedLocalTurns(turns, state).map(turn => turn.turnId), ["human"]);
+});
+
+test("persisted native suggestions cannot be promoted or retried after upgrading", async () => {
+  const workspacePath = await realpath(await mkdtemp(path.join(tmpdir(), "gt-app-suggestion-upgrade-")));
+  const statePath = path.join(workspacePath, "state.json");
+  const state = projectionState(workspacePath) as Record<string, any>;
+  const prompt = "This is an app-generated request for a suggested next user message. The user did not write this message. Your suggestion should be brief.";
+  const turn = (id: string) => ({ localTurnId: id, threadId: "old-thread", turnId: id, basedOnSequence: 0,
+    occurredAt: "2026-10-24T00:00:00.000Z", requestPayload: { text: prompt }, responsePayload: { text: "Suggestion" }, toolEvents: [] });
+  state.hookDrafts = { draft: { ...turn("draft"), finalResponse: "Suggestion" } };
+  state.pendingLocalTurns = [turn("pending"), turn("uncertain")];
+  state.localTurnBindings = Object.fromEntries(["draft", "pending", "uncertain"].map(id => [id,
+    { localTurnId: id, threadId: "old-thread", turnId: id, basedOnSequence: 0, status: id === "uncertain" ? "commit_unknown" : "pending" }]));
+  await writeFile(statePath, JSON.stringify(state));
+  const client = { close: async () => {}, readThread: async () => ({ id: "old-thread", status: "idle", turns: [] }) } as unknown as CodexAppServerClient;
+  const api = { commitLocalTurn: async () => assert.fail("generated prompts must never be committed") } as unknown as CollaborationApi;
+  const executor = new CodexAppServerExecutor({ client, workspacePath, statePath, model: "gpt-test", threadName: "Fixture",
+    desktopHookOnly: true, gatherThreadSessionId: "session-1" });
+  await executor.handleHookEvent(api, registeredRuntime("old-thread"), { hook_event_name: "Stop", session_id: "old-thread",
+    turn_id: "draft", cwd: workspacePath, model: "gpt-test", stop_hook_active: false, last_assistant_message: "Suggestion" });
+  await executor.synchronizeLocalTurns(api, registeredRuntime("old-thread"));
+  const saved = JSON.parse(await readFile(statePath, "utf8"));
+  assert.deepEqual(saved.hookDrafts, {});
+  assert.deepEqual(saved.pendingLocalTurns, [state.pendingLocalTurns[1]], "retain uncertain bytes privately, without retrying or claiming acknowledgement");
+  assert.deepEqual(saved.localTurnBindings.uncertain, state.localTurnBindings.uncertain);
+});
+
 test("local Codex tool items become canonical local-turn tool pairs", () => {
   const state = {
     threadId: "thread-1",

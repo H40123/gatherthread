@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 027
 
-release_version="0.1.0-beta.4"
+release_version="0.1.0-beta.5"
 node_version="${GATHERTHREAD_NODE_VERSION:-24.16.0}"
 domain=""
 acknowledge_alpha=false
@@ -15,7 +15,7 @@ Usage: sudo deploy/aliyun-ecs/install.sh \
   --acknowledge-private-alpha \
   --acknowledge-mainland-icp-ready
 
-Run this from /opt/gatherthread/releases/0.1.0-beta.4 on an Ubuntu 22.04 or
+Run this from /opt/gatherthread/releases/0.1.0-beta.5 on an Ubuntu 22.04 or
 24.04 Alibaba Cloud ECS instance. The domain must already resolve to this ECS
 public IPv4 address. For a mainland China region, complete the required ICP
 filing before making the public Web service available.
@@ -77,7 +77,7 @@ expected_root="/opt/gatherthread/releases/$release_version"
   exit 78
 }
 grep -Fq "\"version\": \"$release_version\"" "$repository_root/package.json" || {
-  printf '%s\n' "The source tree is not GatherThread 0.1.0-beta.4." >&2
+  printf '%s\n' "The source tree is not GatherThread 0.1.0-beta.5." >&2
   exit 78
 }
 
