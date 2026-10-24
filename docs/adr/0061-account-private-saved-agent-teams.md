@@ -1,6 +1,6 @@
 # ADR-0061: Account-private saved Agent Teams and independent modules
 
-- Status: proposed / local implementation preview
+- Status: accepted / bounded Beta 4 preview
 - Date: 2026-10-16
 
 ## Context

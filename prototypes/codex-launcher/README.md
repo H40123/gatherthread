@@ -51,7 +51,7 @@ before syncing turns typed directly in Codex. Mac's verified-download-only
 installation step.
 
 This folder builds a Windows x64 ZIP containing a private Python runtime, a
-private Node 24 runtime, the repository's `@gatherthread/codex-connect@0.1.0-beta.3`
+private Node 24 runtime, the repository's `@gatherthread/codex-connect@0.1.0-beta.4`
 bundle, and the matching GatherThread Codex plugin. End users do not need to
 install Python, Node, npm, or clone this repository. Codex Desktop / CLI must
 already be installed and signed in.

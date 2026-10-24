@@ -1,6 +1,6 @@
 {
   "name": "@gatherthread/server",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
   "types": "dist/src/index.d.ts",
   "dependencies": {
     "@gatherthread/protocol": "*",
-    "undici": "^7.30.0",
+    "undici": "^7.30.1",
     "ws": "^8.18.3",
     "zod": "^4.6.6"
   }

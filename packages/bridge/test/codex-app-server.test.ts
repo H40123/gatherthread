@@ -121,12 +121,16 @@ for await (const line of createInterface({input:process.stdin})) {
   const client = new CodexAppServerClient({ command: process.execPath, commandArgs: [fake], cwd: directory,
     env: { ...process.env, CAPTURE: capturePath }, turnTimeoutMs: 2000 }); t.after(() => client.dispose());
   const abort = new AbortController();
+  // Receiving turn/start in the fixture does not mean the client has received
+  // its reply. Abort only after the exact turn identity and journal are ready;
+  // otherwise Windows correctly reports an unconfirmed early process exit.
+  const runTurn = client.runTurn.bind(client);
+  client.runTurn = (input) => runTurn({ ...input, onStarted: async (turnId) => {
+    await input.onStarted?.(turnId);
+    abort.abort(new Error("context_changed"));
+  } });
   const executor = new CodexAppServerExecutor({ client, workspacePath: directory, statePath: path.join(directory, "state.json"),
     threadName: "privacy abort", model: "gpt-test", threadSource: "exec" });
-  const polling = setInterval(async () => {
-    const calls = await readFile(capturePath, "utf8").catch(() => "");
-    if (calls.includes('"method":"turn/start"')) abort.abort(new Error("context_changed"));
-  }, 5); t.after(() => clearInterval(polling));
   await assert.rejects(executor.execute({ request: canonical(1, "agent_request", { text: "run" }), canonicalHistory: [],
     historyContext: { view: "original", content_revision: 0, through_sequence: 0, items: [] }, runtime: registeredRuntime("abort"), signal: abort.signal }),
     (error: any) => error instanceof HarnessExecutionTerminatedError && error.failureCode === "context_changed");
