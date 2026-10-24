@@ -65,8 +65,8 @@
         : "GatherThread · Collaborate across devices";
     const description =
       language === "zh"
-        ? "GatherThread 共序，让多人实时讨论、共享会话和项目文件，电脑、手机、平板随时接续。多 Agent 团队将在后续版本上线：个人 Agent 直接组队，跨成员协作须明确授权。"
-        : "GatherThread brings shared conversations and project files across your devices. Multi-Agent teams will arrive in a later release: one person's Agents work together directly, with permission required for cross-member collaboration.";
+        ? "GatherThread 共序，让多人实时讨论、共享会话和项目文件，电脑、手机、平板随时接续。多 Agent 团队现提供有限预览：测试后启用、限额内协作，跨成员须明确授权。"
+        : "GatherThread brings shared conversations and project files across your devices. Multi-Agent teams are a bounded preview: test and enable connected Agents to collaborate within limits, with explicit permission for cross-member work.";
     document.querySelector('meta[name="description"]').content = description;
     document.querySelector('meta[property="og:title"]').content = document.title;
     document.querySelector('meta[property="og:description"]').content = description;

@@ -43,7 +43,7 @@ function mediaBlocks(css, condition) {
   return blocks.join("\n");
 }
 
-test("home distinguishes current collaboration from future multi-Agent teams", async () => {
+test("home distinguishes bounded Team preview from broader autonomous collaboration", async () => {
   const [html] = await source;
   const headings = elements(html, "h1");
   assert.equal(headings.length, 1);
@@ -55,41 +55,46 @@ test("home distinguishes current collaboration from future multi-Agent teams", a
   assert.match(en, /Work together.*Continue anywhere/iu);
   assert.match(zh, /普通聊天不会启动 AI/u);
   assert.match(en, /chat message does not start AI/iu);
-  assert.match(zh, /多 Agent 团队.*后续版本上线/u);
-  assert.match(en, /Multi-Agent teams.*later release/iu);
-  assert.match(zh, /一个人连接的多个 Agent.*组成团队.*分工.*相互交流/u);
-  assert.match(en, /Agents connected by one person.*form a team.*divide work.*communicate directly/iu);
-  assert.match(zh, /成员明确授权后.*不同成员的 Agent.*自动交流协作/u);
-  assert.match(en, /members' explicit permission.*different teammates.*communicate and collaborate automatically/iu);
+  assert.match(zh, /多 Agent 团队.*Beta 4 有限预览/u);
+  assert.match(en, /Multi-Agent teams.*Bounded Beta 4 preview/iu);
+  assert.match(zh, /多个 Agent.*组成团队.*测试后启用.*限额内分工.*相互交流/u);
+  assert.match(en, /connected Agents as a team.*test and enable.*divide work.*communicate directly within limits/iu);
+  assert.match(zh, /跨成员协作.*所有者明确授权.*逐个执行.*Claude Code 团队模块.*仍在开发/u);
+  assert.match(en, /Cross-member collaboration.*owner's explicit permission.*one at a time.*Claude Code Team modules.*remain in development/iu);
   assert.doesNotMatch(zh, /多 Agent：每个人用合适的帮手/u);
 });
 
-test("readmes and product guides define multi-Agent teams with the same future scope", async () => {
+test("readmes and product guides describe the same bounded Team release scope", async () => {
   for (const path of ["README.zh-CN.md", "docs/PRODUCT_GUIDE.zh-CN.md"]) {
     const copy = await readFile(new URL(path, repositoryRoot), "utf8");
-    assert.match(copy, /多 Agent.*后续版本/u, path);
-    assert.match(copy, /一个人连接的多个 Agent.*组成团队.*分工.*相互交流/u, path);
-    assert.match(copy, /成员明确授权后.*不同成员的 Agent.*自动交流协作/u, path);
+    assert.match(copy, /多 Agent.*Beta 4.*预览/u, path);
+    assert.match(copy, /测试.*启用/u, path);
+    assert.match(copy, /跨成员协作.*所有者明确授权/u, path);
+    assert.match(copy, /逐个执行/u, path);
+    assert.match(copy, /Claude Code 团队模块/u, path);
+    assert.match(copy, /自主协作.*(?:仍在开发|不包含)|不包含.*自主协作/u, path);
     assert.doesNotMatch(copy, /多 Agent：每个人用合适的帮手|而不只是支持多种 Agent/u, path);
   }
   for (const path of ["README.md", "docs/PRODUCT_GUIDE.md"]) {
     const copy = await readFile(new URL(path, repositoryRoot), "utf8");
-    assert.match(copy, /Multi-Agent teams.*later release/iu, path);
-    assert.match(copy, /Agents connected by one person.*form a team.*divide work.*communicate directly/iu, path);
-    assert.match(copy, /members' explicit permission.*different teammates.*communicate and collaborate automatically/iu, path);
+    assert.match(copy, /Multi-Agent teams.*(?:Beta 4.*preview|preview.*Beta 4)/iu, path);
+    assert.match(copy, /test.*enable/iu, path);
+    assert.match(copy, /(?:Cross-member collaboration.*owner's explicit permission|explicitly shared native connections)/iu, path);
+    assert.match(copy, /(?:one at a time|call\/time limits)/iu, path);
+    assert.match(copy, /Claude Code (?:Team )?modules.*(?:not included|remain in development)/iu, path);
     assert.doesNotMatch(copy, /not just support for multiple Agent/iu, path);
   }
 });
 
-test("home search and social descriptions mark Agent teams as a later release in both languages", async () => {
+test("home search and social descriptions limit Team claims to a bounded preview in both languages", async () => {
   const [html, app] = await source;
   const metadata = elements(html, "meta");
   const description = metadata.find((meta) => meta.name === "description").content;
   const social = metadata.find((meta) => meta.property === "og:description").content;
-  assert.match(description, /多 Agent 团队.*后续版本/u);
-  assert.match(social, /Multi-Agent teams.*later release/iu);
-  assert.match(app, /多 Agent 团队.*后续版本/u);
-  assert.match(app, /Multi-Agent teams.*later release/iu);
+  assert.match(description, /多 Agent 团队.*有限预览.*跨成员须明确授权/u);
+  assert.match(social, /Multi-Agent teams.*bounded preview.*explicit permission/iu);
+  assert.match(app, /多 Agent 团队.*有限预览.*跨成员须明确授权/u);
+  assert.match(app, /Multi-Agent teams.*bounded preview.*explicit permission/iu);
   assert.match(app, /meta\[property="og:description"\]/u);
 });
 

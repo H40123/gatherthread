@@ -12,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PIP_NO_INDEX=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN npm install --global opencode-ai@1.18.32 && opencode --version
 # Modules in /usr/local/lib resolve this private image dependency directly.
 # Match the reviewed server lockfile; never rely on Node's implicit fetch pool.
-RUN npm install --global undici@7.30.0 --ignore-scripts --no-audit --no-fund
+RUN npm install --global undici@7.30.1 --ignore-scripts --no-audit --no-fund
 # A private Git-less build uses umask 077. Public runtime modules still need
 # deterministic read access for the non-root image user, independent of source modes.
 COPY --chmod=0644 ops/hosted-agent/entrypoint.mjs /usr/local/lib/gatherthread-hosted-entrypoint.mjs

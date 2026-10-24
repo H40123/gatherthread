@@ -12,7 +12,9 @@ import {
   validateCodexWorkspace,
 } from "./codex-executor.js";
 import { withoutGatherThreadCredentials } from "./executor.js";
-import { HarnessExecutionTerminatedError } from "./bridge.js";
+import { HarnessExecutionTerminatedError, HarnessExecutionUnconfirmedError } from "./bridge.js";
+import { terminateOwnedProcessGroup } from "./owned-process.js";
+import { ProcessExecutionState } from "./process-execution-state.js";
 import { CODEX_PUBLIC_WORK_METHODS, createCodexLiveOutputMapper } from "./codex-live-output.js";
 import { updateCodexHookRegistry, type CodexHookEvent, type CodexHookRelayResult } from "./codex-hooks.js";
 import type {
@@ -33,6 +35,7 @@ import type {
   RegisteredRuntime,
   RuntimeExecutionProfile,
   SessionSummary,
+  NativeExecutionExitReceipt,
 } from "./types.js";
 
 interface JsonRpcResponse {
@@ -300,6 +303,14 @@ class CodexTurnTerminatedError extends Error {
     this.name = "CodexTurnTerminatedError";
     this.turnId = turnId;
     this.status = status;
+  }
+}
+
+/** Evidence that this native operation ended or was rejected before dispatch. */
+class CodexNativeExecutionStoppedError extends Error {
+  constructor(error: unknown) {
+    super(error instanceof Error ? error.message : "Codex native execution stopped", { cause: error });
+    this.name = "CodexNativeExecutionStoppedError";
   }
 }
 
@@ -636,8 +647,11 @@ export class CodexAppServerClient {
     let interruptSent = false;
     let interruptTimeout: ReturnType<typeof setTimeout> | undefined;
     const abortTurn = () => {
-      if (!expectedTurnId || interruptSent) return;
+      if (interruptSent) return;
       interruptSent = true;
+      // A lost/pending turn/start reply leaves no trustworthy native identity
+      // to interrupt. Closing the owned process is the only safe stop fence.
+      if (!expectedTurnId) { void this.close(); return; }
       // Await the native terminal notification. If its public interrupt API
       // cannot establish termination, close this owned background process.
       interruptTimeout = setTimeout(() => { void this.close(); }, 5_000);
@@ -757,6 +771,17 @@ export class CodexAppServerClient {
         ...(modelContextWindow === undefined ? {} : { modelContextWindow }),
         ...(totalTokens === undefined ? {} : { totalTokens }),
       };
+    } catch (error) {
+      // close()/transport failure rejects pending RPCs before the child exits.
+      // A failed turn without a native terminal notification must await that
+      // exit before its caller can acknowledge cancellation or reuse capacity.
+      if (!settled) {
+        await this.close();
+        if (process.platform === "win32") throw new HarnessExecutionUnconfirmedError("Codex aborted without a matching native terminal; Windows descendant exit remains unconfirmed");
+        throw new CodexNativeExecutionStoppedError(error);
+      }
+      if (input.signal?.aborted) throw new CodexNativeExecutionStoppedError(error);
+      throw error;
     } finally {
       clearTimeout(turnTimer);
       clearTimeout(interruptTimeout);
@@ -818,8 +843,10 @@ export class CodexAppServerClient {
     };
   }
 
-  async compactThread(threadId: string): Promise<void> {
+  async compactThread(threadId: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     await this.start();
+    signal?.throwIfAborted();
     this.#threadTokenUsage.delete(threadId);
     let resolveCompletion: (() => void) | undefined;
     let rejectCompletion: ((error: Error) => void) | undefined;
@@ -834,6 +861,32 @@ export class CodexAppServerClient {
     const timer = setTimeout(() => rejectCompletion?.(new Error("Codex App Server compaction timed out")), this.#options.turnTimeoutMs);
     timer.unref();
     let expectedTurnId: string | undefined;
+    let nativeTerminal = false, interruptSent = false;
+    let startAcknowledged = false, legacyCompletionSeen = false;
+    const earlyCompactionCompletions = new Set<string>();
+    const completeKnownCompaction = () => {
+      if (expectedTurnId && earlyCompactionCompletions.has(expectedTurnId)) {
+        nativeTerminal = true;
+        resolveCompletion?.();
+      } else if (startAcknowledged && legacyCompletionSeen) {
+        // Legacy notifications can preserve ordinary unsignaled accounting,
+        // but cannot prove physical exit for a cancelable Team operation.
+        if (signal) rejectCompletion?.(new Error("Native compaction completion omitted the exact turn identity"));
+        else resolveCompletion?.();
+      }
+    };
+    let interruptTimeout: ReturnType<typeof setTimeout> | undefined;
+    const receiptAbort = new AbortController();
+    const abortCompact = () => {
+      if (interruptSent) return;
+      interruptSent = true;
+      if (nativeTerminal) { receiptAbort.abort(signal?.reason); return; }
+      if (!expectedTurnId) { receiptAbort.abort(signal?.reason); void this.close(); return; }
+      interruptTimeout = setTimeout(() => { void this.close(); }, 5_000);
+      interruptTimeout.unref();
+      void this.request("turn/interrupt", { threadId, turnId: expectedTurnId }, undefined, receiptAbort.signal)
+        .catch(() => { if (!receiptAbort.signal.aborted) return this.close(); });
+    };
     const listener = (notification: JsonRpcNotification) => {
       if (!isObject(notification.params)) return;
       if (notification.params.threadId !== threadId) return;
@@ -842,8 +895,9 @@ export class CodexAppServerClient {
       if (expectedTurnId && turnId && turnId !== expectedTurnId) return;
       const item = objectValue(notification.params, "item");
       const isCompaction = objectString(item, "type") === "contextCompaction";
-      if (notification.method === "turn/started" || (notification.method === "item/started" && isCompaction)) {
+      if (notification.method === "item/started" && isCompaction) {
         expectedTurnId ??= turnId;
+        completeKnownCompaction();
       }
       if (notification.method === "error" && notification.params.willRetry !== true) {
         const detail = objectString(objectValue(notification.params, "error"), "message");
@@ -851,24 +905,49 @@ export class CodexAppServerClient {
       } else if (notification.method === "turn/completed") {
         const status = objectString(turn, "status");
         if (status === "failed" || status === "interrupted") {
+          if (!expectedTurnId || turnId !== expectedTurnId) return;
+          nativeTerminal = true;
           const detail = objectString(objectValue(turn, "error"), "message");
           rejectCompletion?.(new Error(`Codex App Server compaction ${status}${detail ? `: ${safeText(detail)}` : ""}`));
         }
       } else if (notification.method === "item/completed" && isCompaction) {
-        resolveCompletion?.();
+        // Completion cannot establish ownership: a delayed terminal from the
+        // previous compaction may arrive before this operation's start event.
+        if (turnId) earlyCompactionCompletions.add(turnId);
+        else legacyCompletionSeen = true;
+        completeKnownCompaction();
       }
     };
     const failureListener = (error: Error) => rejectCompletion?.(error);
     this.#notifications.add(listener);
     this.#failureListeners.add(failureListener);
+    signal?.addEventListener("abort", abortCompact, { once: true });
     try {
-      const started = this.request("thread/compact/start", { threadId });
+      signal?.throwIfAborted();
+      const started = this.request("thread/compact/start", { threadId }, undefined, receiptAbort.signal).then((result) => {
+        expectedTurnId ??= objectString(objectValue(result, "turn"), "id");
+        startAcknowledged = true;
+        completeKnownCompaction();
+        return result;
+      });
       // A native failure must surface even if the start-RPC reply is lost.
       // A successful completion still waits for the start acknowledgement.
       await Promise.race([started, completion.then(() => started)]);
       await completion;
+      signal?.throwIfAborted();
+    } catch (error) {
+      const unsupported = error instanceof CodexAppServerRequestError && error.code === -32601;
+      if (!nativeTerminal && !unsupported) await this.close();
+      // A matching terminal notification is enough to abandon a missing RPC
+      // receipt without later timing out and killing unrelated live threads.
+      receiptAbort.abort(error);
+      if (!nativeTerminal && !unsupported && process.platform === "win32") throw new HarnessExecutionUnconfirmedError("Codex compaction aborted without a matching native terminal; Windows descendant exit remains unconfirmed");
+      throw new CodexNativeExecutionStoppedError(error);
     } finally {
       clearTimeout(timer);
+      clearTimeout(interruptTimeout);
+      signal?.removeEventListener("abort", abortCompact);
+      receiptAbort.abort();
       this.#notifications.delete(listener);
       this.#failureListeners.delete(failureListener);
     }
@@ -939,9 +1018,11 @@ export class CodexAppServerClient {
     }
   }
 
-  async request(method: string, params: unknown, timeoutOverrideMs?: number): Promise<unknown> {
+  async request(method: string, params: unknown, timeoutOverrideMs?: number, responseSignal?: AbortSignal): Promise<unknown> {
     if (this.#disposed) throw new Error("Codex App Server client is disposed");
+    responseSignal?.throwIfAborted();
     if (method !== "initialize") await this.start();
+    responseSignal?.throwIfAborted();
     if (this.#failure) throw this.#failure;
     const child = this.#child;
     if (!child?.stdin.writable) throw new Error("Codex App Server is not available");
@@ -964,7 +1045,16 @@ export class CodexAppServerClient {
         void this.close().catch(() => undefined);
       }, timeoutMs);
       timer.unref();
-      this.#pending.set(id, { resolve, reject, timer });
+      const abandonResponse = () => {
+        const pending = this.#pending.get(id);
+        if (!pending) return;
+        this.#pending.delete(id); clearTimeout(pending.timer);
+        pending.reject(responseSignal?.reason ?? new Error("Native response receipt abandoned"));
+      };
+      const cleanup = () => responseSignal?.removeEventListener("abort", abandonResponse);
+      this.#pending.set(id, { timer, resolve: (value) => { cleanup(); resolve(value); }, reject: (error) => { cleanup(); reject(error); } });
+      responseSignal?.addEventListener("abort", abandonResponse, { once: true });
+      if (responseSignal?.aborted) { abandonResponse(); return; }
       const message = `${JSON.stringify({ id, method, params })}\n`;
       child.stdin.write(message, (error) => {
         if (!error) return;
@@ -1244,24 +1334,8 @@ export class CodexAppServerClient {
   }
 }
 
-async function terminateOwnedProcessGroup(groupId: number): Promise<void> {
-  if (!Number.isSafeInteger(groupId) || groupId < 1 || groupId === process.pid) throw new Error("Invalid isolated native process group");
-  const alive = () => {
-    try { process.kill(-groupId, 0); return true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw new Error("Shared native process cleanup could not be verified"); }
-  };
-  if (!alive()) return;
-  try { process.kill(-groupId, "SIGTERM"); } catch { if (!alive()) return; }
-  const forceAt = Date.now() + 5000, finishAt = forceAt + 2000;
-  let forced = false;
-  while (alive()) {
-    if (!forced && Date.now() >= forceAt) { process.kill(-groupId, "SIGKILL"); forced = true; }
-    if (Date.now() >= finishAt) throw new Error("Shared native process cleanup could not be confirmed");
-    await new Promise<void>(resolve => setTimeout(resolve, 20));
-  }
-}
-
 export class CodexAppServerExecutor implements HarnessExecutor {
+  get executionControlVersion(): 1 | undefined { return this.#desktopHookOnly ? undefined : 1; }
   readonly #client: CodexAppServerClient;
   readonly #workspacePath: string;
   readonly #statePath: string;
@@ -1287,6 +1361,8 @@ export class CodexAppServerExecutor implements HarnessExecutor {
   #loadedExecThreadId: string | undefined;
   #loadedExecProcessGeneration: number | undefined;
   #desktopNativeProjectionUnavailable = false;
+  #executionSignal: AbortSignal | undefined;
+  readonly #nativeExecutionState: ProcessExecutionState;
 
   constructor(options: CodexAppServerExecutorOptions) {
     if (!options.statePath.trim()) throw new Error("Codex session state path must be non-empty");
@@ -1297,6 +1373,7 @@ export class CodexAppServerExecutor implements HarnessExecutor {
     this.#client = options.client;
     this.#workspacePath = path.resolve(options.workspacePath);
     this.#statePath = path.resolve(options.statePath);
+    this.#nativeExecutionState = new ProcessExecutionState(`${this.#statePath}.native-execution.json`, DEFAULT_MAX_MESSAGE_BYTES);
     this.#threadName = options.threadName.slice(0, 240);
     this.#model = options.model;
     this.#hookRegistryPath = options.hookRegistryPath;
@@ -1335,8 +1412,34 @@ export class CodexAppServerExecutor implements HarnessExecutor {
 
   async execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult> {
     if (this.#desktopHookOnly) throw new Error("Desktop-owned Codex projections cannot execute Web agent requests");
-    const result = await this.#withStateWriter(() => this.#execute(input));
-    if (result.localSessionId) await this.#revealThreadIfNeeded(result.localSessionId);
+    const team = input.request.payload !== null && typeof input.request.payload === "object" && "agent_team" in input.request.payload;
+    return team ? this.#nativeExecutionState.execute(input, () => this.#executeWithWriter(input)) : this.#executeWithWriter(input);
+  }
+
+  async readStoppedExecutions(): Promise<NativeExecutionExitReceipt[]> { return this.#desktopHookOnly ? [] : this.#nativeExecutionState.stopped(); }
+  async acknowledgeExecutionExit(receipt: NativeExecutionExitReceipt): Promise<void> { await this.#nativeExecutionState.acknowledgeExit(receipt); }
+  async acknowledgeCanonicalCompletion(request: CanonicalEvent, runtime: RegisteredRuntime, claimAttempt: number): Promise<void> {
+    if (request.payload !== null && typeof request.payload === "object" && "agent_team" in request.payload) await this.#nativeExecutionState.completed(request, runtime, claimAttempt);
+  }
+
+  async #executeWithWriter(input: HarnessExecutionInput): Promise<HarnessExecutionResult> {
+    let result: HarnessExecutionResult;
+    let nativeTerminal = false;
+    try {
+      result = await this.#withStateWriter(async () => {
+        this.#executionSignal = input.signal;
+        try { return await this.#execute(input, () => { nativeTerminal = true; }); }
+        finally { this.#executionSignal = undefined; }
+      });
+    } catch (error) {
+      if (error instanceof HarnessExecutionUnconfirmedError) throw error;
+      if (error instanceof CodexNativeExecutionStoppedError) throw new HarnessExecutionTerminatedError("codex_turn_failed",
+        "The native Codex execution stopped before a response; inspect existing work before retrying.");
+      if (nativeTerminal && !(error instanceof HarnessExecutionTerminatedError)) throw new HarnessExecutionTerminatedError("codex_postprocessing_failed",
+        "The native Codex turn ended, but its response could not be processed or saved.", { cause: error });
+      throw error;
+    }
+    if (result.localSessionId) await this.#revealThreadIfNeeded(result.localSessionId).catch(() => undefined);
     return result;
   }
 
@@ -2167,19 +2270,24 @@ export class CodexAppServerExecutor implements HarnessExecutor {
     }
   }
 
-  async #execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult> {
+  async #execute(input: HarnessExecutionInput, onNativeTerminal: () => void): Promise<HarnessExecutionResult> {
     if (input.runtime.harness !== "codex" || input.runtime.purpose === "snapshot_connector" || input.request.type !== "agent_request") {
       throw new Error("Codex App Server executor requires a Codex agent_request");
     }
     const workspacePath = await validateCodexWorkspace(this.#workspacePath);
     let state = await this.#loadState(input.request.sessionId, workspacePath);
+    const team = input.request.payload !== null && typeof input.request.payload === "object" && "agent_team" in input.request.payload;
+    if (team && state && (state.executionJournal[input.request.id] || Object.values(state.executionJournal)
+      .some((entry) => entry.status === "prepared" || entry.status === "started"))) {
+      throw new HarnessExecutionUnconfirmedError("Legacy native journal ownership is indeterminate for this exact Team attempt; confirm old execution exit before recovery");
+    }
     let rebuildingExternallyClaimedProjection = false;
     const contentRevision = input.historyContext?.content_revision ?? input.request.contentRevision ?? 0;
     if (!Number.isSafeInteger(contentRevision) || contentRevision < 0
       || (state !== undefined && contentRevision < (state.contentRevision ?? 0))) {
-      throw new HarnessExecutionTerminatedError("context_changed", "Shared history changed; start a new request.");
+      throw new HarnessExecutionUnconfirmedError("Shared history changed before native execution; prior native ownership is unconfirmed");
     }
-    if (input.signal?.aborted) throw new HarnessExecutionTerminatedError("context_changed", "Shared history changed; start a new request.");
+    input.signal?.throwIfAborted();
     if (state && (contentRevision !== (state.contentRevision ?? 0) || state.contextResetRequired !== undefined)) {
       state = await this.#replaceDeletedExecutionProjection(state, contentRevision);
       rebuildingExternallyClaimedProjection = true;
@@ -2245,10 +2353,10 @@ export class CodexAppServerExecutor implements HarnessExecutor {
         await this.#recordTerminalExecution(state, input.request.id, recovered.id, recovered.status);
       }
       if (journal.status === "started" && !recovered) {
-        await this.#recordTerminalExecution(state, input.request.id, journal.turnId ?? "unknown", "missing");
+        throw new HarnessExecutionUnconfirmedError("The owned Codex turn is missing from native history; its termination is unconfirmed");
       }
       if (recovered || journal.status === "started") {
-        throw new Error("Codex connector execution is still active or indeterminate; refusing to start a duplicate turn");
+        throw new HarnessExecutionUnconfirmedError("Codex connector execution is still active or indeterminate; refusing to start a duplicate turn");
       }
     }
     const executionProfile = executionProfileForRequest(input.request, this.#model);
@@ -2381,11 +2489,15 @@ export class CodexAppServerExecutor implements HarnessExecutor {
             },
           }),
         });
+        onNativeTerminal();
         // Authoritative completed items also reconcile an interrupted native
         // delta sequence. They do not introduce another execution or identity.
         for (const item of turn.items.slice(0, 128)) await liveMapper?.accept("item/completed", { item });
       } catch (error) {
-        if (input.signal?.aborted) {
+        if (error instanceof HarnessExecutionUnconfirmedError) throw error;
+        const terminal = error instanceof CodexTurnTerminatedError || error instanceof CodexNativeExecutionStoppedError;
+        if (terminal) onNativeTerminal();
+        if (input.signal?.aborted && terminal) {
           connectorState.executionJournal[input.request.id] = { requestId: input.request.id, status: "failed",
             turnId: connectorState.executionJournal[input.request.id]?.turnId ?? "aborted",
             contentRevision, failure: { code: "context_changed", message: "Shared history changed; start a new request." } };
@@ -2395,6 +2507,11 @@ export class CodexAppServerExecutor implements HarnessExecutor {
         }
         if (error instanceof CodexTurnTerminatedError) {
           await this.#recordTerminalExecution(connectorState, input.request.id, error.turnId, error.status, error.message);
+        }
+        if (error instanceof CodexNativeExecutionStoppedError) {
+          await this.#recordTerminalExecution(connectorState, input.request.id,
+            connectorState.executionJournal[input.request.id]?.turnId ?? "closed-before-start", "failed",
+            "The native Codex execution stopped before a response; inspect existing work before retrying.");
         }
         throw error;
       } finally {
@@ -2729,7 +2846,7 @@ export class CodexAppServerExecutor implements HarnessExecutor {
 
   async #withStateWriter<T>(operation: () => Promise<T>): Promise<T> {
     if (ACTIVE_STATE_WRITERS.has(this.#statePath)) {
-      throw new Error("Codex projection state already has a process-local writer");
+      throw new HarnessExecutionUnconfirmedError("Codex projection state already has a process-local writer");
     }
     ACTIVE_STATE_WRITERS.add(this.#statePath);
     let releaseFileLock: (() => Promise<void>) | undefined;
@@ -2858,7 +2975,7 @@ export class CodexAppServerExecutor implements HarnessExecutor {
     if (state.estimatedContextTokens + incomingTokens < highWater) return state;
     await this.#assertThreadNotActive(state.threadId);
     const previousUsageFingerprint = state.contextUsageFingerprint;
-    await this.#client.compactThread(state.threadId);
+    await this.#client.compactThread(state.threadId, this.#executionSignal);
     state.compactionGeneration += 1;
     if (!this.#applyObservedContextUsage(state, true)) {
       // Keep the prior conservative upper estimate. A completion says native
@@ -2967,7 +3084,7 @@ export class CodexAppServerExecutor implements HarnessExecutor {
         binding.status === "pending" || binding.status === "commit_unknown",
       );
     if (unresolvedExecution || unresolvedLocalTurn || Object.keys(state.hookDrafts).length > 0) {
-      throw new Error(
+      throw new HarnessExecutionUnconfirmedError(
         "Codex background projection has an active external writer and unresolved local work; refusing replacement until the durable operation is resolved",
       );
     }
@@ -4848,13 +4965,13 @@ async function acquireProjectionFileLock(statePath: string): Promise<() => Promi
       if (!isNodeError(error) || error.code !== "EEXIST") throw error;
       let owner: unknown;
       try { owner = JSON.parse(await readFile(lockPath, "utf8")); } catch {
-        throw new Error("Codex projection lock is unreadable; refusing concurrent state mutation");
+        throw new HarnessExecutionUnconfirmedError("Codex projection lock is unreadable; refusing concurrent state mutation");
       }
       const pid = isObject(owner) && Number.isSafeInteger(owner.pid) ? Number(owner.pid) : undefined;
-      if (!pid) throw new Error("Codex projection lock has no valid owner; refusing concurrent state mutation");
+      if (!pid) throw new HarnessExecutionUnconfirmedError("Codex projection lock has no valid owner; refusing concurrent state mutation");
       try {
         process.kill(pid, 0);
-        throw new Error(`Codex projection state is owned by active process ${pid}`);
+        throw new HarnessExecutionUnconfirmedError(`Codex projection state is owned by active process ${pid}`);
       } catch (probeError) {
         if (!isNodeError(probeError) || probeError.code !== "ESRCH") throw probeError;
       }

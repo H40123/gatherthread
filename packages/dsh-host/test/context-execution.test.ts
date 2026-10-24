@@ -4,6 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { HarnessExecutionTerminatedError } from "@gatherthread/bridge";
 import { createDshHostFacade } from "../src/dsh-compat.js";
 import type { DshContextExecutionInput } from "../src/types.js";
 
@@ -22,7 +23,7 @@ function fixture(options: { preset?: boolean; workspacePath?: string; projection
   let disposals = 0;
   let routeDisposals = 0;
   let failFlush = false;
-  let failPrompt = false;
+  let failPrompt: Error | undefined;
   let projectionAcquired!: () => void;
   const projectionAcquireStarted = new Promise<void>((resolve) => { projectionAcquired = resolve; });
   const presetByContext = new WeakMap<object, string>();
@@ -86,7 +87,7 @@ function fixture(options: { preset?: boolean; workspacePath?: string; projection
       async whenIdle() {
         this.status = "idle";
         emit("agent/status", { agent, status: "idle" });
-        if (failPrompt) { failPrompt = false; throw new Error("simulated model failure"); }
+        if (failPrompt) { const cause = failPrompt; failPrompt = undefined; throw cause; }
       },
     };
     // The pinned DSH hands the unpublished Agent to `setup` as its second
@@ -143,7 +144,7 @@ function fixture(options: { preset?: boolean; workspacePath?: string; projection
   return {
     facade: newFacade(), newFacade, stored, live, modelInputs, routes, presets, presetCalls, projectionAcquireStarted,
     get creates() { return creates; }, get disposals() { return disposals; }, get routeDisposals() { return routeDisposals; },
-    failNextFlush() { failFlush = true; }, failNextPrompt() { failPrompt = true; },
+    failNextFlush() { failFlush = true; }, failNextPrompt(cause = new Error("simulated model failure")) { failPrompt = cause; },
   };
 }
 
@@ -318,11 +319,35 @@ test("DSH isolated model failure disposes per-request model selection and keeps 
   await f.facade.open();
   const nativeBefore = structuredClone(f.stored.get("native-session").snapshotEvents());
   const prepared = await f.facade.prepareContextExecution!(contextInput());
-  f.failNextPrompt();
-  await assert.rejects(f.facade.prompt("fail this fixture", { provider: "deepseek-official", model: "deepseek-v4-flash", reasoningEffort: "high" }, prepared.sessionId), /model failure/);
+  const cause = new Error("simulated private provider failure");
+  f.failNextPrompt(cause);
+  await assert.rejects(f.facade.prompt("fail this fixture", { provider: "deepseek-official", model: "deepseek-v4-flash", reasoningEffort: "high" }, prepared.sessionId), (error: unknown) => {
+    assert.ok(error instanceof HarnessExecutionTerminatedError);
+    assert.equal(error.failureCode, "dsh_native_execution_stopped");
+    assert.equal(error.publicMessage, "The native DSH execution stopped before a response.");
+    assert.equal(error.cause, cause, "keep local diagnostics without publishing the provider failure");
+    assert.doesNotMatch(error.message + JSON.stringify(error), /simulated private provider failure/);
+    return true;
+  });
   assert.equal(f.routeDisposals, 1);
   assert.deepEqual(f.stored.get("native-session").snapshotEvents(), nativeBefore);
   await f.facade.dispose();
+});
+
+test("DSH isolated post-idle flush failure retains physical-exit evidence without changing parent native history", async () => {
+  const f = fixture(); await f.facade.open();
+  const nativeBefore = structuredClone(f.stored.get("native-session").snapshotEvents());
+  const prepared = await f.facade.prepareContextExecution!(contextInput());
+  f.failNextFlush();
+  const selection = { provider: "deepseek-official", model: "deepseek-v4-flash", reasoningEffort: "high" };
+  await assert.rejects(f.facade.prompt("isolated owned turn", selection, prepared.sessionId), error => {
+    assert.ok(error instanceof HarnessExecutionTerminatedError); assert.equal(error.failureCode, "dsh_native_execution_postprocessing_failed");
+    assert.doesNotMatch(error.message + JSON.stringify(error), /simulated flush failure/u); assert.ok(error.cause instanceof Error); return true;
+  });
+  assert.equal(f.live.get(prepared.sessionId).status, "idle"); assert.equal(f.routeDisposals, 1);
+  assert.deepEqual(f.stored.get("native-session").snapshotEvents(), nativeBefore);
+  await f.facade.prompt("a later isolated turn", selection, prepared.sessionId);
+  assert.equal(f.modelInputs.length, 2); assert.equal(f.routeDisposals, 2); await f.facade.dispose();
 });
 
 test("DSH isolated identity binds the cloud server/Project/Session and never reuses another binding's history", async () => {

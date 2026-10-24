@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { createLiveOutputPublisher, liveOutputPayload, redactText, redactValue } from "@gatherthread/adapters";
-import { isSessionWritableBy, parseHistoryContext, SharedAgentJobController, type SharedAgentExecutor } from "@gatherthread/bridge";
+import { isSessionWritableBy, parseHistoryContext, SharedAgentJobController, createAgentExecutionWatch, HarnessExecutionTerminatedError,
+  isDefinitiveAgentExecutionRejection, recoverSharedStoppedReceipts, CollaborationHttpError, type SharedAgentExecutor } from "@gatherthread/bridge";
 import type { SharedExecutionCapability } from "@gatherthread/protocol";
 import { historySummaryMarker } from "@gatherthread/protocol";
 import {
@@ -118,6 +119,7 @@ export class DshHostConnector {
   #listenerDisposers: Array<() => void> = [];
   #activeStatuses: DshAgentStatus[] = [];
   #activeExecutionSelection: DshExecutionSelection | undefined;
+  #activeExecutionAbort: AbortController | undefined;
   #summaryScanSequence = 0;
   #hasSummaryHistory = false;
   #revisionPollPromise: Promise<void> | undefined;
@@ -309,6 +311,17 @@ export class DshHostConnector {
     this.#started = true;
     this.#automaticPolling = options.schedule !== false;
     this.#notifyLifecycle("connecting");
+    try {
+      const cleanupState = await this.#stateStore.load();
+      if (cleanupState) this.#assertStateBinding(cleanupState);
+      await this.#recoverStoppedBeforeStartup(cleanupState);
+      if (this.#api.agentSharingApi) await recoverSharedStoppedReceipts({
+        privateControlRoot: path.join(path.dirname(this.#config.statePath), "shared-control"),
+        projectId: this.#config.projectId, ownerDeviceId: this.#config.deviceId, api: this.#api.agentSharingApi(),
+      });
+    } catch (error) {
+      this.#notifyLifecycle("error"); await this.stop(); throw this.#backgroundFatalError ?? error;
+    }
     if (this.#host.onLiveOutput !== undefined) {
       this.#listenerDisposers.push(this.#host.onLiveOutput((event) => {
         const active = this.#state?.activeRequest;
@@ -375,6 +388,7 @@ export class DshHostConnector {
       this.#session = session;
       this.#notifyLifecycle("connecting");
       const storedState = await this.#stateStore.load();
+      if (storedState) this.#assertStateBinding(storedState);
       if (storedState !== undefined
         && session.latestSequence !== undefined
         && storedState.serverCursor > session.latestSequence) {
@@ -396,6 +410,7 @@ export class DshHostConnector {
       }
       this.#runtime = await this.#api.registerRuntime(this.#runtimeRegistration());
       this.#assertRuntime(this.#runtime);
+      await this.#flushStoppedExecutions();
       if (this.#sharedExecutor && this.#api.agentSharingApi) {
         await this.#api.agentSharingApi().reportSourceAvailability(this.#config.projectId, this.#runtime.id, "offline", randomUUID());
         this.#sharingController = new SharedAgentJobController({ projectId: this.#config.projectId,
@@ -503,6 +518,7 @@ export class DshHostConnector {
   }
 
   async #poll(): Promise<DshPollResult> {
+    await this.#flushStoppedExecutions();
     await this.#refreshContentRevision();
     const state = this.#requireState();
     if (state.activeRequest !== undefined) {
@@ -636,6 +652,7 @@ export class DshHostConnector {
       await this.#projectCanonicalBatch([request], request.sequence);
       return { claimed: false, completed: false };
     }
+    const team = asObject(request.payload)?.agent_team !== undefined;
     if ((claim.contentRevision ?? state.contentRevision ?? 0) !== (state.contentRevision ?? 0)) throw new Error("context_changed");
 
     const quotedEvent = request.replyTo ? (await this.#readThroughRequest(request.id, request.sequence))
@@ -662,7 +679,7 @@ export class DshHostConnector {
     this.#activeExecutionSelection = selection;
     this.#liveEventSequences.clear();
     await this.#stateStore.save(state);
-    const result = await this.#promptWithLiveOutput(prompt, selection, prepared?.sessionId);
+    const result = await this.#promptWithLiveOutput(prompt, selection, prepared?.sessionId, team);
     if (result.fromSequence !== baseline || result.toSequence < result.fromSequence) {
       throw new Error("DSH Host prompt returned an inconsistent durable event range");
     }
@@ -884,7 +901,7 @@ export class DshHostConnector {
     this.#activeStatuses = [];
     this.#liveEventSequences.clear();
     await this.#stateStore.save(state);
-    const result = await this.#promptWithLiveOutput(continuation, selection, execution?.sessionId);
+    const result = await this.#promptWithLiveOutput(continuation, selection, execution?.sessionId, asObject(request.payload)?.agent_team !== undefined);
     if (result.fromSequence !== baseline || result.toSequence < result.fromSequence) {
       throw new Error("DSH Host recovery prompt returned an inconsistent durable event range");
     }
@@ -923,13 +940,16 @@ export class DshHostConnector {
     await this.#finalizeDeliveredRequest();
   }
 
-  async #promptWithLiveOutput(text: string, selection: DshExecutionSelection, executionSessionId?: string) {
+  async #promptWithLiveOutput(text: string, selection: DshExecutionSelection, executionSessionId?: string, team = false) {
     const active = this.#requireState().activeRequest;
     if (active === undefined) throw new Error("No claimed DSH request owns live output");
     const requestId = active.requestId;
     const claimAttempt = active.claimAttempt ?? 1;
     const fromSequence = active.dshFromSequence;
     const runtime = this.#requireRuntime();
+    const abort = new AbortController();
+    let executionStopped = false;
+    this.#activeExecutionAbort = abort;
     const sourceSessionId = executionSessionId ?? this.#host.sessionId;
     const publisher = createLiveOutputPublisher({
       publish: async (update) => {
@@ -951,6 +971,7 @@ export class DshHostConnector {
           return true;
         });
         this.#liveProgressPromise = publication.then(() => undefined).catch((error: unknown) => {
+          if (isDefinitiveAgentExecutionRejection(error)) abort.abort(error);
           this.#onBackgroundError?.(publicError(error));
         });
         return publication.catch(() => false);
@@ -958,9 +979,14 @@ export class DshHostConnector {
     });
     const output = { publisher, mapper: createDshLiveEventMapper(publisher), sourceSessionId };
     this.#activeLiveOutput = output;
-    const abort = new AbortController();
     const abortLifecycle = () => abort.abort(this.#lifecycleAbort.signal.reason);
     this.#lifecycleAbort.signal.addEventListener("abort", abortLifecycle, { once: true });
+    if (this.#lifecycleAbort.signal.aborted) abortLifecycle();
+    const executionWatch = createAgentExecutionWatch({ controller: abort, required: team,
+      ...(this.#api.readAgentExecution === undefined ? {} : {
+        read: () => this.#api.readAgentExecution!(this.#config.sessionId, requestId, runtime.id, claimAttempt),
+      }),
+    });
     const verifyRevision = async () => {
       if (!this.#revisionSupported && (active.contentRevision ?? 0) === 0) return;
       try {
@@ -975,22 +1001,29 @@ export class DshHostConnector {
     }, 1_000);
     timer.unref();
     try {
+      if (team && !this.#api.acknowledgeAgentExecutionStopped) throw new CollaborationHttpError(409,
+        "Update the connector to support native Team cancellation", "connector_update_required");
+      await executionWatch.check(); executionWatch.assertReady();
       await verifyRevision(); abort.signal.throwIfAborted();
       const result = await this.#host.prompt(text, selection, executionSessionId, abort.signal);
+      executionStopped = true;
+      await executionWatch.check(); abort.signal.throwIfAborted();
       await verifyRevision(); abort.signal.throwIfAborted();
       await output.mapper.finish();
       return result;
     } catch (error) {
-      if (abort.signal.aborted) {
+      // Host.prompt also contains asynchronous preparation. Only its explicit
+      // native-terminal evidence can certify an abort after actual whenIdle.
+      if (error instanceof HarnessExecutionTerminatedError) executionStopped = true;
+      if (abort.signal.aborted && executionStopped) {
         const state = this.#requireState();
-        state.outbox = state.outbox.filter((operation) => !outboxBelongsToRequest(operation, requestId));
-        delete state.activeRequest;
-        this.#activeExecutionSelection = undefined;
-        await this.#stateStore.save(state);
+        if (state.activeRequest?.requestId === requestId) await this.#retireFencedActiveRequest(state, state.activeRequest);
+        throw abort.signal.reason;
       }
       throw error;
     } finally {
       clearInterval(timer);
+      await executionWatch.close();
       this.#lifecycleAbort.signal.removeEventListener("abort", abortLifecycle);
       await this.#revisionPollPromise;
       // Retiring the scope first makes any queued/timer-driven callback refuse
@@ -998,12 +1031,59 @@ export class DshHostConnector {
       if (this.#activeLiveOutput === output) this.#activeLiveOutput = undefined;
       if (this.#stopped) void output.mapper.finish(false).catch(() => undefined);
       else await output.mapper.finish(false);
+      if (this.#activeExecutionAbort === abort) this.#activeExecutionAbort = undefined;
+      // The Host prompt promise does not settle until its actual native turn is idle.
+      if (executionStopped && team && this.#api.acknowledgeAgentExecutionStopped && executionWatch.supported()) {
+        await this.#recordStoppedExecution(requestId, runtime.id, claimAttempt);
+      }
+    }
+  }
+
+  async #recordStoppedExecution(requestId: string, runtimeId: string, claimAttempt: number): Promise<void> {
+    if (!this.#api.acknowledgeAgentExecutionStopped) return;
+    const state = this.#requireState(), receipt = { requestId, runtimeId, claimAttempt };
+    const receipts = state.stoppedExecutions ?? [];
+    if (!receipts.some((item) => JSON.stringify(item) === JSON.stringify(receipt))) receipts.push(receipt);
+    if (receipts.length > 1000) throw new Error("DSH native execution stop receipt capacity exhausted");
+    state.stoppedExecutions = receipts;
+    await this.#stateStore.save(state);
+    await this.#flushStoppedExecutions();
+  }
+
+  async #recoverStoppedBeforeStartup(stored: ConnectorState | undefined): Promise<void> {
+    if (!this.#api.acknowledgeAgentExecutionStopped) return;
+    let count = 0;
+    while (stored?.stoppedExecutions?.length) {
+      if (++count > 1000) throw new Error("DSH native stop recovery exceeded its bound");
+      const receipt = stored.stoppedExecutions[0]!;
+      await this.#api.acknowledgeAgentExecutionStopped(stored.binding.sessionId, receipt.requestId, receipt.runtimeId, receipt.claimAttempt);
+      // This is only confirmed cleanup metadata. Do not reconcile cursors,
+      // inspect a native snapshot, or overwrite newer durable outbox work while
+      // the original session/Host/runtime may be unavailable.
+      const latest = await this.#stateStore.load();
+      if (!latest) throw new Error("DSH connector state disappeared during native stop recovery");
+      this.#assertStateBinding(latest);
+      if (latest.stoppedExecutions) latest.stoppedExecutions = latest.stoppedExecutions.filter(item => item.requestId !== receipt.requestId
+        || item.runtimeId !== receipt.runtimeId || item.claimAttempt !== receipt.claimAttempt);
+      await this.#stateStore.save(latest); stored = latest;
+    }
+  }
+
+  async #flushStoppedExecutions(): Promise<void> {
+    if (!this.#api.acknowledgeAgentExecutionStopped) return;
+    const state = this.#requireState();
+    while (state.stoppedExecutions?.length) {
+      const receipt = state.stoppedExecutions[0]!;
+      await this.#api.acknowledgeAgentExecutionStopped(this.#config.sessionId, receipt.requestId, receipt.runtimeId, receipt.claimAttempt);
+      state.stoppedExecutions.shift();
+      await this.#stateStore.save(state);
     }
   }
 
   #queueLiveProgress(idSuffix: string, payload: Record<string, unknown>, throttle = true): void {
     const active = this.#state?.activeRequest;
     const runtime = this.#runtime;
+    const executionAbort = this.#activeExecutionAbort;
     if (active === undefined || runtime === undefined) return;
     const requestId = active.requestId;
     const claimAttempt = active.claimAttempt ?? 1;
@@ -1040,6 +1120,7 @@ export class DshHostConnector {
         });
       })
       .catch((error: unknown) => {
+        if (isDefinitiveAgentExecutionRejection(error)) executionAbort?.abort(error);
         if (this.#lastLiveProgressKey === progressKey) {
           this.#lastLiveProgressKey = undefined;
           this.#lastLiveProgressAt = 0;
@@ -1395,6 +1476,14 @@ export class DshHostConnector {
     if (mode === "created") {
       throw new Error("Connector state exists without its persisted DSH Session; refusing identity reuse");
     }
+    this.#assertStateBinding(stored);
+    if (stored.publishedDshSequence > this.#host.currentSequence()) {
+      throw new Error("Persisted DSH publication cursor exceeds the native Session head");
+    }
+    return stored;
+  }
+
+  #assertStateBinding(stored: ConnectorState): void {
     const expected = JSON.stringify([
       this.#config.projectId,
       this.#config.sessionId,
@@ -1406,10 +1495,6 @@ export class DshHostConnector {
       stored.binding.dshSessionId,
     ]);
     if (actual !== expected) throw new Error("DSH connector state belongs to a different binding");
-    if (stored.publishedDshSequence > this.#host.currentSequence()) {
-      throw new Error("Persisted DSH publication cursor exceeds the native Session head");
-    }
-    return stored;
   }
 
   #assertRuntime(runtime: DshRegisteredRuntime): void {
@@ -1685,6 +1770,13 @@ function captureCompletedLocalTurns(
   return { turns, safeThroughSequence };
 }
 
+/** Exact producer identities emitted by GatherThread or DSH's v3 -> v4 migration. */
+export function isGatherThreadMessageSource(value: unknown): boolean {
+  const source = asObject(value);
+  return source?.kind === "plugin" ? source.plugin === "gatherthread"
+    : source?.plugin === undefined && (source?.kind === "gatherthread" || source?.kind === "plugin:gatherthread");
+}
+
 /** True only after DSH durably closes a local human/assistant turn successfully. */
 export function hasCompletedDshLocalTurn(
   events: readonly DshSessionEventRecord[],
@@ -1692,7 +1784,7 @@ export function hasCompletedDshLocalTurn(
 ): boolean {
   if (events.some((event) => event.type === "user/message"
     && /^gatherthread-retired:[0-9]+$/.test(String(asObject(event.data)?.id))
-    && asObject(asObject(event.data)?.source)?.plugin === "gatherthread")) return false;
+    && isGatherThreadMessageSource(asObject(event.data)?.source))) return false;
   return captureCompletedLocalTurns(events, 0, dshSessionId).turns.length > 0;
 }
 
