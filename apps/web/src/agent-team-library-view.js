@@ -102,10 +102,21 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   const intents = new Map();
   const actionKinds = new WeakMap(), problemIntents = new WeakMap(), problemFences = new WeakMap(), obsoleteProblems = new WeakSet(), testReads = new Map();
   let runAuthority = 0, runAccessBlocked = false, observedContentRevision;
+  let pageActive = true;
   let displayedProblem = null, displayedProblemText = null;
   const canvas = mountTeamCanvas({ document: doc, host: graphHost, t, makeId: makeKey, getDraft: () => draft,
     onChange: changed, onSelection: () => renderInspector() });
   const context = () => getContext() ?? {};
+  // Main invalidates the context during pagehide. Its queued refresh must not
+  // start fetches from a departing WebKit document; BFCache can resume later.
+  doc.defaultView?.addEventListener?.("pagehide", () => { pageActive = false; clearTimeout(refreshTimer); });
+  doc.defaultView?.addEventListener?.("pageshow", () => {
+    // Let the shell restore/invalidate authentication before reading this scope.
+    if (!pageActive) {
+      pageActive = true; clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => void refresh(), 0); refreshTimer.unref?.();
+    }
+  });
   const current = gen => gen === generation && context().scope === scope;
   const saved = () => teams.find(team => team.id === editId);
   const pendingFor = id => [...intents.values()].filter(intent => intent.id === id);
@@ -234,6 +245,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
     if (next.userId && next.sessionId) queueMicrotask(() => void refresh());
   }
   async function refresh() {
+    if (!pageActive) return;
     updateContext(); const ctx = context(), gen = generation, before = epoch;
     if (!ctx.userId || !ctx.sessionId || readBusy) return; readBusy = true;
     // Only a marker already visible before this GET proves that its missing
@@ -284,7 +296,10 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
       render(); if (favoritesChanged) showFavoritesContent(); onChange();
     } finally {
       if (current(gen)) { readBusy = false; clearTimeout(refreshTimer);
-        refreshTimer = setTimeout(() => void refresh(), dialog.open || runs.some(run => !terminal(run)) || intents.size ? 2000 : 12000); refreshTimer.unref?.(); }
+        if (pageActive) {
+          refreshTimer = setTimeout(() => void refresh(), dialog.open || runs.some(run => !terminal(run)) || intents.size ? 2000 : 12000); refreshTimer.unref?.();
+        }
+      }
     }
   }
   async function attempt(intent) {

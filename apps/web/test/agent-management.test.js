@@ -3,17 +3,23 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { mountAgentManagement } from "../src/agent-management.js";
 
-function fixture() {
+function fixture({ lateDialogs = [] } = {}) {
   let context = { scope: "account-a:project-a", available: true };
   const nodes = new Map();
+  const captures = new Map();
   const document = { activeElement: null, getElementById: id => nodes.get(id),
+    addEventListener(type, listener, capture) { if (capture) { const entries = captures.get(type) ?? []; entries.push(listener); captures.set(type, entries); } },
     querySelectorAll: () => [...nodes.values()].filter(node => node.id.endsWith("dialog") && node.open) };
   class Node {
     hidden = false; disabled = false; open = false; isConnected = true; parent = null;
     listeners = new Map(); attributes = new Map();
     constructor(id) { this.id = id; nodes.set(id, this); }
     addEventListener(type, listener) { const entries = this.listeners.get(type) ?? []; entries.push(listener); this.listeners.set(type, entries); }
-    fire(type, event = {}) { for (const listener of this.listeners.get(type) ?? []) listener({ target: this, ...event }); }
+    fire(type, event = {}) {
+      const value = { target: this, ...event };
+      for (const listener of captures.get(type) ?? []) listener(value);
+      for (const listener of this.listeners.get(type) ?? []) listener(value);
+    }
     click() { if (!this.disabled) { this.focus(); this.fire("click"); } }
     focus() { if (this.isConnected && !this.hidden && !this.disabled) document.activeElement = this; }
     showModal() { this.open = true; }
@@ -29,7 +35,8 @@ function fixture() {
   for (const id of ["manage-agents-button", "agent-management-dialog", "agent-management-title", "agent-management-overview",
     "agent-management-connections", "agent-management-add", "agent-management-back", "agent-management-close",
     "connect-codex-button", "connect-dsh-button", "connect-claude-button", "add-agent-button", "agent-sharing-button", "agent-teams-button", "external-trigger",
-    "connect-codex-dialog", "connect-dsh-dialog", "connect-claude-dialog", "settings-dialog", "agent-sharing-dialog", "agent-team-dialog"]) new Node(id);
+    "connect-codex-dialog", "connect-dsh-dialog", "connect-claude-dialog", "settings-dialog", "agent-sharing-dialog", "agent-team-dialog"])
+    if (!lateDialogs.includes(id)) new Node(id);
   const el = id => document.getElementById(id);
   for (const id of ["agent-management-overview", "agent-management-connections", "agent-management-back", "agent-management-close"])
     el(id).parent = el("agent-management-dialog");
@@ -38,7 +45,7 @@ function fixture() {
   el("agent-management-connections").hidden = true; el("agent-management-back").hidden = true;
   const ui = mountAgentManagement({ document, getContext: () => context });
   ui.updateContext();
-  return { ui, document, el, setContext(value) { context = value; }, context: () => context };
+  return { ui, document, el, addNode: id => new Node(id), setContext(value) { context = value; }, context: () => context };
 }
 
 test("Agent management opens at its overview and provides keyboard focus for both navigation levels", () => {
@@ -80,6 +87,13 @@ test("native dialog close and programmatic close restore the original visible tr
   assert.equal(f.document.activeElement, f.el("external-trigger"));
   f.el("external-trigger").focus(); f.ui.open(); f.ui.close();
   assert.equal(f.document.activeElement, f.el("external-trigger"));
+});
+
+test("pointer opening returns to the management button even when Safari leaves another element focused", () => {
+  const f = fixture(); f.el("external-trigger").focus();
+  f.el("manage-agents-button").fire("click");
+  f.el("agent-management-close").click();
+  assert.equal(f.document.activeElement, f.el("manage-agents-button"));
 });
 
 test("a hidden or removed original trigger does not trap focus in a closed management dialog", () => {
@@ -158,6 +172,20 @@ test("child-dialog focus recovery does not override native focus or another open
   assert.equal(f.document.activeElement, f.el("external-trigger"));
   f.ui.close(); f.el("external-trigger").focus(); f.el("settings-dialog").close();
   assert.equal(f.document.activeElement, f.el("external-trigger"), "closed management menu cannot reclaim focus");
+});
+
+test("sharing and Team dialogs mounted after management still restore their visible entry", () => {
+  for (const [dialogId, entryId] of [["agent-sharing-dialog", "agent-sharing-button"], ["agent-team-dialog", "agent-teams-button"]]) {
+    const f = fixture({ lateDialogs: [dialogId] });
+    f.ui.open();
+    const child = f.addNode(dialogId); child.showModal();
+    f.document.activeElement = null; // Native WebKit may restore BODY instead of the opener.
+    child.close();
+    assert.equal(f.document.activeElement, f.el(entryId), dialogId);
+    assert.equal(f.el("agent-management-dialog").open, true);
+    f.ui.close(); child.showModal(); f.el("external-trigger").focus(); child.close();
+    assert.equal(f.document.activeElement, f.el("external-trigger"), "a closed parent must not reclaim focus");
+  }
 });
 
 function elementMarkup(html, id) {

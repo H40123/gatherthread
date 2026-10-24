@@ -56,6 +56,10 @@ async function fixture(origin, locale, platform, width = 1440, touch = 0) {
   const page = await context.newPage(); page.on("pageerror", error => errors.push(error.message));
   await page.goto(`${origin}/app/?mock=1`);
   await page.locator("#auth-view").waitFor({ state: "visible" });
+  if (touch > 0) {
+    await page.locator("#interface-mode-dialog[open]").waitFor();
+    await page.locator("#interface-mode-use-mobile").click();
+  }
   await page.evaluate(async () => {
     const entryUrl = document.querySelector('script[type="module"]').src;
     const entry = await (await fetch(entryUrl)).text();

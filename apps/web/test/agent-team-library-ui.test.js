@@ -92,7 +92,12 @@ function fixture({ initial = [], modules = [], initialRuns = [], overrides = {},
   document.body = document.createElement("body");
   document.getElementById = id => document.body.querySelector(`#${id}`);
   document.querySelector = selector => document.body.querySelector(selector);
-  document.defaultView = { getComputedStyle: node => ({ display: node.style.display ?? "block", visibility: node.style.visibility ?? "visible" }) };
+  const windowListeners = new Map();
+  document.defaultView = {
+    getComputedStyle: node => ({ display: node.style.display ?? "block", visibility: node.style.visibility ?? "visible" }),
+    addEventListener(type, listener) { const entries = windowListeners.get(type) ?? []; entries.push(listener); windowListeners.set(type, entries); },
+    dispatch(type) { for (const listener of windowListeners.get(type) ?? []) listener(); },
+  };
   const hostButton = document.createElement("button"); document.body.append(hostButton);
   let teams = structuredClone(initial), favorites = structuredClone(modules), runs = structuredClone(initialRuns), nextId = 0;
   let context = { scope: "alice:project-a:session-a", userId: "alice", projectId: "project-a", sessionId: "session-a", sessionMode: "multi", writable: true,
@@ -145,6 +150,25 @@ function fixture({ initial = [], modules = [], initialRuns = [], overrides = {},
 }
 
 async function open(f, index = 0) { await flush(); f.hostButton.click(); await flush(); f.document.body.querySelector(".team-library-list").children[index].children[0].click(); }
+
+test("pagehide fences queued Team reads and pageshow restores current-context polling", async () => {
+  let reads = 0;
+  const f = fixture({ overrides: { listAgentTeams: async () => {
+    reads++; return { teams: [], modules: [], team_limit: 5, module_limit: 5 };
+  } } });
+  await flush(); const before = reads;
+  f.document.defaultView.dispatch("pagehide");
+  f.update({ scope: "page-leaving" }); // Main invalidates authentication/session generations on pagehide.
+  await flush(); await f.ui.refresh();
+  assert.equal(reads, before, "no queued or explicit reads may start from a departing document");
+  f.document.defaultView.dispatch("pageshow");
+  f.update({ scope: "restoring-authentication", userId: null, sessionId: null });
+  await new Promise(resolve => setTimeout(resolve, 0)); await flush();
+  assert.equal(reads, before, "pageshow must let the shell invalidate old authentication first");
+  f.update({ scope: "restored-session", userId: "alice", sessionId: "session-b" });
+  await flush();
+  assert.equal(reads, before + 1, "BFCache restoration can refresh the newly authenticated context");
+});
 
 test("Team library Back returns to management while its X exits to the workspace", async () => {
   let exits = 0;

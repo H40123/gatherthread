@@ -109,11 +109,14 @@ async function checkAgentManagement(page, nativeConnections) {
   const entry = page.locator("#manage-agents-button");
   assert.equal(await entry.isVisible(), true, "Agent management stays in the conversation composer");
   assert.equal(await entry.evaluate(node => node.parentElement.id), "composer-agent-controls");
-  const model = await page.locator("#mobile-agent-button").boundingBox(), management = await entry.boundingBox();
-  assert.ok(Math.abs(model.height - management.height) < 1 && management.height >= 44,
-    "management and model controls have matching touch-target height");
-  assert.ok(management.x >= model.x + model.width - 1 && Math.abs(model.y - management.y) < 1,
-    "management remains immediately to the right of model selection");
+  // Sample both controls in one frame: separate boundingBox calls can straddle
+  // responsive reflow while a viewport or interface-mode change settles.
+  await page.waitForFunction(() => {
+    const model = document.getElementById("mobile-agent-button").getBoundingClientRect();
+    const management = document.getElementById("manage-agents-button").getBoundingClientRect();
+    return Math.abs(model.height - management.height) < 1 && management.height >= 44
+      && management.x >= model.x + model.width - 1 && Math.abs(model.y - management.y) < 1;
+  });
   await entry.click();
   await page.locator("#agent-management-dialog[open]").waitFor();
   for (const id of ["agent-management-add", "agent-sharing-button", "agent-teams-button"]) {
@@ -129,6 +132,42 @@ async function checkAgentManagement(page, nativeConnections) {
   await page.locator("#agent-management-back").click();
   await page.locator("#agent-management-overview:not([hidden])").waitFor();
   await page.locator("#agent-management-close").click();
+  await page.locator("#agent-management-dialog").waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.activeElement?.id === "manage-agents-button");
+}
+
+async function checkManagementDialogs(page) {
+  await page.locator("#manage-agents-button").click();
+  await page.locator("#agent-sharing-button").click();
+  await page.locator("#agent-sharing-dialog[open]").waitFor();
+  await page.locator("#agent-sharing-overview-back").click();
+  await page.locator("#agent-sharing-dialog").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#agent-management-dialog").evaluate(node => node.open), true);
+  await page.locator("#agent-sharing-button").click();
+  await page.locator("#agent-sharing-close").click();
+  await page.locator("#agent-management-dialog").waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.activeElement?.id === "manage-agents-button");
+
+  await page.locator("#manage-agents-button").click();
+  await page.locator("#agent-teams-button").click();
+  await page.locator("#agent-team-dialog[open]").waitFor();
+  await page.locator("#team-library-back").click();
+  await page.locator("#agent-team-dialog").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#agent-management-dialog").evaluate(node => node.open), true);
+  await page.locator("#agent-teams-button").click();
+  await page.locator("#team-add").click();
+  await page.locator("#team-name").fill("Unsaved navigation fixture");
+  await page.locator(".team-config-link").click();
+  await page.locator("#team-secondary-back").click();
+  assert.equal(await page.locator("#team-name").inputValue(), "Unsaved navigation fixture");
+  const refused = page.waitForEvent("dialog").then(dialog => dialog.dismiss());
+  await page.locator("#team-dialog-close").click(); await refused;
+  assert.equal(await page.locator("#agent-team-dialog").evaluate(node => node.open), true);
+  assert.equal(await page.locator("#team-name").inputValue(), "Unsaved navigation fixture");
+  await page.locator(".team-config-link").click();
+  const accepted = page.waitForEvent("dialog").then(dialog => dialog.accept());
+  await page.locator("#team-secondary-close").click(); await accepted;
+  await page.locator("#agent-team-dialog").waitFor({ state: "hidden" });
   await page.locator("#agent-management-dialog").waitFor({ state: "hidden" });
   await page.waitForFunction(() => document.activeElement?.id === "manage-agents-button");
 }
@@ -272,6 +311,7 @@ try {
           assert.equal(me.id, f.identity.actor.user_id);
           assert.notEqual(me.device_id, f.identity.actor.device_id, "computer runtime belongs to another device of the same account");
           await checkAgentManagement(page, false);
+          await checkManagementDialogs(page);
           assert.equal(await page.locator("#session-header").count(), 0); // The semantic header is retained, just folded.
           assert.equal(await page.locator(".session-header").isVisible(), false);
           await page.locator("#toggle-session-rail-button").click();
@@ -330,9 +370,13 @@ try {
           await page.screenshot({ path: join(output, `${name}-${locale}-tools.png`) });
           await page.locator("#session-options-button").click();
           await page.locator("#session-context-details > summary").click();
-          await page.keyboard.press("Tab");
           assert.equal(await page.locator("#session-context-panel").evaluate(node => node.closest("dialog")?.id), "mobile-tools-dialog");
           assert.equal(await page.locator("#session-context-panel").isVisible(), true);
+          await page.keyboard.press("Tab");
+          assert.equal(await page.evaluate(() => document.activeElement?.closest("dialog")?.id), "mobile-tools-dialog",
+            "Tab keeps keyboard focus inside the mobile tools modal");
+          assert.equal(await page.evaluate(() => document.activeElement === document.querySelector("#session-context-details > summary")), false,
+            "an informational disclosure without controls must not trap Tab on its summary");
           await page.locator("#mobile-tools-dialog [data-mobile-close]").click();
           await tools(page);
           assert.equal(await page.locator("#mobile-tools-dialog #mentions-button").count(), 0,
