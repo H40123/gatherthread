@@ -34,7 +34,7 @@ const grant = { id: "share-a", project_id: "project-a", owner_user_id: "alice", 
   total_usage: usage, allowed_user_ids: ["bob"], source_runtime_id: "runtime-a", owner_device_id: "device-a",
   created_at: "2026-10-15T00:00:00.000Z", updated_at: "2026-10-15T00:00:00.000Z" };
 const flush = async () => { for (let index = 0; index < 18; index++) await Promise.resolve(); };
-function fixture({ initial = [], overrides = {}, deadline = 8000, patch = {}, autosave = 0, confirm = () => false } = {}) {
+function fixture({ initial = [], overrides = {}, deadline = 8000, patch = {}, autosave = 0 } = {}) {
   const doc = { activeElement: null, documentElement: { lang: "en" }, createElement: tag => new Element(doc, tag),
     createElementNS: (_namespace, tag) => new Element(doc, tag) };
   doc.body = new Element(doc, "body");
@@ -60,7 +60,7 @@ function fixture({ initial = [], overrides = {}, deadline = 8000, patch = {}, au
     ...overrides,
   };
   const ui = mountSharedAgents({ document: doc, api, localizer: { t: value => value }, getContext: () => context,
-    makeKey: kind => `${kind}-fixture-${++counter}`, onChange: () => changes++, onExit: () => exits++, confirm,
+    makeKey: kind => `${kind}-fixture-${++counter}`, onChange: () => changes++, onExit: () => exits++,
     readDeadlineMs: deadline, autosaveDelayMs: autosave });
   doc.body.append(ui.elements.button, ui.elements.picker);
   ui.updateContext();
@@ -287,7 +287,9 @@ test("invalid fields and subsequent valid autosaves cannot execute an earlier re
   const f = fixture({ autosave: 1000, initial: [{ ...grant, enabled: false, available: false }] }); await openEditor(f);
   f.el("total_daily_calls").value = "0"; f.el("total_daily_calls").dispatch("input"); f.el("close").click();
   assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.calls.length, 0); assert.equal(f.exits, 0);
-  f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input"); f.el("toggle").click(); await flush();
+  f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input");
+  assert.equal(f.el("leave-confirmation").hidden, true, "continued editing retires the old discard choice");
+  f.el("leave-discard").click(); f.el("toggle").click(); await flush();
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0][2].enabled, true);
   assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.exits, 0); f.ui.clear();
 });
@@ -301,32 +303,40 @@ test("a pending exit cannot close another account's interface after its save set
 });
 test("permission loss offers a local-only discard choice for Back and workspace exit", async () => {
   for (const action of ["back", "close"]) {
-    let accepted = false; const prompts = [];
-    const f = fixture({ autosave: 30, initial: [grant], confirm: message => { prompts.push(message); return accepted; } });
+    const f = fixture({ autosave: 30, initial: [grant] });
     f.doc.documentElement.lang = "zh-CN"; f.ui.refreshLanguage(); await openEditor(f);
     f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input"); f.update({ writable: false });
     assert.equal(f.el("total_daily_calls").disabled, true);
-    f.el(action).click(); assert.equal(prompts.length, 1); assert.match(prompts[0], /无权保存.*放弃未保存/u);
+    f.el(action).click(); assert.equal(f.el("leave-confirmation").hidden, false);
+    assert.match(f.el("leave-message").textContent, /无权保存.*放弃未保存/u);
+    f.el("leave-stay").click(); assert.equal(f.el("leave-confirmation").hidden, true);
     assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.el("editor").hidden, false); assert.equal(f.exits, 0);
-    accepted = true; f.el(action).click();
+    f.el(action).click(); f.el("leave-discard").click();
     assert.equal(f.el("editor").hidden, action === "back");
     assert.equal(f.ui.elements.dialog.open, action === "back"); assert.equal(f.exits, action === "close" ? 1 : 0);
     f.update({ writable: true }); await new Promise(resolve => setTimeout(resolve, 40)); await flush();
     assert.equal(f.calls.length, 0, "discard cannot write later if permission is restored"); f.ui.clear();
   }
 });
-test("permission loss cannot discard an executing or unconfirmed sharing action", async () => {
-  let release, promptCount = 0; const f = fixture({ autosave: 1000, initial: [grant],
-    confirm: () => { promptCount++; return true; }, overrides: { saveAgentShare: async () => {
-      await new Promise(resolve => { release = resolve; }); throw Error("unconfirmed save");
+test("permission loss permits leaving but keeps the unconfirmed request fenced until reauthorized recovery", async () => {
+  let release, first = true; const inputs = [];
+  const f = fixture({ autosave: 1000, initial: [grant],
+    overrides: { saveAgentShare: async (_p, input) => {
+      inputs.push(structuredClone(input));
+      if (first) { first = false; await new Promise(resolve => { release = resolve; }); throw Error("unconfirmed save"); }
+      return { share: { ...grant, revision: 2, limits: input.limits } };
     } } });
   await openEditor(f); f.el("total_daily_calls").value = "25"; f.el("total_daily_calls").dispatch("input");
   f.el("close").click(); await flush(); f.update({ writable: false });
-  f.el("back").click(); f.el("close").click();
-  assert.equal(promptCount, 0); assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.el("editor").hidden, false);
-  release(); await flush(); assert.equal(f.el("retry").hidden, false);
-  f.el("close").click(); assert.equal(promptCount, 0); assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.exits, 0);
-  f.ui.clear();
+  f.el("back").click(); assert.equal(f.el("leave-confirmation").hidden, true, "Back can still wait for the already pending save");
+  f.el("close").click(); f.el("leave-pending").click();
+  assert.equal(f.ui.elements.dialog.open, false); assert.equal(f.exits, 1);
+  release(); await flush(); await f.ui.open();
+  assert.equal(f.el("retry").hidden, false); assert.equal(f.el("retry").disabled, true);
+  f.el("retry").click(); await flush(); assert.equal(inputs.length, 1, "revoked write permission cannot recover by mutation");
+  f.update({ writable: true }); f.el("retry").click(); await flush();
+  assert.equal(inputs.length, 2); assert.deepEqual(inputs[0], inputs[1], "leaving did not discard or replace the accepted identity");
+  assert.equal(f.el("retry").hidden, true); assert.equal(f.ui.elements.dialog.open, true); f.ui.clear();
 });
 test("a pending read never blocks the saved Agent's immediate stop button", async () => {
   const f = fixture({ initial: [grant], deadline: 5 }); await openEditor(f);
@@ -391,4 +401,175 @@ test("lost owner Stop acknowledgement retries the same disable key", async () =>
   const controls = f.calls.filter(call => call[0] === "control");
   assert.equal(controls.length, 2); assert.equal(controls[0][3].idempotency_key, controls[1][3].idempotency_key);
   assert.equal(f.el("toggle").textContent, "Start sharing"); f.ui.clear();
+});
+
+for (const [label, configure] of [
+  ["zero call limit", f => { f.el("total_daily_calls").value = "0"; }],
+  ["empty call limit", f => { f.el("total_daily_calls").value = ""; }],
+  ["fractional call limit", f => { f.el("total_daily_calls").value = "1.5"; }],
+  ["call limit above maximum", f => { f.el("total_daily_calls").value = "10001"; }],
+  ["fractional second limit", f => { f.el("total_daily_seconds").value = "0.001"; }],
+  ["unsupported connection", f => { f.update({ ownRuntimes: [{ ...runtime, sharingCapability: null }] }); }],
+  ["removed connection", f => { f.update({ ownRuntimes: [] }); }],
+]) {
+  test(`an unsent ${label} draft can be explicitly discarded when leaving`, async () => {
+    const f = fixture({ autosave: 1000 });
+    await openEditor(f); configure(f);
+    f.el("total_daily_calls").dispatch("input"); f.el("close").click(); await flush();
+    assert.equal(f.el("leave-confirmation").hidden, false, "the user chooses whether to discard the unsaved local draft");
+    assert.equal(f.el("leave-discard").hidden, false); assert.equal(f.el("leave-pending").hidden, true);
+    assert.equal(f.el("leave-discard").type, "button", "discard is not a native form submission");
+    f.el("leave-discard").click();
+    assert.equal(f.calls.length, 0, "discard never writes invalid or missing-source settings");
+    assert.equal(f.ui.elements.dialog.open, false); assert.equal(f.exits, 1);
+    f.ui.clear();
+  });
+}
+
+test("an active source going offline cannot trap a dirty configuration or silently stop it", async () => {
+  const f = fixture({ initial: [grant], autosave: 1000 });
+  await openEditor(f); f.update({ ownRuntimes: [{ ...runtime, sharingAvailability: "offline" }] });
+  f.el("total_daily_calls").value = "21"; f.el("total_daily_calls").dispatch("input");
+  f.el("back").click(); f.el("leave-stay").click();
+  assert.equal(f.el("editor").hidden, false); assert.equal(f.el("total_daily_calls").value, "21");
+  assert.equal(f.calls.length, 0); assert.match(f.el("error").textContent, /unavailable|offline/u);
+  f.el("back").click(); f.el("leave-discard").click();
+  assert.equal(f.el("editor").hidden, true);
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.calls.length, 0); f.ui.clear();
+});
+
+test("closing an unconfirmed save preserves its exact recovery key without claiming cancellation", async () => {
+  const inputs = []; let lost = true;
+  const f = fixture({ initial: [{ ...grant, enabled: false }], autosave: 1000,
+    overrides: { saveAgentShare: async (_p, input) => {
+      inputs.push(structuredClone(input)); if (lost) { lost = false; throw Error("lost receipt"); }
+      return { share: { ...grant, enabled: false, revision: 2, limits: input.limits } };
+    } } });
+  await openEditor(f); f.el("total_daily_calls").value = "21"; f.el("total_daily_calls").dispatch("input");
+  f.el("close").click(); await flush();
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.el("retry").hidden, false);
+  assert.equal(f.el("status").textContent, "Sharing update not confirmed");
+  f.el("close").click();
+  assert.equal(f.el("leave-confirmation").hidden, false); assert.match(f.el("leave-message").textContent, /not cancel|not stop/u);
+  assert.equal(f.el("leave-discard").hidden, true, "a sent write cannot be discarded as a local draft");
+  f.el("leave-pending").click();
+  assert.equal(f.ui.elements.dialog.open, false); assert.equal(f.exits, 1);
+  await f.ui.open(); assert.equal(f.el("retry").hidden, false);
+  f.el("retry").click(); await flush();
+  assert.equal(inputs.length, 2); assert.deepEqual(inputs[0], inputs[1]);
+  assert.equal(f.el("retry").hidden, true); assert.equal(f.ui.elements.dialog.open, true);
+  assert.equal(f.el("toggle").textContent, "Start sharing"); f.ui.clear();
+});
+
+test("an already pending save can close for now and settle without reopening the panel", async () => {
+  let resolve;
+  const f = fixture({ initial: [{ ...grant, enabled: false }],
+    overrides: { saveAgentShare: async (_p, input) => new Promise(done => {
+      resolve = () => done({ share: { ...grant, enabled: false, revision: 2, limits: input.limits } });
+    }) } });
+  await openEditor(f); f.el("total_daily_calls").value = "21"; f.el("total_daily_calls").dispatch("input"); await wait();
+  f.el("close").click(); f.el("leave-pending").click();
+  assert.equal(f.ui.elements.dialog.open, false); assert.equal(f.exits, 1);
+  resolve(); await flush(); assert.equal(f.ui.elements.dialog.open, false); f.ui.clear();
+});
+
+test("staying with an unconfirmed action keeps its recoverable draft and view", async () => {
+  const f = fixture({ initial: [grant], overrides: { saveAgentShare: async () => { throw Error("lost receipt"); } } });
+  await openEditor(f); f.el("total_daily_calls").value = "42"; f.el("total_daily_calls").dispatch("input"); await wait();
+  f.el("close").click(); f.el("leave-stay").click();
+  assert.equal(f.el("leave-confirmation").hidden, true);
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.el("editor").hidden, false);
+  assert.equal(f.el("total_daily_calls").value, "42"); assert.equal(f.el("retry").hidden, false); f.ui.clear();
+});
+
+test("a stale discard control cannot leave a newly opened account or project", async () => {
+  const f = fixture({ autosave: 1000 });
+  await openEditor(f); f.el("total_daily_calls").value = "0"; f.el("total_daily_calls").dispatch("input"); f.el("close").click();
+  const oldDiscard = f.el("leave-discard");
+  f.update({ scope: "bob:project-b", userId: "bob", projectId: "project-b" }); await f.ui.open(); oldDiscard.click();
+  await flush(); assert.equal(f.el("leave-confirmation").hidden, true);
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.exits, 0); assert.equal(f.calls.length, 0); f.ui.clear();
+});
+
+test("a stale unconfirmed-action control cannot leave a newly opened account or project", async () => {
+  const f = fixture({ overrides: { saveAgentShare: async () => { throw Error("lost receipt"); } } });
+  await openEditor(f); f.el("total_daily_calls").value = "42"; f.el("total_daily_calls").dispatch("input"); await wait();
+  f.el("close").click(); const oldLeave = f.el("leave-pending");
+  f.update({ scope: "bob:project-b", userId: "bob", projectId: "project-b" }); await f.ui.open(); oldLeave.click();
+  assert.equal(f.el("leave-confirmation").hidden, true);
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.exits, 0); f.ui.clear();
+});
+
+test("an uncertain enable stays independently stoppable after closing and reopening sharing", async () => {
+  const inputs = [];
+  const f = fixture({ autosave: 1000, overrides: {
+    saveAgentShare: async (_p, input) => {
+      inputs.push(structuredClone(input)); f.shares = [{ ...grant, id: "accepted-once", revision: 1, enabled: true }];
+      throw Error("enable acknowledgement lost");
+    },
+  } });
+  await openEditor(f); checkBob(f); f.el("toggle").click(); await flush();
+  f.el("close").click(); f.el("leave-pending").click(); assert.equal(f.ui.elements.dialog.open, false);
+  await f.ui.open(); const stop = f.el("list").children[0].children[1];
+  assert.equal(stop.textContent, "Stop sharing"); assert.equal(stop.disabled, false);
+  stop.click(); await flush();
+  assert.equal(f.calls.find(call => call[0] === "control")[2], "accepted-once");
+  assert.equal(f.calls.find(call => call[0] === "control")[3].action, "disable");
+  assert.equal(inputs.length, 1, "leaving and stopping never replays enable to discover its result"); f.ui.clear();
+});
+
+test("blocked-draft guidance and discard controls are localized without a false Saving state", async () => {
+  const f = fixture({ autosave: 1000 });
+  f.doc.documentElement.lang = "zh-CN"; f.ui.refreshLanguage(); await openEditor(f);
+  f.el("total_daily_calls").value = "0"; f.el("total_daily_calls").dispatch("input"); f.el("close").click();
+  assert.equal(f.el("status").textContent, "共享设置尚未保存");
+  assert.match(f.el("error").textContent, /调用次数.*整数.*累计时长/u);
+  assert.match(f.el("leave-message").textContent, /放弃修改.*继续编辑/u);
+  assert.equal(f.el("leave-discard").textContent, "放弃修改并离开");
+  assert.equal(f.el("leave-stay").textContent, "留在此页");
+  assert.equal(f.ui.elements.dialog.open, true); assert.equal(f.calls.length, 0); f.ui.clear();
+});
+
+for (const blocked of ["suppressed", "unavailable"]) {
+  test(`in-dialog discard works when native confirmation is ${blocked}`, async () => {
+    const nativeConfirm = globalThis.confirm; let prompts = 0;
+    globalThis.confirm = () => { prompts++; if (blocked === "unavailable") throw Error("native modals unavailable"); return false; };
+    const f = fixture({ autosave: 1000, patch: { ownRuntimes: [{ ...runtime, sharingCapability: null }] } });
+    try {
+      await openEditor(f); f.el("total_daily_calls").value = "42"; f.el("total_daily_calls").dispatch("input");
+      f.el("close").click(); assert.equal(f.el("leave-confirmation").hidden, false);
+      f.el("leave-discard").click();
+      assert.equal(f.ui.elements.dialog.open, false); assert.equal(f.calls.length, 0); assert.equal(prompts, 0);
+    } finally { f.ui.clear(); if (nativeConfirm === undefined) delete globalThis.confirm; else globalThis.confirm = nativeConfirm; }
+  });
+}
+
+test("checking a receipt while the leave choice is visible retires that old navigation intent", async () => {
+  let first = true; const f = fixture({ initial: [grant], autosave: 1000, overrides: {
+    saveAgentShare: async (_p, input) => {
+      if (first) { first = false; throw Error("lost receipt"); }
+      return { share: { ...grant, revision: 2, limits: input.limits } };
+    },
+  } });
+  await openEditor(f); f.el("total_daily_calls").value = "21"; f.el("total_daily_calls").dispatch("input");
+  f.el("close").click(); await flush(); f.el("close").click();
+  assert.equal(f.el("leave-confirmation").hidden, false); const oldLeave = f.el("leave-pending");
+  f.el("retry").click(); await flush(); oldLeave.click();
+  assert.equal(f.ui.elements.dialog.open, true, "checking the result is not consent to the previous Leave choice");
+  assert.equal(f.el("leave-confirmation").hidden, true); assert.equal(f.exits, 0); f.ui.clear();
+});
+
+
+test("a missing selected source can save again only after that exact connection returns", async () => {
+  const f = fixture({ autosave: 1000 }); await openEditor(f);
+  f.update({ ownRuntimes: [] });
+  f.el("total_daily_calls").value = "21"; f.el("total_daily_calls").dispatch("input");
+  f.el("back").click(); await flush();
+  assert.equal(f.calls.length, 0); assert.equal(f.el("leave-confirmation").hidden, false);
+  f.el("leave-stay").click(); f.update({ ownRuntimes: [runtime] });
+  f.el("close").click(); await flush();
+  const saves = f.calls.filter(call => call[0] === "save");
+  assert.equal(saves.length, 1); assert.equal(saves[0][2].source_runtime_id, runtime.id);
+  assert.equal(saves[0][2].limits.total_daily_calls, 21);
+  assert.equal(f.ui.elements.dialog.open, false); f.ui.clear();
 });

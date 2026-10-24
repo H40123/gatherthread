@@ -52,8 +52,7 @@ export function sharingReason(reason, translate = value => value) {
 
 /** Source-level grants; exact model/effort are selected and frozen by each borrower. */
 export function mountSharedAgents({ document: doc = document, api, localizer, getContext, onChange = () => {},
-  makeKey = () => crypto.randomUUID(), hostButton, pickerHost, readDeadlineMs = 8000, autosaveDelayMs = 450, onExit = () => {},
-  confirm = message => globalThis.confirm?.(message) ?? false }) {
+  makeKey = () => crypto.randomUUID(), hostButton, pickerHost, readDeadlineMs = 8000, autosaveDelayMs = 450, onExit = () => {} }) {
   const t = value => {
     const translated = localizer.t(value);
     return translated === value && doc.documentElement?.lang === "zh-CN" ? SHARED_AGENT_ZH_CN[value] ?? value : translated;
@@ -130,6 +129,16 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
   const status = el("p", "", "field-help", "status"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   const error = el("p", "", "form-error", "error"); error.setAttribute("role", "alert");
   const retry = btn("Check the last sharing action", "retry"); retry.hidden = true; footer.append(status, error, retry);
+  // Example pages deliberately disallow native modals. Keep local navigation
+  // decisions inside this dialog instead of depending on window.confirm().
+  const leaveConfirmation = el("section", "", "sharing-leave-confirmation", "leave-confirmation");
+  leaveConfirmation.hidden = true; leaveConfirmation.setAttribute("role", "group");
+  const leaveMessage = el("p", "", "field-help", "leave-message");
+  leaveConfirmation.setAttribute("aria-labelledby", leaveMessage.id);
+  const leaveActions = el("div", "", "sharing-leave-actions");
+  const stay = btn("Stay on this page", "leave-stay"), discard = btn("Discard changes and leave", "leave-discard"),
+    leavePending = btn("Leave for now", "leave-pending");
+  leaveActions.append(stay, discard, leavePending); leaveConfirmation.append(leaveMessage, leaveActions); footer.append(leaveConfirmation);
   dialog.append(header, body, footer); doc.body.append(dialog);
 
   const picker = el("div", "", "shared-agent-picker", "picker");
@@ -145,7 +154,7 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
   let scope = "", generation = 0, shares = [], selected = null, sourceChoices = [], dirty = false, loaded = false;
   let mutation = null, attempt = null, readController = null, mutationController = null, readBusy = false, mutationEpoch = 0;
   let draftVersion = 0, autosaveTimer, requestedStart = false, selectedKey = "", chosenModel = "", chosenEffort = "";
-  let statusSource = "", errorSource = "", returnFocus, navigationIntent = null;
+  let statusSource = "", errorSource = "", returnFocus, navigationIntent = null, navigationDecision = null;
   const memberInputs = new Map();
   const current = (gen, context) => gen === generation && scope === getContext()?.scope && context.projectId === getContext()?.projectId;
   const setStatus = value => { statusSource = value; status.textContent = t(value); };
@@ -172,7 +181,7 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
     const pinSource = !editor.hidden || mutation || attempt;
     const previous = sourceChoices.find(choice => choice.key === value);
     if (pinSource && previous && !candidates.some(choice => choice.key === value)) {
-      candidates.push({ ...previous, runtime: { ...previous.runtime, status: "offline", sharingAvailability: "offline", sharing_availability: "offline" } });
+      candidates.push({ ...previous, missing: true, runtime: { ...previous.runtime, status: "offline", sharingAvailability: "offline", sharing_availability: "offline" } });
     }
     // Runtime IDs are per conversation. Present one unconfigured connection per
     // device/harness, but never hide a saved grant or silently retarget it.
@@ -258,7 +267,7 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
     unsupported.textContent = choice?.supported ? sharingReason(choice.runtime.sharingAvailability ?? choice.runtime.sharing_availability ?? "offline", t)
       : t("This connection does not support project-confined shared execution. Update or choose another connection.");
     refreshButton.disabled = readBusy;
-    retry.hidden = !attempt; retry.disabled = Boolean(mutation);
+    retry.hidden = !attempt; retry.disabled = Boolean(mutation) || !c?.writable;
     setToggle(toggle, selected, ready, source.value); editorState(); renderPicker();
   }
   function renderOwnList() {
@@ -326,7 +335,7 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
   function clear() {
     generation++; mutationEpoch++; cancelRead(); clearTimeout(autosaveTimer); mutationController?.abort(); mutationController = null;
     scope = ""; shares = []; selected = null; sourceChoices = []; selectedKey = ""; chosenModel = ""; chosenEffort = "";
-    dirty = false; loaded = false; mutation = null; attempt = null; requestedStart = false; navigationIntent = null;
+    dirty = false; loaded = false; mutation = null; attempt = null; requestedStart = false; navigationIntent = null; clearNavigationDecision();
     if (dialog.open) dialog.close(); overview.hidden = false; editor.hidden = true; ownList.replaceChildren(); members.replaceChildren(); memberInputs.clear();
     source.replaceChildren(); setStatus(""); setError(""); updateControls();
   }
@@ -358,7 +367,7 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
     finally { if (readController === controller) { readController = null; readBusy = false; if (current(gen, c)) updateControls(); } }
   }
   function markDirty() {
-    if (attempt) return; navigationIntent = null; dirty = true; draftVersion++; setStatus("Saving sharing settings…"); setError("");
+    if (attempt) return; navigationIntent = null; clearNavigationDecision(); dirty = true; draftVersion++; setStatus("Saving sharing settings…"); setError("");
     clearTimeout(autosaveTimer); autosaveTimer = setTimeout(saveDraft, autosaveDelayMs); updateControls();
   }
   function inputLimits() {
@@ -372,11 +381,19 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
   function saveDraft() {
     clearTimeout(autosaveTimer); if (mutation || attempt || !dirty && !requestedStart || !getContext()?.writable) return;
     const choice = sourceChoices.find(item => item.key === source.value), limits = inputLimits(), allowed = allowedIds();
-    if (!choice?.supported || !limits || requestedStart && !allowed.length) {
-      requestedStart = false; setError("Choose an Agent and at least one member; limits must be positive whole numbers."); return;
+    if (!choice?.supported || choice.missing) {
+      requestedStart = false; setStatus("Unsaved sharing changes"); setError("This Agent connection cannot save sharing settings. Reconnect a supported Agent, or discard the unsaved changes when leaving."); return;
+    }
+    if (!limits) {
+      requestedStart = false; setStatus("Unsaved sharing changes"); setError("Enter 1 to 10,000 whole calls and a duration from 1 second to 14,400 minutes, in whole seconds."); return;
+    }
+    if (requestedStart && !allowed.length) {
+      requestedStart = false; setStatus("Unsaved sharing changes"); setError("Choose sharing recipients to start."); return;
     }
     const enabled = Boolean((requestedStart || selected?.enabled) && allowed.length);
-    if (enabled && !sourceReady(choice)) { requestedStart = false; setError("Agent unavailable"); return; }
+    if (enabled && !sourceReady(choice)) {
+      requestedStart = false; setStatus("Unsaved sharing changes"); setError("The Agent is unavailable. Reconnect it before saving active sharing, or discard the unsaved changes when leaving."); return;
+    }
     const intent = { kind: "save", version: draftVersion, sourceId: choice.key, input: {
       ...(selected ? { share_id: selected.id } : {}), source_runtime_id: choice.key, enabled, allowed_user_ids: allowed, limits,
       expected_revision: selected?.revision ?? null, idempotency_key: makeKey("agent-share-save") } };
@@ -387,6 +404,7 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
     const revoking = intent.kind === "control" && intent.input.action === "disable";
     if (mutation && !revoking || !c?.writable || !current(generation, c)) return;
     if (revoking) { clearTimeout(autosaveTimer); mutationController?.abort(); attempt = null; requestedStart = false; }
+    if (navigationDecision) { navigationIntent = null; clearNavigationDecision(); }
     cancelRead(); const gen = generation, epoch = ++mutationEpoch, controller = new AbortController();
     const active = () => current(gen, c) && epoch === mutationEpoch && mutation === intent;
     mutation = intent; mutationController = controller; setStatus(intent.kind === "save" ? "Saving sharing settings…" : "Updating sharing…"); setError(""); updateControls(); renderOwnList();
@@ -413,10 +431,10 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
       renderSources(); renderOwnList(); editorState(); setStatus(share.enabled ? "Sharing is on" : "Changes saved automatically"); onChange();
     } catch (failure) {
       if (!active()) return;
-      navigationIntent = null;
+      navigationIntent = null; clearNavigationDecision();
       if (!failure?.status || failure.status >= 500 || failure.uncertain || failure.name === "AbortError") {
-        attempt = intent; setError("The sharing action is not confirmed. Check it before another action.");
-      } else { attempt = null; dirty = false; requestedStart = false; setError(failure.status === 409
+        attempt = intent; setStatus("Sharing update not confirmed"); setError("The sharing action is not confirmed. Check it before another action.");
+      } else { attempt = null; dirty = false; requestedStart = false; setStatus(intent.kind === "save" ? "Unsaved sharing changes" : ""); setError(failure.status === 409
         ? "This sharing configuration changed. Refresh before editing." : "Could not update sharing. Refresh and try again."); }
     } finally {
       if (active()) { mutation = null; mutationController = null; updateControls(); renderOwnList();
@@ -424,9 +442,10 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
         if (!attempt && (dirty || requestedStart) && !errorSource) autosaveTimer = setTimeout(saveDraft, 0); }
     }
   }
-  function startSharing() { requestedStart = true; saveDraft(); }
+  function startSharing() { navigationIntent = null; clearNavigationDecision(); requestedStart = true; saveDraft(); }
   function stopSharing(share = selected, sourceId = source.value) {
     if (!sourceId) return;
+    navigationIntent = null; clearNavigationDecision();
     // An unconfirmed disable is retried with the same key and resolved identity.
     const previous = mutation ?? attempt;
     const intent = previous?.kind === "control" && previous.sourceId === sourceId ? previous
@@ -436,11 +455,11 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
   async function open() {
     updateContext(); if (button.disabled) return;
     returnFocus = doc.activeElement;
-    if (!dialog.open) { navigationIntent = null; overview.hidden = false; editor.hidden = true; dialog.showModal(); }
+    if (!dialog.open) { navigationIntent = null; clearNavigationDecision(); overview.hidden = false; editor.hidden = true; dialog.showModal(); }
     await refresh();
   }
   function finishNavigation() {
-    const intent = navigationIntent; navigationIntent = null;
+    const intent = navigationIntent; navigationIntent = null; clearNavigationDecision();
     if (!intent || intent.generation !== generation || !dialog.open) return;
     if (intent.kind === "back" && intent.page === "editor") {
       overview.hidden = false; editor.hidden = true; renderOwnList(); refreshButton.focus(); return;
@@ -448,19 +467,64 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
     dialog.close();
     if (intent.kind === "exit") onExit();
   }
+  function clearNavigationDecision() {
+    navigationDecision = null; leaveConfirmation.hidden = true; leaveMessage.textContent = ""; footer.classList.toggle("sharing-footer-confirming", false);
+  }
+  function renderNavigationDecision() {
+    if (!navigationDecision) return;
+    leaveMessage.textContent = t(navigationDecision.message);
+    discard.hidden = navigationDecision.mode !== "discard";
+    leavePending.hidden = navigationDecision.mode !== "pending";
+  }
+  function showNavigationDecision(intent, mode, message, pending = null) {
+    navigationDecision = { intent, mode, message, pending };
+    leaveConfirmation.hidden = false; footer.classList.toggle("sharing-footer-confirming", true); renderNavigationDecision(); stay.focus();
+  }
+  function currentNavigationDecision(mode) {
+    const decision = navigationDecision;
+    return decision?.mode === mode && navigationIntent === decision.intent
+      && decision.intent.generation === generation && scope === getContext()?.scope && dialog.open ? decision : null;
+  }
+  stay.addEventListener("click", () => {
+    if (!navigationDecision) return;
+    navigationIntent = null; clearNavigationDecision();
+    (editor.hidden ? refreshButton : !callsInput.disabled ? callsInput : close).focus();
+  });
+  discard.addEventListener("click", () => {
+    if (!currentNavigationDecision("discard") || mutation || attempt) return;
+    // No request was sent for this draft. Discarding only clears local edits;
+    // it must never stand in for cancelling or rolling back a server mutation.
+    clearTimeout(autosaveTimer); dirty = false; requestedStart = false; setStatus(""); setError("");
+    finishNavigation();
+  });
+  leavePending.addEventListener("click", () => {
+    const decision = currentNavigationDecision("pending");
+    if (!decision || (mutation ?? attempt) !== decision.pending) return;
+    // Keep the in-flight request/frozen receipt and key. Reopening the panel
+    // exposes its original recovery action instead of silently retrying it.
+    finishNavigation();
+  });
   function requestNavigation(kind) {
     if (!dialog.open) return;
+    const previous = navigationIntent, pending = mutation ?? attempt;
+    const waitingForSave = mutation && previous && !navigationDecision;
     const intent = navigationIntent = { kind, generation, page: editor.hidden ? "overview" : "editor" };
-    if ((dirty || requestedStart) && !getContext()?.writable && !mutation && !attempt) {
-      const discard = confirm(t("You no longer have permission to save these sharing changes. Discard your unsaved changes and leave this page?"));
-      if (navigationIntent !== intent || intent.generation !== generation || !dialog.open) return;
-      if (!discard) { navigationIntent = null; return; }
-      clearTimeout(autosaveTimer); dirty = false; requestedStart = false; setStatus(""); setError("");
-      finishNavigation(); return;
+    if (pending) {
+      // Escape/Back may replace an exit already waiting for the same save.
+      if (waitingForSave && kind === "back") return;
+      showNavigationDecision(intent, "pending", "A sharing update is pending or unconfirmed. Leave this page for now? This does not cancel it or stop sharing. Use Check the last sharing action to recover the result.", pending);
+      return;
     }
-    if (dirty || mutation || attempt || requestedStart) {
-      if (dirty) saveDraft();
-      if (errorSource && !mutation) navigationIntent = null;
+    if ((dirty || requestedStart) && !getContext()?.writable) {
+      setStatus("Unsaved sharing changes");
+      showNavigationDecision(intent, "discard", "You no longer have permission to save these sharing changes. Discard your unsaved changes and leave this page?");
+      return;
+    }
+    if (dirty || requestedStart) {
+      saveDraft();
+      if (!mutation && !attempt && errorSource) {
+        showNavigationDecision(intent, "discard", "These sharing changes could not be saved. Discard the unsaved changes and leave this page? Stay here to keep editing.");
+      }
       return;
     }
     finishNavigation();
@@ -477,7 +541,7 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
   effortSelect.addEventListener("change", () => { chosenEffort = effortSelect.value; renderPicker(); onChange(); });
   button.addEventListener("click", () => void open());
   dialog.addEventListener("cancel", event => { event.preventDefault(); requestNavigation("back"); });
-  dialog.addEventListener("close", () => { navigationIntent = null; cancelRead(); returnFocus?.focus?.({ preventScroll: true }); });
+  dialog.addEventListener("close", () => { navigationIntent = null; clearNavigationDecision(); cancelRead(); returnFocus?.focus?.({ preventScroll: true }); });
   refreshButton.addEventListener("click", () => void refresh());
   editor.addEventListener("submit", event => { event.preventDefault(); startSharing(); });
   source.addEventListener("change", () => beginEdit(source.value));
@@ -490,6 +554,6 @@ export function mountSharedAgents({ document: doc = document, api, localizer, ge
     disclosure: mode => selectedAgent() ? sharedAgentDisclosure(selectedAgent().share, mode ?? getContext()?.sessionMode ?? getContext()?.mode, t)
       : t(borrowed().length ? "Choose a shared Agent" : "No shared Agent is available in this project."),
     refreshLanguage() { for (const update of translations) update(); setStatus(statusSource); setError(errorSource);
-      renderSources(); renderOwnList(); if (!editor.hidden) renderMembers(allowedIds()); updateControls(); },
+      renderSources(); renderOwnList(); if (!editor.hidden) renderMembers(allowedIds()); updateControls(); renderNavigationDecision(); },
   };
 }

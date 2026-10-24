@@ -170,7 +170,7 @@ Settings → Account & privacy provides self-service deletion with a preflight i
 
 ## Local project synchronization
 
-The workspace groups Agent setup under **Manage my Agents**, beside the model/reasoning selector below the message input. Both controls have the same height and remain together in desktop and mobile presentation. Its menu opens **Add my Agent** (existing Codex, DeepSeek Harness and Claude Code connection guides and a full-width additional-connections control), **Manage my Agents** (existing native sharing), or **Agent teams** (the saved Team library). Native-sharing and Team pages use a left Back action for the previous page and a top-right Close action for returning to the workspace. Navigation preserves unsaved-draft and unconfirmed-action guards. Local installation remains limited to Desktop mode on a computer.
+The workspace groups Agent setup under **Manage my Agents**, beside the model/reasoning selector below the message input. Both controls have the same height and remain together in desktop and mobile presentation. Its menu opens **Add my Agent** (existing Codex, DeepSeek Harness and Claude Code connection guides and a full-width additional-connections control), **Share my Agent** (existing native sharing), or **Agent teams** (the saved Team library). Native-sharing and Team pages use a left Back action for the previous page and a top-right Close action for returning to the workspace. Navigation preserves unsaved-draft and unconfirmed-action guards. Local installation remains limited to Desktop mode on a computer.
 
 The Claude Code integration preview provides a separate desktop connection shortcut, exact connected-device selection and a native GatherThread plugin for project/session/context/chat/sync actions. Existing saved Agent defaults remain unchanged until the user enables/selects Claude. Phones call the already-connected computer; local installation remains desktop-only. Calling one's own Claude keeps the computer's native tools/configuration and permission mode, including terminal/dependency work when locally allowed, without an extra file/plan whitelist or automatic approval of new permission prompts. Other members' shared Agents retain their separate project-only boundary; Claude sharing is not offered. Claude local conversation publication is opt-in; installing the plugin alone is not permission to scan private history. The [Claude guide](CLAUDE_CODE.md) owns setup and current limitations, with [ADR-0060](adr/0060-claude-code-plugin-and-local-connector.md) recording the architecture. This is not the planned multi-Agent team feature.
 
@@ -294,6 +294,19 @@ of pending reads and cancels existing work. Empty recipient lists save disabled.
 Unsupported/offline sources remain visible; offline configuration can be saved,
 but starting requires a ready supported connection. Recovery never enables it.
 
+An invalid limit, removed/unsupported source or unavailable active source leaves
+an explicit unsaved reason rather than an indefinite Saving state. Back or Close
+first attempts a valid autosave; if no request can be sent, the owner may keep
+editing or explicitly discard only those local unsent edits and leave. A pending
+or unconfirmed write is different: the owner may leave after a warning that this
+does not cancel the update or stop sharing. Its original body/key and recovery
+control remain in the current authenticated panel context when reopened. Losing
+write permission disables mutation recovery until reauthorized, without trapping
+the owner in the dialog or treating the unknown result as saved or cancelled.
+The decision uses explicit buttons inside the sharing footer, including in the
+sandboxed free example; it does not depend on native JavaScript confirmation
+modals or expand the example's network, form or sandbox permissions.
+
 The owner selects recipients and combined daily call/time limits. The Web's
 initial totals are 100 calls and 300 minutes, shared by all allowed members,
 without an additional smaller per-member cap. Direct API clients may retain their
@@ -347,7 +360,17 @@ The Agent Teams dialog follows the sharing dialog's compact row layout. Each
 saved Team row opens its editor and has an independent enable/disable switch;
 the final row adds a Team. The editor presents the title, Team name, then Add
 blank module / Add favorite module / Save / Clear. Clear is red; Save is disabled
-when the draft matches the saved configuration. Empty or unbound drafts may be
+when the draft matches the saved configuration. Closing or returning from a
+changed editor offers Save and leave, Keep editing, or Discard and leave inside
+the Team dialog. Save and leave actually saves, and leaves only after a confirmed
+receipt for that same editor/draft; invalid names or limits identify and focus
+the field to correct. With a pending/unconfirmed mutation, leaving explicitly
+discards local edits without cancelling or declaring the submitted action failed;
+its original recovery key remains available after reopening. Recovery reports
+that it is checking while the response is pending, then clears only its own
+feedback. A late receipt must not close a newer view, discard newer edits, or
+silently submit an old cached configuration as a new Save. A replacement editor
+that has not loaded the confirmed configuration must reopen it before saving. Empty or unbound drafts may be
 saved but cannot be tested or enabled. The zoomable canvas separates modules
 from their selected execution Agent: each module has its own name, Agent, model,
 reasoning effort, identity and prompt. Agent/model/effort choices use the same

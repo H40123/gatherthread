@@ -565,7 +565,17 @@ project's workspace or inspect unrelated native conversations.
 Web sharing reads, sends, recovery and cancel operations each bound the whole
 HTTP exchange (including the response body) to eight seconds and abort their
 own transport. Uncertain retries preserve the original body/key. An uncertain
-enable is displayed as stoppable in both owner switches. Before a first-create
+enable is displayed as stoppable in both owner switches. Closing or returning
+from the sharing panel after an explicit warning does not cancel an in-flight
+write or retire its frozen receipt; reopening within the same authenticated
+context retains exact-body/key recovery. Only a draft for which no request was
+sent can be explicitly discarded. Current write authorization still gates every
+recovery mutation, and account/project scope changes fence delayed navigation.
+The view owns `agent-sharing-leave-confirmation` and its `leave-stay`,
+`leave-discard` and `leave-pending` controls (all with the `agent-sharing-`
+prefix), implemented as ordinary buttons rather than native modals or form
+submission. Their current navigation/pending identities fence stale actions.
+Before a first-create
 receipt supplies a grant ID, Stop independently discovers the owner's exact
 source grant and disables it; it never resends enable to discover the ID. If
 acceptance is not yet discoverable, Stop remains explicitly unconfirmed and
@@ -671,6 +681,17 @@ the existing terminal-only DELETE route. After a lost 204, an authenticated
 `not_found` for that exact private record is treated as already cleared only
 after the current session list remains readable and does not contain it;
 membership-hidden 404s, revoked authority and active-run conflicts remain failures.
+
+The Team editor's local leave controls (`team-leave-save`, `team-leave-stay`,
+`team-leave-discard`) do not change the save wire contract. Save and leave must
+use the existing Save operation and validate its current editor/draft identity
+before navigating. Closing while a Save is pending or unconfirmed is not
+cancellation and retains the original request/body/key for explicit recovery;
+late acknowledgments cannot navigate a replacement view. Save recovery is also
+bound to an editor session: settling an older Save cannot automatically turn a
+reopened stale cached draft into a new write or lend that draft the receipt's
+revision/test stamp. It must load the confirmed configuration or stop for an
+explicit reopen before another Save.
 
 Run acknowledgments are acceptance receipts, not versioned status updates. A
 client must not replace a later observed run status with a delayed Start or

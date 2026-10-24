@@ -2,6 +2,17 @@ import { TEAM_DIAGNOSTIC_ZH_CN } from "./agent-team-diagnostics.js";
 
 export const TEAM_ZH_CN = {
   "Back": "返回",
+  "Checking the previous action…": "正在确认上一次操作…",
+  "Save your Team changes before leaving?": "离开前要保存 Team 的修改吗？",
+  "The previous Save was confirmed. Reopen this Team to load its saved configuration before saving again.": "上一次保存已确认。请重新打开此 Team 加载已保存的配置，再继续修改和保存。",
+  "Save and leave": "保存并离开", "Check save and leave": "确认保存并离开", "Keep editing": "继续编辑",
+  "Discard and leave": "放弃修改并离开", "Leave without waiting": "暂不等待，离开",
+  "Submitted changes may still be saved. Leaving discards local edits, not the submitted action. Reopen to check its result.": "已提交的修改仍可能保存成功。离开只放弃本地编辑，不会取消已提交的操作；重新打开后可确认结果。",
+  "Enter a Team name before saving.": "请先填写 Team 名称，再保存。",
+  "Choose a total call limit from 1 to 48 before saving.": "请将总调用次数上限设为 1 至 48 的整数，再保存。",
+  "Choose a duration limit from 1 to 120 minutes before saving.": "请将调用时长上限设为 1 至 120 分钟的整数，再保存。",
+  "Enter a name for every module before saving.": "请先为每个模块填写名称，再保存。",
+  "There are newer unsaved edits. Save again or keep editing before leaving.": "还有更新的内容尚未保存，请再次保存或继续编辑后再离开。",
   ...TEAM_DIAGNOSTIC_ZH_CN,
   "View run records": "查看运行记录",
   "Test failed. The detailed record is unavailable; check the connections and retest. Test calls use provider and sharing allowances.": "测试未跑通，详细记录当前不可用；请检查连接后重测。测试会使用模型和共享额度。",
