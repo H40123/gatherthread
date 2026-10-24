@@ -52,7 +52,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   const editor = el("section", "team-editor"); editor.hidden = true;
   const back = makeAgentDialogButton({ document: doc, kind: "back", label: t("Back"), id: "team-editor-back", onClick: () => backToTeams() });
   back.classList.add("team-back");
-  const nameInput = input("name", 120); nameInput.placeholder = t("Team name");
+  const nameInput = input("name", 120); nameInput.placeholder = t("Team name"); nameInput.required = true;
   nameInput.addEventListener("input", () => { draft.name = nameInput.value; changed(); });
   const toolbar = el("div", "team-toolbar"), addBlank = button("Add blank module", () => insertModule()), addFavorite = button("Add favorite module", () => showFavorites()),
     saveButton = button("Save", () => void saveCurrent().catch(showError)), clearButton = button("Clear", () => {
@@ -87,6 +87,14 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   const footer = el("footer", "team-footer"), status = el("p", "field-help"), error = el("p", "form-error");
   status.setAttribute("role", "status"); error.setAttribute("role", "alert");
   const recover = button("Check the previous action", () => void recoverActions()); recover.hidden = true; footer.append(status, error, recover);
+  const leavePanel = el("section", "team-leave-confirmation"), leaveMessage = el("p"), leaveActions = el("div", "team-leave-actions");
+  leavePanel.id = "team-leave-confirmation"; leavePanel.hidden = true;
+  leaveMessage.id = "team-leave-message"; leavePanel.setAttribute("role", "group"); leavePanel.setAttribute("aria-labelledby", leaveMessage.id);
+  const leaveSave = button("Save and leave", () => void saveAndLeave()),
+    leaveStay = button("Keep editing", () => { leaveIntent = null; renderLeavePrompt(); nameInput.focus(); }),
+    leaveDiscard = button("Discard and leave", () => { if (leaveIntent) finishLeave(leaveIntent); }, "team-glass team-danger");
+  leaveSave.id = "team-leave-save"; leaveStay.id = "team-leave-stay"; leaveDiscard.id = "team-leave-discard";
+  leaveActions.append(leaveSave, leaveStay, leaveDiscard); leavePanel.append(leaveMessage, leaveActions); footer.append(leavePanel);
   dialog.append(header, body, footer); doc.body.append(dialog);
   const secondary = el("dialog", "create-dialog agent-team-dialog team-secondary-dialog"), secondaryTitle = el("h2"), secondaryBody = el("div", "team-dialog-body");
   secondaryTitle.id = "team-secondary-title"; secondary.setAttribute("aria-labelledby", secondaryTitle.id);
@@ -98,11 +106,11 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   secondary.addEventListener("cancel", event => { event.preventDefault(); secondary.close(); });
 
   let scope = "", generation = 0, epoch = 0, readBusy = false, refreshTimer, teams = [], favorites = [], runs = [], testRuns = [], runRefreshFailed = false, hadTaskActivity = false,
-    editId = null, draft = null, budgets = null, baseRevision = null, baseline = null, dirty = false, draftVersion = 0, selectedKey = "", returnFocus, catalogSignature = "", writableState, secondaryMode = "", refreshFavoriteControl = null;
+    editId = null, draft = null, budgets = null, baseRevision = null, baseline = null, dirty = false, draftVersion = 0, editorSession = 0, selectedKey = "", returnFocus, catalogSignature = "", writableState, secondaryMode = "", refreshFavoriteControl = null;
   const intents = new Map();
   const actionKinds = new WeakMap(), problemIntents = new WeakMap(), problemFences = new WeakMap(), obsoleteProblems = new WeakSet(), testReads = new Map();
   let runAuthority = 0, runAccessBlocked = false, observedContentRevision;
-  let pageActive = true;
+  let pageActive = true, leaveIntent = null, leaveSaving = null;
   let displayedProblem = null, displayedProblemText = null;
   const canvas = mountTeamCanvas({ document: doc, host: graphHost, t, makeId: makeKey, getDraft: () => draft,
     onChange: changed, onSelection: () => renderInspector() });
@@ -236,6 +244,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
     scope = next.scope; generation++; epoch++; teams = []; favorites = []; runs = []; testRuns = []; testReads.clear(); intents.clear(); selectedKey = "";
     runRefreshFailed = false; hadTaskActivity = false; displayedProblem = null; displayedProblemText = null;
     runAccessBlocked = false; observedContentRevision = next.contentRevision ?? 0; runAuthority++;
+    leaveIntent = null; leaveSaving = null; renderLeavePrompt();
     editId = null; dirty = false; draft = null; baseline = null; clearTimeout(refreshTimer); readBusy = false;
     if (secondary.open) secondary.close(); if (dialog.open) dialog.close();
     refreshFavoriteControl = null; secondaryMode = ""; secondaryTitle.textContent = ""; secondaryBody.replaceChildren();
@@ -373,7 +382,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   function mutate(slot, kind, id, value, call, accept) {
     const previous = intents.get(slot); if (previous) return attempt(previous);
     const intent = { slot, kind, id, generation, scope, contentRevision: context().contentRevision ?? 0,
-      definitionRevision: teams.find(team => team.id === id)?.revision ?? 0,
+      definitionRevision: teams.find(team => team.id === id)?.revision ?? 0, editorSession: kind === "save" ? editorSession : null,
       initialTestKey: testMetadataKey(teams.find(team => team.id === id)),
       input: structuredClone(value), call: () => call(intent.input), accept, busy: false };
     intents.set(slot, intent); if (kind === "start") hadTaskActivity = true; return attempt(intent);
@@ -397,16 +406,39 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   }
   async function saveCurrent() {
     if (!draft || !editId) throw Object.assign(new Error("Team editor unavailable"), { code: "unauthorized", status: 401 });
-    const id = editId, gen = generation;
-    const sameEditor = () => current(gen) && editId === id && draft;
+    const id = editId, gen = generation, session = editorSession;
+    const sameEditor = () => current(gen) && editId === id && editorSession === session && draft;
     const stop = intents.get(`disable:${id}`); if (stop) { await attempt(stop); if (!sameEditor()) return; }
-    const previous = intents.get(`save:${id}`); if (previous) { await attempt(previous); if (!sameEditor()) return; if (!dirty) return saved(); }
+    const previous = intents.get(`save:${id}`); if (previous) {
+      await attempt(previous); if (!sameEditor()) return;
+      // A reopened editor may show a stale cached configuration. Settling the
+      // old request does not authorize saving that cache back over its receipt.
+      if (previous.editorSession !== session) {
+        updateDirty();
+        if (!dirty && saved() && baseRevision === saved().revision) return saved();
+        showLocalError("The previous Save was confirmed. Reopen this Team to load its saved configuration before saving again."); return;
+      }
+      if (!dirty) return saved();
+    }
     if (!dirty && saved()) return saved();
-    if (!nameInput.reportValidity() || !calls.reportValidity() || !minutes.reportValidity() || !draft.name.trim()) throw Object.assign(new Error("Invalid Team configuration"), { code: "validation_error", status: 422 });
+    if (!draft.name.trim() || !nameInput.reportValidity()) {
+      showLocalError("Enter a Team name before saving."); nameInput.focus(); return;
+    }
+    for (const [field, value, maximum, message] of [[calls, budgets.max_calls, 48, "Choose a total call limit from 1 to 48 before saving."],
+      [minutes, budgets.max_duration_minutes, 120, "Choose a duration limit from 1 to 120 minutes before saving."]]) {
+      if (!Number.isInteger(value) || value < 1 || value > maximum || !field.reportValidity()) {
+        showLocalError(message); field.focus(); return;
+      }
+    }
+    const unnamed = draft.nodes.find(node => !node.label.trim());
+    if (unnamed) {
+      showLocalError("Enter a name for every module before saving."); canvas.select({ kind: "node", id: unnamed.id }); renderInspector();
+      doc.getElementById(`team-node-name-${unnamed.id}`)?.focus(); return;
+    }
     const version = draftVersion;
     const payload = { draft: structuredClone(draft), ...budgets, expected_revision: baseRevision, idempotency_key: makeKey("team-save") };
     const response = await mutate(`save:${id}`, "save", id, payload, value => api.saveAgentTeam(id, value), result => {
-      if (editId === id) {
+      if (editId === id && editorSession === session) {
         // Library receipts identify the accepted mutation but can return a
         // newer current definition. Do not lend its revision to a newer local
         // draft that was never based on those unseen remote changes.
@@ -424,6 +456,11 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
           rulesInput.value = draft.team_prompt; canvas.render(); renderInspector();
         }
         updateDirty();
+      } else if (editId === id && draft) {
+        // An old receipt can update the library but must not lend its CAS or
+        // successful test to a replacement editor that has not loaded it.
+        updateDirty();
+        if (dirty && !displayedProblem && !displayedProblemText) showLocalError("The previous Save was confirmed. Reopen this Team to load its saved configuration before saving again.");
       }
     });
     return response?.team;
@@ -463,7 +500,8 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   function openEditor(team) {
     if (team === null && teams.length >= 5) { showLocalError("Team limit reached (5). Delete one to add another."); return; }
     if (dirty && !confirm(t("Discard unsaved changes?"))) return;
-    editId = team?.id ?? makeKey("team"); baseRevision = team?.revision ?? null;
+    leaveIntent = null; renderLeavePrompt();
+    editorSession++; editId = team?.id ?? makeKey("team"); baseRevision = team?.revision ?? null;
     draft = team ? structuredClone(team.draft) : { name: t("New Agent Team"), team_prompt: "", nodes: [], edges: [] };
     budgets = { max_calls: team?.max_calls ?? 12, max_duration_minutes: team?.max_duration_minutes ?? 30 };
     baseline = team ? configurationKey(draft, budgets) : null;
@@ -491,19 +529,51 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
       id, x: 60 + slot % 4 * 290, y: 70 + Math.floor(slot / 4) * 180 });
     if (!draft.entry_node_id) draft.entry_node_id = draft.nodes[0].id; changed(); canvas.select({ kind: "node", id }); canvas.reveal(id); renderInspector();
   }
-  function backToTeams() {
-    if (!dialog.open) return false;
-    if (dirty && !confirm(t("Discard unsaved changes?"))) return false;
-    editId = null; dirty = false; editor.hidden = true; overview.hidden = false; title.textContent = t("My Agent teams"); render(); overviewBack.focus();
-    return true;
+  function editorWrites() { return pendingFor(editId).filter(intent => ["save", "control", "disable"].includes(intent.kind)); }
+  function renderLeavePrompt() {
+    leavePanel.hidden = !leaveIntent; footer.dataset.teamLeaveOpen = String(Boolean(leaveIntent));
+    const writes = editorWrites(), waiting = writes.length > 0;
+    leaveMessage.textContent = t(waiting
+      ? "Submitted changes may still be saved. Leaving discards local edits, not the submitted action. Reopen to check its result."
+      : "Save your Team changes before leaving?");
+    leaveSave.textContent = t(writes.some(intent => intent.uncertain) ? "Check save and leave" : "Save and leave");
+    leaveSave.disabled = !context().writable || Boolean(leaveSaving) || writes.some(intent => intent.busy);
+    leaveDiscard.textContent = t(waiting ? "Leave without waiting" : "Discard and leave");
   }
-  function closeDialog(exit = false) {
+  function requestLeave(kind) {
     if (!dialog.open) return false;
-    if (dirty && !confirm(t("Discard unsaved changes?"))) return false;
+    if (!current(generation)) { updateContext(); return false; }
+    const intent = { kind, generation, id: editId };
+    if (!dirty && !editorWrites().length) return finishLeave(intent);
+    leaveIntent = intent;
+    if (secondary.open) secondary.close();
+    renderLeavePrompt(); leaveStay.focus(); return false;
+  }
+  function finishLeave(intent) {
+    if (!dialog.open || !current(intent.generation) || intent.id !== editId) return false;
+    leaveIntent = null; leaveSaving = null; renderLeavePrompt();
     dirty = false; editId = null; draft = null;
-    if (secondary.open) secondary.close(); dialog.close(); if (exit) onExit(); restoreFocus();
-    return true;
+    if (intent.kind === "library") {
+      editor.hidden = true; overview.hidden = false; title.textContent = t("My Agent teams"); render(); overviewBack.focus(); return true;
+    }
+    if (secondary.open) secondary.close(); dialog.close(); if (intent.kind === "exit") onExit(); restoreFocus(); return true;
   }
+  async function saveAndLeave() {
+    const intent = leaveIntent;
+    if (!intent || leaveSave.disabled) return;
+    if (!current(intent.generation) || intent.id !== editId || !dialog.open) { updateContext(); return; }
+    const version = draftVersion; leaveSaving = intent; renderLeavePrompt();
+    try {
+      const accepted = await saveCurrent();
+      if (leaveIntent !== intent || !current(intent.generation) || intent.id !== editId || !dialog.open) return;
+      if (accepted && draftVersion === version && !dirty) finishLeave(intent);
+      else if (accepted) showLocalError("There are newer unsaved edits. Save again or keep editing before leaving.");
+    } catch (problem) {
+      if (leaveIntent === intent && current(intent.generation) && intent.id === editId && dialog.open) showError(problem);
+    } finally { if (leaveSaving === intent) { leaveSaving = null; renderButtons(); } }
+  }
+  function backToTeams() { return requestLeave("library"); }
+  function closeDialog(exit = false) { return requestLeave(exit ? "exit" : "management"); }
   function restoreFocus() {
     if (dialog.open || doc.querySelector?.("dialog[open]")) return;
     for (const candidate of [returnFocus, hostButton, doc.getElementById("mobile-tools-button"), doc.getElementById("mobile-compose-tools-button")]) {
@@ -518,7 +588,11 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   // WebKit can restore BODY when the opener lives in a now-closed mobile
   // tools dialog. Run again after the native close focus steps have completed.
   dialog.addEventListener("close", restoreFocus);
-  dialog.addEventListener("cancel", event => { event.preventDefault(); if (editor.hidden) closeDialog(); else backToTeams(); });
+  dialog.addEventListener("cancel", event => {
+    event.preventDefault();
+    if (leaveIntent) { leaveIntent = null; renderLeavePrompt(); nameInput.focus(); }
+    else if (editor.hidden) closeDialog(); else backToTeams();
+  });
   hostButton.addEventListener("click", () => { updateContext(); if (hostButton.disabled) return; returnFocus = doc.activeElement;
     overview.hidden = false; editor.hidden = true; title.textContent = t("My Agent teams"); dialog.showModal(); render(); void refresh();
     const gen = generation; void refreshSources().then(() => { if (current(gen)) updateContext(); }).catch(() => {}); });
@@ -688,8 +762,11 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
       if (diagnostic) testState.textContent = `${diagnostic.text} ${diagnostic.advice}`;
       else if (team.test_status === "failed") testState.textContent = t("Test failed. The detailed record is unavailable; check the connections and retest. Test calls use provider and sharing allowances.");
     }
-    recover.hidden = ![...intents.values()].some(intent => intent.uncertain && !intent.busy);
-    status.textContent = [...intents.values()].some(intent => intent.uncertain) ? t("The last action is unconfirmed. Check it before repeating it.") : "";
+    renderLeavePrompt();
+    const uncertain = [...intents.values()].filter(intent => intent.uncertain);
+    recover.hidden = !uncertain.some(intent => !intent.busy);
+    status.textContent = uncertain.some(intent => intent.busy) ? t("Checking the previous action…")
+      : uncertain.length ? t("The last action is unconfirmed. Check it before repeating it.") : "";
   }
   function renderRuns() {
     runList.replaceChildren();

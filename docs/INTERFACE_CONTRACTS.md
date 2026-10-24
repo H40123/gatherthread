@@ -663,6 +663,17 @@ the existing terminal-only DELETE route. After a lost 204, an authenticated
 after the current session list remains readable and does not contain it;
 membership-hidden 404s, revoked authority and active-run conflicts remain failures.
 
+The Team editor's local leave controls (`team-leave-save`, `team-leave-stay`,
+`team-leave-discard`) do not change the save wire contract. Save and leave must
+use the existing Save operation and validate its current editor/draft identity
+before navigating. Closing while a Save is pending or unconfirmed is not
+cancellation and retains the original request/body/key for explicit recovery;
+late acknowledgments cannot navigate a replacement view. Save recovery is also
+bound to an editor session: settling an older Save cannot automatically turn a
+reopened stale cached draft into a new write or lend that draft the receipt's
+revision/test stamp. It must load the confirmed configuration or stop for an
+explicit reopen before another Save.
+
 Run acknowledgments are acceptance receipts, not versioned status updates. A
 client must not replace a later observed run status with a delayed Start or
 control response; it still settles the original intent and refreshes current

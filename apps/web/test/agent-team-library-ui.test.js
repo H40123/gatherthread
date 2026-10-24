@@ -190,7 +190,8 @@ test("Team editor Back and Escape each move one level and preserve unsaved-chang
   f.el("team-editor-back").click();
   assert.equal(editor.hidden, false); assert.equal(f.el("team-name").value, "Unsaved name");
   f.el("team-dialog-close").click(); assert.equal(f.el("agent-team-dialog").open, true); assert.equal(exits, 0);
-  discard = true; f.el("agent-team-dialog").dispatch("cancel");
+  f.el("team-leave-stay").click(); f.el("agent-team-dialog").dispatch("cancel");
+  f.el("team-leave-discard").click();
   assert.equal(editor.hidden, true); assert.equal(overview.hidden, false); assert.equal(f.el("agent-team-dialog").open, true);
   assert.equal(f.document.activeElement, f.el("team-library-back")); assert.equal(exits, 0);
   f.el("agent-team-dialog").dispatch("cancel");
@@ -205,8 +206,9 @@ test("secondary Team Back preserves the editor, while X checks changes then exit
   assert.equal(secondary.open, false); assert.equal(f.el("agent-team-dialog").open, true); assert.equal(exits, 0);
   f.el("team-name").value = "Unsaved secondary name"; f.el("team-name").dispatch("input");
   f.el("team-add-favorite").click(); f.el("team-secondary-close").click();
-  assert.equal(secondary.open, true); assert.equal(f.el("agent-team-dialog").open, true); assert.equal(exits, 0);
-  discard = true; f.el("team-secondary-close").click();
+  assert.equal(secondary.open, false); assert.equal(f.el("agent-team-dialog").open, true); assert.equal(exits, 0);
+  assert.equal(f.el("team-leave-confirmation").hidden, false);
+  f.el("team-leave-discard").click();
   assert.equal(secondary.open, false); assert.equal(f.el("agent-team-dialog").open, false); assert.equal(exits, 1);
 });
 
@@ -2113,3 +2115,244 @@ for (const boundary of ["access denied", "history changed"]) for (const foregrou
     assert.doesNotMatch(app.sendError.textContent + f.document.body.querySelector(".form-error").textContent, /LATE_COMPOSER_PRIVATE_LABEL|PRIVATE_PROVIDER_EXCEPTION/u);
   });
 }
+
+
+test("leaving a new Team can save its empty unbound draft before closing", async () => {
+  let exits = 0;
+  const f = fixture({ onExit: () => exits++ }); await flush(); f.hostButton.click(); f.el("team-add").click();
+  f.update({ runtimes: [], cloudProfiles: [], sharedAgents: [] });
+  f.el("team-dialog-close").click();
+  assert.equal(f.el("agent-team-dialog").open, true);
+  assert.equal(f.el("team-leave-confirmation").hidden, false);
+  assert.equal(f.calls.length, 0, "asking to leave cannot silently save or execute");
+  f.el("team-leave-save").click(); await flush();
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0][0], "save");
+  assert.deepEqual(f.calls[0][2].draft.nodes, []);
+  assert.equal(f.el("agent-team-dialog").open, false); assert.equal(exits, 1);
+});
+
+test("leave-save identifies an empty Team name and retains a discard exit", async () => {
+  const f = fixture({ initial: [team()] }); await open(f);
+  editInput(f.el("team-name"), "   "); f.el("team-dialog-close").click();
+  f.el("team-leave-save").click(); await flush();
+  assert.equal(f.calls.length, 0); assert.equal(f.el("agent-team-dialog").open, true);
+  assert.equal(f.document.activeElement, f.el("team-name"));
+  assert.match(f.document.body.querySelector(".form-error").textContent, /Team name/u);
+  assert.equal(f.el("team-leave-discard").disabled, false);
+  f.el("team-leave-discard").click(); assert.equal(f.el("agent-team-dialog").open, false);
+});
+
+for (const [id, label] of [["team-max-calls", "call limit"], ["team-max-minutes", "duration limit"]]) {
+  test(`leave-save identifies an invalid ${label} without trapping the editor`, async () => {
+    const f = fixture({ initial: [team()] }); await open(f); editInput(f.el(id), "0");
+    f.el("team-editor-back").click(); f.el("team-leave-save").click(); await flush();
+    assert.equal(f.calls.length, 0); assert.equal(f.document.activeElement, f.el(id));
+    assert.match(f.document.body.querySelector(".form-error").textContent.toLowerCase(), new RegExp(label));
+    f.el("team-leave-stay").click(); assert.equal(f.el("team-leave-confirmation").hidden, true);
+    assert.equal(f.el("team-name").value, "team-a");
+    editInput(f.el(id), "13"); f.el("team-save").click(); await flush();
+    assert.equal(f.calls.filter(call => call[0] === "save").length, 1);
+  });
+}
+
+test("unknown save-and-leave can recover the exact request and closes only after its confirmed receipt", async () => {
+  let attempts = 0, exits = 0;
+  const f = fixture({ initial: [team()], onExit: () => exits++, overrides: { saveAgentTeam: async (id, input) => {
+    f.calls.push(["save", id, structuredClone(input)]);
+    if (++attempts === 1) throw Object.assign(new Error("Response lost"), { status: 0 });
+    return { team: team(id, { draft: structuredClone(input.draft), revision: 2,
+      max_calls: input.max_calls, max_duration_minutes: input.max_duration_minutes }), replayed: true };
+  } } }); await open(f); editInput(f.el("team-name"), "Keep the exact Save");
+  f.el("team-dialog-close").click(); f.el("team-leave-save").click(); await flush();
+  assert.equal(exits, 0); assert.equal(f.el("agent-team-dialog").open, true);
+  assert.equal(f.el("team-leave-save").disabled, false);
+  f.el("team-leave-save").click(); await flush();
+  assert.deepEqual(f.calls[1], f.calls[0], "recovery must reuse the original save body and idempotency key");
+  assert.equal(f.el("agent-team-dialog").open, false); assert.equal(exits, 1);
+});
+
+test("a pending save does not prevent hiding the editor or let a late receipt close a new view", async () => {
+  let finishSave, exits = 0;
+  const f = fixture({ initial: [team()], onExit: () => exits++, overrides: { saveAgentTeam: (id, input) => {
+    f.calls.push(["save", id, structuredClone(input)]);
+    return new Promise(resolve => { finishSave = () => resolve({ team: team(id,
+      { draft: structuredClone(input.draft), revision: 2, max_calls: input.max_calls, max_duration_minutes: input.max_duration_minutes }), replayed: false }); });
+  } } }); await open(f); editInput(f.el("team-name"), "Submitted before hiding");
+  f.el("team-dialog-close").click(); f.el("team-leave-save").click(); await flush();
+  assert.equal(f.el("team-leave-discard").disabled, false);
+  f.el("team-leave-discard").click(); assert.equal(f.el("agent-team-dialog").open, false); assert.equal(exits, 1);
+  f.hostButton.click(); await flush(); assert.equal(f.el("agent-team-dialog").open, true);
+  finishSave(); await flush(); assert.equal(f.el("agent-team-dialog").open, true, "old leave intent no longer owns this view");
+  assert.equal(f.calls.length, 1, "leaving does not retry, cancel or submit another operation");
+});
+
+test("save-and-leave cannot discard edits made while its receipt is pending", async () => {
+  let finishSave, exits = 0;
+  const f = fixture({ initial: [team()], onExit: () => exits++, overrides: { saveAgentTeam: (id, input) =>
+    new Promise(resolve => { finishSave = () => resolve({ team: team(id,
+      { draft: structuredClone(input.draft), revision: 2, max_calls: input.max_calls, max_duration_minutes: input.max_duration_minutes }), replayed: false }); }) } });
+  await open(f); editInput(f.el("team-name"), "Saved snapshot"); f.el("team-dialog-close").click();
+  f.el("team-leave-save").click(); await flush(); editInput(f.el("team-name"), "Newer unsaved text"); finishSave(); await flush();
+  assert.equal(exits, 0); assert.equal(f.el("agent-team-dialog").open, true);
+  assert.equal(f.el("team-name").value, "Newer unsaved text"); assert.equal(f.el("team-save").disabled, false);
+});
+
+
+test("leave-save identifies the selected unnamed module and lets its name be corrected", async () => {
+  const f = fixture({ initial: [team()] }); await open(f); f.document.body.querySelector("[data-node-id='node-a']").dispatch("click");
+  editInput(f.el("team-node-name-node-a"), "  "); f.el("team-dialog-close").click(); f.el("team-leave-save").click(); await flush();
+  assert.equal(f.calls.length, 0); assert.equal(f.document.activeElement, f.el("team-node-name-node-a"));
+  assert.match(f.document.body.querySelector(".form-error").textContent, /every module/u);
+  editInput(f.el("team-node-name-node-a"), "Named module"); f.el("team-leave-save").click(); await flush();
+  assert.equal(f.calls[0][2].draft.nodes[0].label, "Named module"); assert.equal(f.el("agent-team-dialog").open, false);
+});
+
+test("Escape dismisses a leave choice and keeps the unsaved editor available", async () => {
+  const f = fixture({ initial: [team()] }); await open(f); editInput(f.el("team-name"), "Unsaved Escape draft");
+  f.el("team-dialog-close").click(); assert.equal(f.el("team-leave-confirmation").hidden, false);
+  f.el("agent-team-dialog").dispatch("cancel");
+  assert.equal(f.el("team-leave-confirmation").hidden, true); assert.equal(f.el("agent-team-dialog").open, true);
+  assert.equal(f.el("team-name").value, "Unsaved Escape draft"); assert.equal(f.document.activeElement, f.el("team-name"));
+  assert.equal(f.calls.length, 0);
+});
+
+test("unknown Save remains recoverable with its original key after leaving and reopening", async () => {
+  let attempt = 0;
+  const f = fixture({ initial: [team()], overrides: { saveAgentTeam: async (id, input) => {
+    f.calls.push(["save", id, structuredClone(input)]);
+    if (++attempt === 1) throw Object.assign(new Error("Lost Save acknowledgement"), { status: 0 });
+    const accepted = team(id, { draft: structuredClone(input.draft), revision: 2,
+      max_calls: input.max_calls, max_duration_minutes: input.max_duration_minutes });
+    f.teams = [accepted]; return { team: accepted, replayed: true };
+  } } }); await open(f); editInput(f.el("team-name"), "Submitted once"); f.el("team-save").click(); await flush();
+  f.el("team-dialog-close").click(); assert.equal(f.el("team-leave-discard").textContent, "Leave without waiting");
+  f.el("team-leave-discard").click(); f.hostButton.click(); await flush();
+  assert.equal(f.button("Check the previous action").hidden, false);
+  f.button("Check the previous action").click(); await flush();
+  assert.deepEqual(f.calls[1], f.calls[0]); assert.equal(f.el("agent-team-dialog").open, true);
+  assert.equal(f.document.body.querySelector(".team-row-edit").querySelector("strong").textContent, "Submitted once");
+});
+
+test("a leave-save receipt after an account switch cannot close or modify the next account editor", async () => {
+  let finishSave, exits = 0;
+  const f = fixture({ initial: [team()], onExit: () => exits++, overrides: { saveAgentTeam: (id, input) =>
+    new Promise(resolve => { finishSave = () => resolve({ team: team(id,
+      { draft: structuredClone(input.draft), revision: 2, max_calls: input.max_calls, max_duration_minutes: input.max_duration_minutes }), replayed: false }); }) } });
+  await open(f); editInput(f.el("team-name"), "First account draft"); f.el("team-dialog-close").click(); f.el("team-leave-save").click(); await flush();
+  f.update({ scope: "bob:project-a:session-a", userId: "bob" }); f.teams = []; await flush();
+  f.hostButton.click(); await flush(); f.el("team-add").click(); editInput(f.el("team-name"), "Next account draft");
+  finishSave(); await flush();
+  assert.equal(exits, 0); assert.equal(f.el("agent-team-dialog").open, true); assert.equal(f.el("team-name").value, "Next account draft");
+  assert.equal(f.el("team-leave-confirmation").hidden, true);
+});
+
+test("lost write permission disables leave-save while preserving an explicit local discard path", async () => {
+  const f = fixture({ initial: [team()] }); await open(f); editInput(f.el("team-name"), "Unsaved before permission changed");
+  f.update({ writable: false, controlWritable: false }); f.el("team-dialog-close").click();
+  assert.equal(f.el("team-leave-save").disabled, true); assert.equal(f.el("team-leave-discard").disabled, false);
+  f.el("team-leave-save").click(); assert.equal(f.calls.length, 0);
+  f.el("team-leave-discard").click(); assert.equal(f.el("agent-team-dialog").open, false);
+});
+
+
+test("recovering a Save from a reopened stale editor cannot automatically overwrite its accepted configuration", async () => {
+  let offline = false, attempts = 0;
+  const original = team();
+  const f = fixture({ initial: [original], overrides: {
+    listAgentTeams: async () => { if (offline) throw Error("Library temporarily offline"); return { teams: [structuredClone(original)], modules: [], team_limit: 5, module_limit: 5 }; },
+    saveAgentTeam: async (id, input) => {
+      f.calls.push(["save", id, structuredClone(input)]);
+      if (++attempts === 1) throw Object.assign(new Error("Save accepted but receipt lost"), { status: 0 });
+      return { team: team(id, { draft: structuredClone(input.draft), revision: 2,
+        max_calls: input.max_calls, max_duration_minutes: input.max_duration_minutes }), replayed: attempts === 2 };
+    },
+  } }); await open(f); editInput(f.el("team-name"), "Accepted renamed Team"); f.el("team-save").click(); await flush();
+  f.el("team-dialog-close").click(); f.el("team-leave-discard").click(); offline = true;
+  f.hostButton.click(); await flush(); f.document.body.querySelector(".team-row-edit").click();
+  assert.equal(f.el("team-name").value, "team-a", "only the old cached definition is readable while offline");
+  f.el("team-dialog-close").click(); f.el("team-leave-save").click(); await flush();
+  assert.equal(f.calls.length, 2, "only the original exact-key save may be replayed; old cached content must not become another write");
+  assert.deepEqual(f.calls[1], f.calls[0]); assert.equal(f.el("agent-team-dialog").open, true);
+  assert.match(f.document.body.querySelector(".form-error").textContent, /Reopen/u);
+});
+
+
+test("same-key Save recovery reports active checking and clears its own feedback after confirmed success", async () => {
+  let attempts = 0, confirmSave;
+  const f = fixture({ initial: [team()], overrides: { saveAgentTeam: (id, input) => {
+    f.calls.push(["save", id, structuredClone(input)]);
+    if (++attempts === 1) return Promise.reject(Object.assign(new Error("Lost receipt"), { status: 0 }));
+    return new Promise(resolve => { confirmSave = () => {
+      const accepted = team(id, { draft: structuredClone(input.draft), revision: 2,
+        max_calls: input.max_calls, max_duration_minutes: input.max_duration_minutes });
+      f.teams = [accepted]; resolve({ team: accepted, replayed: true });
+    }; });
+  } } }); await open(f); editInput(f.el("team-name"), "Save receipt to recover"); f.el("team-save").click(); await flush();
+  f.el("team-dialog-close").click(); f.el("team-leave-discard").click(); f.hostButton.click(); await flush();
+  const status = f.document.body.querySelector("[role='status']"), error = f.document.body.querySelector(".form-error");
+  assert.match(status.textContent, /unconfirmed/u); const recovery = f.ui.recover(); await flush();
+  assert.equal(f.button("Check the previous action").hidden, true);
+  assert.equal(status.textContent, "Checking the previous action…", "a hidden recovery button must not leave an instruction to click it");
+  confirmSave(); await recovery; await flush();
+  assert.equal(status.textContent, ""); assert.equal(error.textContent, "");
+  assert.equal(f.button("Check the previous action").hidden, true); assert.deepEqual(f.calls[1], f.calls[0]);
+  f.document.documentElement.lang = "zh-CN"; f.ui.refreshLanguage(); assert.equal(status.textContent, ""); assert.equal(error.textContent, "");
+});
+
+test("recovering an earlier Save preserves a newer editor's field validation", async () => {
+  let attempts = 0;
+  const second = team("team-b");
+  const f = fixture({ initial: [team(), second], overrides: { saveAgentTeam: async (id, input) => {
+    f.calls.push(["save", id, structuredClone(input)]);
+    if (++attempts === 1) throw Object.assign(new Error("Lost earlier Save"), { status: 0 });
+    const accepted = team(id, { draft: structuredClone(input.draft), revision: 2,
+      max_calls: input.max_calls, max_duration_minutes: input.max_duration_minutes });
+    f.teams = [accepted, second]; return { team: accepted, replayed: true };
+  } } }); await open(f); editInput(f.el("team-name"), "Earlier accepted Save"); f.el("team-save").click(); await flush();
+  f.el("team-dialog-close").click(); f.el("team-leave-discard").click(); f.hostButton.click(); await flush();
+  f.document.body.querySelector(".team-library-list").children[1].children[0].click();
+  editInput(f.el("team-name"), ""); f.el("team-save").click(); await flush();
+  const message = f.document.body.querySelector(".form-error").textContent; assert.match(message, /Team name/u);
+  await f.ui.recover(); await flush();
+  assert.equal(f.document.body.querySelector(".form-error").textContent, message);
+  assert.equal(f.document.body.querySelector("[role='status']").textContent, ""); assert.equal(f.el("team-name").value, "");
+});
+
+
+test("a reopened editor that has loaded the confirmed version can recover and leave without another Save", async () => {
+  let attempts = 0;
+  const f = fixture({ initial: [team()], overrides: { saveAgentTeam: async (id, input) => {
+    f.calls.push(["save", id, structuredClone(input)]);
+    const accepted = team(id, { draft: structuredClone(input.draft), revision: 2,
+      max_calls: input.max_calls, max_duration_minutes: input.max_duration_minutes });
+    f.teams = [accepted];
+    if (++attempts === 1) throw Object.assign(new Error("Receipt lost after saving"), { status: 0 });
+    return { team: accepted, replayed: true };
+  } } }); await open(f); editInput(f.el("team-name"), "Already loaded after reopen"); f.el("team-save").click(); await flush();
+  f.el("team-dialog-close").click(); f.el("team-leave-discard").click(); f.hostButton.click(); await flush();
+  f.document.body.querySelector(".team-row-edit").click(); assert.equal(f.el("team-name").value, "Already loaded after reopen");
+  f.el("team-dialog-close").click(); f.el("team-leave-save").click(); await flush();
+  assert.equal(f.calls.length, 2); assert.deepEqual(f.calls[1], f.calls[0]); assert.equal(f.el("agent-team-dialog").open, false);
+});
+
+test("generic recovery cannot lend a reopened stale draft the accepted revision or test stamp", async () => {
+  let offline = false, attempts = 0;
+  const original = team();
+  const f = fixture({ initial: [original], overrides: {
+    listAgentTeams: async () => { if (offline) throw Error("Library offline"); return { teams: [original], modules: [], team_limit: 5, module_limit: 5 }; },
+    saveAgentTeam: async (id, input) => {
+      f.calls.push(["save", id, structuredClone(input)]);
+      if (++attempts === 1) throw Object.assign(new Error("Accepted but lost receipt"), { status: 0 });
+      if (attempts > 2) throw Object.assign(new Error("Stale expected revision"), { status: 409, code: "conflict" });
+      return { team: team(id, { draft: structuredClone(input.draft), revision: 2, tested_revision: 2, test_status: "passed",
+        max_calls: input.max_calls, max_duration_minutes: input.max_duration_minutes }), replayed: true };
+    },
+  } }); await open(f); editInput(f.el("team-name"), "Accepted changed configuration"); f.el("team-save").click(); await flush();
+  f.el("team-dialog-close").click(); f.el("team-leave-discard").click(); offline = true;
+  f.hostButton.click(); await flush(); f.document.body.querySelector(".team-row-edit").click(); await f.ui.recover(); await flush();
+  assert.equal(f.el("team-name").value, "team-a"); assert.equal(f.el("team-save").disabled, false);
+  assert.equal(f.el("team-enable").disabled, true, "the old visible configuration cannot borrow another revision's passed test");
+  editInput(f.el("team-name"), "Explicit newer local edit"); f.el("team-save").click(); await flush();
+  assert.equal(f.calls[2][2].expected_revision, 1, "only reopening/loading the confirmed configuration can advance this editor's CAS");
+  assert.equal(f.el("team-name").value, "Explicit newer local edit");
+});
