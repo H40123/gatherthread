@@ -7,6 +7,7 @@ import { CollaborationService } from "../src/service.js";
 import { AgentTeams } from "../src/agent-teams.js";
 import { AgentTeamLibrary } from "../src/agent-team-library.js";
 import { ApiError } from "../src/errors.js";
+import { probeReplyFromPrompt } from "./agent-team-probe-fixtures.js";
 
 function fixture() {
   let time = Date.now(); const clock = () => new Date(time);
@@ -38,9 +39,9 @@ function fixture() {
       const claim = service.claimAgentRequest(actor, session.id, step.request_event_id, runtime.id);
       if (claim.status !== "claimed") continue;
       const prompt = String((database.getEvent(session.id, step.request_event_id).payload as { content: string }).content);
-      const response = JSON.parse(prompt.split("Respond exactly with these lines:\n")[1]!.split("\n")[0]!) as string[];
+      const response = probeReplyFromPrompt(prompt);
       service.completeAgentRequest(actor, session.id, step.request_event_id, runtime.id, key(),
-        { text: valid ? response.join("\n") : "Wrong probe response" }, target.model, undefined, claim.attempt_count);
+        { text: valid ? response : "Wrong probe response" }, target.model, undefined, claim.attempt_count);
     }
     throw new Error("Connectivity test did not terminate");
   };

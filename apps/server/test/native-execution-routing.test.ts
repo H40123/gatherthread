@@ -12,6 +12,7 @@ import { AgentSharing } from "../src/agent-sharing.js";
 import { AgentShareLimitsSchema, type AgentTeamPlan } from "@gatherthread/protocol";
 import { startCollaborationServer } from "../src/server.js";
 import { identityFixture, browserSessionFixture } from "./auth-fixtures.js";
+import { probeReplyFromPrompt } from "./agent-team-probe-fixtures.js";
 
 function fixture(path = ":memory:") {
   let key = 0;
@@ -30,10 +31,9 @@ function fixture(path = ":memory:") {
     await teams.pump();
     const step = teams.store.steps(probe.run.id)[0]!, claim = service.claimAgentRequest(actor, session.id, step.request_event_id!, runtime.id);
     const content = (db.getEvent(session.id, step.request_event_id!).payload as { content: string }).content;
-    const encoded = content.split("\n").find(line => line.startsWith('["GT_TEAM_OK:'))!;
-    assert.ok(encoded, "Exercise the actual saved connectivity probe, not a raw run bypass");
+    const reply = probeReplyFromPrompt(content);
     service.completeAgentRequest(actor, session.id, step.request_event_id!, runtime.id, `routing-probe-answer-${++key}`,
-      { content: (JSON.parse(encoded) as string[]).join("\n") }, "routing-model", undefined, claim.attempt_count);
+      { content: reply }, "routing-model", undefined, claim.attempt_count);
     await teams.pump(); assert.equal(library.read(actor, saved.id).test_status, "passed");
     const enabled = library.control(actor, saved.id, session.id, { enabled: true, expected_revision: saved.revision, idempotency_key: `routing-enable-${++key}` }).team;
     const started = library.start(actor, saved.id, session.id, { expected_revision: enabled.revision, content: "Public saved Team task",

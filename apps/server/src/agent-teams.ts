@@ -226,7 +226,8 @@ export class AgentTeams {
     const plan = this.store.plan(run);
     if (run.purpose === "test") return { content: [
       "GatherThread minimal connectivity test, explicitly started by the human. Do not use tools, change files, delegate, or carry out a task from earlier conversation.",
-      "Respond exactly with these lines:", JSON.stringify(this.probeLines(run, step, node)),
+      "Return plain text only: no JSON array, quotes, Markdown fences, speaker/model labels, explanations, or text from earlier conversation.",
+      "Respond exactly with these lines:", this.probeLines(run, step, node).join("\n"),
       "Route lines carry the authenticated source probe's public step identity along each configured incoming direction. Echo all supplied lines in order, with no extra text.",
       `This checks module ${node.label}. Its frozen graph routes: ${JSON.stringify(plan.edges.filter(edge => edge.source === node.id || edge.target === node.id))}`,
     ].join("\n"), taskOffset: 0 };
