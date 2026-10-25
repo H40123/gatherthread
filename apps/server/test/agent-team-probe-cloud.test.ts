@@ -11,6 +11,7 @@ import { HostedAgent, type HostedAgentOptions } from "../src/hosted-agent.js";
 import { AgentTeams } from "../src/agent-teams.js";
 import { AgentTeamLibrary } from "../src/agent-team-library.js";
 import { redactJson } from "../src/redaction.js";
+import { probeReplyFromPrompt } from "./agent-team-probe-fixtures.js";
 
 const options = (runContainer: NonNullable<HostedAgentOptions["runContainer"]>): HostedAgentOptions => ({
   image: `example/hosted@sha256:${"a".repeat(64)}`,
@@ -148,9 +149,7 @@ test("cloud connectivity probes omit unrelated 20KiB history and opted-in code, 
     const context = JSON.parse(encodedContext) as HistoryContext; contexts.push(context);
     assert.deepEqual(context.items, []); assert.equal(context.content_revision, 0);
     assert.equal(context.through_sequence, database.requireSession(session.id).next_sequence - 1);
-    const encoded = prompt.split("\n").find(line => line.startsWith('["GT_TEAM_OK:')); assert.ok(encoded);
-    const lines = JSON.parse(encoded) as string[];
-    return JSON.stringify({ answer: lines.join("\n"), files: [] });
+    return JSON.stringify({ answer: probeReplyFromPrompt(prompt), files: [] });
   }));
   const teams = new AgentTeams(service, hosted, { clock, autoStart: false }), library = new AgentTeamLibrary(teams);
   try {
@@ -205,8 +204,8 @@ test("a saved cloud Team's explicit timeout continuation keeps its accepted snap
     const controlMount = args.find(arg => arg.includes("dst=/run/gatherthread,readonly")); assert.ok(controlMount);
     const control = /src=([^,]+),dst/u.exec(controlMount)![1]!;
     const config = JSON.parse(readFileSync(join(control, "opencode.json"), "utf8")) as { model: string }; observedModels.push(config.model);
-    const prompt = readFileSync(join(control, "prompt.txt"), "utf8"), encoded = prompt.split("\n").find(line => line.startsWith('["GT_TEAM_OK:'));
-    if (encoded) { probeCalls++; return JSON.stringify({ answer: (JSON.parse(encoded) as string[]).join("\n"), files: [] }); }
+    const prompt = readFileSync(join(control, "prompt.txt"), "utf8");
+    if (prompt.includes("Respond exactly with these lines:\n")) { probeCalls++; return JSON.stringify({ answer: probeReplyFromPrompt(prompt), files: [] }); }
     taskCalls++; assert.match(prompt, /immutable saved cloud task/u); assert.equal(prompt.includes("Replacement model must not execute"), false);
     if (taskCalls === 1) throw new Error("container_timeout");
     return JSON.stringify({ answer: "The original immutable task is complete.", files: [] });

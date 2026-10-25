@@ -12,16 +12,17 @@ import { AgentTeams } from "../src/agent-teams.js";
 import { AgentTeamLibrary } from "../src/agent-team-library.js";
 import { ApiError } from "../src/errors.js";
 import { AGENT_TEAM_REVISION_EPOCH } from "../src/agent-team-schema.js";
+import { probeReplyFromPrompt } from "./agent-team-probe-fixtures.js";
 
-function fixture(path = ":memory:") {
+function fixture(path = ":memory:", harness: "codex" | "deepseek-harness" = "codex") {
   const db = new CollaborationDatabase(path), service = new CollaborationService(db);
   const actor = db.bootstrapIdentity({ display_name: "Synthetic library owner", device_name: "Synthetic browser one" }).actor;
   const second = { ...actor, device_id: db.createDevice(actor.user_id, "Synthetic browser two").device_id };
   const peer = db.createIdentity({ display_name: "Synthetic private peer", device_name: "Synthetic peer browser", can_create_projects: true }).actor;
   const { session } = service.createSession(actor, { mode: "multi", title: "Synthetic security fixture", idempotency_key: "library-security-session" });
-  const runtime = service.registerRuntime(actor, { session_id: session.id, device_id: actor.device_id, harness: "codex", provider: "openai",
+  const runtime = service.registerRuntime(actor, { session_id: session.id, device_id: actor.device_id, harness, provider: "openai",
     model: "synthetic-model", context_deletion_version: 1, capture_fidelity: "harness_transcript", local_session_id: "synthetic-library-security-native" });
-  const target = { kind: "local" as const, runtime_id: runtime.id, harness: "codex" as const, provider: "openai", model: "synthetic-model" };
+  const target = { kind: "local" as const, runtime_id: runtime.id, harness, provider: "openai", model: "synthetic-model" };
   const draft: AgentTeamDraft = { name: "Security fixture", team_prompt: "", nodes: [
     { id: "first", label: "First module", role: "", x: 0, y: 0, target },
     { id: "entry", label: "Selected entry", role: "", x: 350, y: 0, target },
@@ -32,10 +33,7 @@ function fixture(path = ":memory:") {
     expected_revision: null, idempotency_key: key() }).team;
   const probeLines = (requestEventId: string, sessionId = session.id) => {
     const payload = db.getEvent(sessionId, requestEventId).payload as { content: string };
-    const encoded = payload.content.split("\n").find(line => line.startsWith('["GT_TEAM_OK:'));
-    assert.ok(encoded, "The fake executor must receive the expected public probe lines explicitly");
-    const lines = JSON.parse(encoded) as string[];
-    assert.ok(lines.every(line => typeof line === "string")); return lines;
+    return probeReplyFromPrompt(payload.content).split("\n");
   };
   const finishProbe = async (id: string, reply = (lines: string[]) => lines,
     { sessionId = session.id, runtimeId = runtime.id, coordinator = teams }: { sessionId?: string; runtimeId?: string; coordinator?: AgentTeams } = {}) => {
@@ -58,6 +56,71 @@ function fixture(path = ":memory:") {
     close: () => { teams.close(); db.close(); } };
 }
 const code = (expected: string) => (error: unknown) => error instanceof ApiError && error.code === expected;
+
+test("verbatim echo of the supplied connectivity reply passes every module and both route directions", async t => {
+  for (const harness of ["codex", "deepseek-harness"] as const) await t.test(harness, async () => {
+    const f = fixture(":memory:", harness); try {
+      const draft = structuredClone(f.draft); draft.edges[0]!.direction = "bidirectional";
+      const saved = f.save("verbatim-probe", draft);
+      const accepted = f.library.test(f.actor, saved.id, f.session.id, { expected_revision: saved.revision,
+        content_revision: 0, idempotency_key: f.key() });
+      for (let index = 0; index < 4; index++) {
+        await f.teams.pump();
+        const run = f.teams.read(f.actor, f.session.id, accepted.run.id).run;
+        assert.equal(run.status, "running");
+        const step = run.steps.find(item => item.id === run.current_step_id)!;
+        const prompt = (f.db.getEvent(f.session.id, step.request_event_id!).payload as { content: string }).content;
+        const reply = probeReplyFromPrompt(prompt);
+        const claim = f.service.claimAgentRequest(f.actor, f.session.id, step.request_event_id!, f.runtime.id);
+        assert.equal(claim.status, "claimed");
+        f.service.completeAgentRequest(f.actor, f.session.id, step.request_event_id!, f.runtime.id, f.key(),
+          { text: reply }, f.target.model, undefined, claim.attempt_count);
+        await f.teams.pump();
+        assert.notEqual(f.teams.read(f.actor, f.session.id, accepted.run.id).run.status, "failed",
+          "Copying the exact supplied reply must not fail the server's own format check");
+      }
+      const completed = f.teams.read(f.actor, f.session.id, accepted.run.id).run;
+      assert.equal(completed.status, "completed"); assert.equal(completed.calls_used, 4);
+      assert.equal(f.library.read(f.actor, saved.id).test_status, "passed");
+      assert.equal(f.library.control(f.actor, saved.id, f.session.id, { enabled: true,
+        expected_revision: saved.revision, idempotency_key: f.key() }).team.enabled, true);
+    } finally { f.close(); }
+  });
+});
+
+test("probe echoes still reject wrappers, extra text and incorrect current-module or step markers", async t => {
+  const variants: Record<string, (lines: string[]) => string[]> = {
+    "JSON array": lines => [JSON.stringify(lines)],
+    "JSON string": lines => [JSON.stringify(lines.join("\n"))],
+    "Markdown fence": lines => ["```text", ...lines, "```"],
+    "speaker prefix": lines => [`Synthetic user · Agent Response · codex · synthetic-model：${lines.join("\n")}`],
+    "extra explanation": lines => [...lines, "The connectivity test succeeded."],
+    "declared success only": () => ["The connectivity test succeeded."],
+    "wrong module": lines => [lines[0]!.replace("GT_TEAM_OK:entry:", "GT_TEAM_OK:first:")],
+    "stale step": () => ["GT_TEAM_OK:entry:step-from-an-earlier-test"],
+    "duplicate marker": lines => [...lines, ...lines],
+  };
+  for (const [name, reply] of Object.entries(variants)) await t.test(name, async () => {
+    const f = fixture(); try {
+      const saved = f.save(), accepted = f.library.test(f.actor, saved.id, f.session.id,
+        { expected_revision: saved.revision, content_revision: 0, idempotency_key: f.key() });
+      const failed = await f.finishProbe(accepted.run.id, reply);
+      assert.equal(failed.status, "failed"); assert.equal(failed.error_code, "agent_team_probe_failed");
+      assert.equal(failed.calls_used, 1); assert.equal(f.library.read(f.actor, saved.id).test_status, "failed");
+      assert.throws(() => f.library.control(f.actor, saved.id, f.session.id, { enabled: true,
+        expected_revision: saved.revision, idempotency_key: f.key() }), code("conflict"));
+    } finally { f.close(); }
+  });
+});
+
+test("plain probe echoes retain CRLF and outer-whitespace compatibility", async () => {
+  const f = fixture(); try {
+    const saved = f.save(), accepted = f.library.test(f.actor, saved.id, f.session.id,
+      { expected_revision: saved.revision, content_revision: 0, idempotency_key: f.key() });
+    const completed = await f.finishProbe(accepted.run.id, lines => [`\r\n ${lines.join("\r\n")} \r\n`]);
+    assert.equal(completed.status, "completed"); assert.equal(f.library.read(f.actor, saved.id).test_status, "passed");
+  } finally { f.close(); }
+});
 
 test("a rejected retest preserves the active probe, native claim, canonical head and consumed allowance", async t => {
   for (const refusal of ["content_revision", "offline", "run_capacity", "other_session"] as const) await t.test(refusal, async () => {
@@ -179,7 +242,7 @@ test("every incoming route transports its exact source probe identity and test c
 });
 
 test("missing, forged or wrong-direction public route tokens fail connectivity and cannot unlock Enable", async t => {
-  for (const mutation of ["missing", "forged-source-step", "wrong-direction"] as const) await t.test(mutation, async () => {
+  for (const mutation of ["missing", "forged-source-step", "wrong-direction", "duplicate", "wrong-order", "extra-route"] as const) await t.test(mutation, async () => {
     const f = fixture(); try {
       const saved = f.save();
       const accepted = f.library.test(f.actor, saved.id, f.session.id, { expected_revision: saved.revision,
@@ -190,6 +253,9 @@ test("missing, forged or wrong-direction public route tokens fail connectivity a
         altered = true;
         if (mutation === "missing") return lines.slice(0, 1);
         if (mutation === "forged-source-step") return [lines[0]!, "GT_TEAM_ROUTE:route:entry:first:forged-source-probe"];
+        if (mutation === "duplicate") return [...lines, lines[1]!];
+        if (mutation === "wrong-order") return lines.toReversed();
+        if (mutation === "extra-route") return [...lines, "GT_TEAM_ROUTE:unconfigured:entry:first:unrelated-source-step"];
         return [lines[0]!, lines[1]!.replace(":entry:first:", ":first:entry:")];
       });
       assert.equal(altered, true); assert.equal(failed.status, "failed"); assert.equal(failed.error_code, "agent_team_probe_failed");

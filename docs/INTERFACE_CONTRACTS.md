@@ -855,10 +855,14 @@ Its second calls each destination
 with incoming edges once, retains its current-step OK marker and requires one
 `GT_TEAM_ROUTE:<edge_id>:<source_id>:<target_id>:<source_first_phase_step_id>` line
 per incoming direction, including reverse directions for bidirectional edges.
-The prompt supplies the complete expected line array after `Respond exactly with
-these lines:`; the server checks its exact newline-joined response and source
-provenance rather than accepting a model-declared success or delegation. Total
-probe calls are module count plus distinct incoming destinations, at most 32.
+The prompt supplies the complete expected reply as literal newline-separated
+plain text after `Respond exactly with these lines:`, without a JSON array,
+quotes, code fences or attribution labels. The server checks that exact reply
+(allowing outer whitespace and CRLF line endings) and source provenance rather
+than accepting a model-declared success or delegation. Existing canonical probe
+requests and failed results are not rewritten; a fresh explicit Test uses the
+corrected prompt. Total probe calls are module count plus distinct incoming
+destinations, at most 32.
 For cloud/shared test dispatch, the server supplies metadata-only context with
 `items:[]` and the currently authorized head/content revision; cloud test requests
 force `include_code:false`. Task dispatch retains its ordinary context/code contract.

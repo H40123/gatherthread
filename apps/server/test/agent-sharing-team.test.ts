@@ -9,6 +9,7 @@ import { AgentTeams } from "../src/agent-teams.js";
 import { AgentTeamLibrary } from "../src/agent-team-library.js";
 import { ApiError } from "../src/errors.js";
 import { redactJson } from "../src/redaction.js";
+import { probeReplyFromPrompt } from "./agent-team-probe-fixtures.js";
 
 function setup(limits = AgentShareLimitsSchema.parse({})) {
   let now = Date.parse("2026-10-15T05:00:00.000Z"); const clock = () => new Date(now);
@@ -296,16 +297,14 @@ test("minimal connectivity probes use the ordinary shared allowance and cannot r
       assert.equal(claim.capsule.content_revision, 0); assert.equal(claim.capsule.context.content_revision, 0);
       assert.deepEqual(claim.capsule.context.items, []);
       assert.equal(JSON.stringify(claim.capsule).includes(unrelatedHistory), false);
-      const encoded = claim.capsule.content.split("\n").find(line => line.startsWith('["GT_TEAM_OK:'));
-      assert.ok(encoded, "The shared executor must receive its expected public probe lines");
-      const lines = JSON.parse(encoded) as string[];
+      const reply = probeReplyFromPrompt(claim.capsule.content), lines = reply.split("\n");
       assert.equal(lines[0], `GT_TEAM_OK:${step.node_id}:${step.id}`);
       if (index === 2) assert.match(lines[1]!, /^GT_TEAM_ROUTE:delegate:director:worker:/u);
       assert.equal(f.db.getEvent(f.source.id, job.request_event_id).payload &&
         (f.db.getEvent(f.source.id, job.request_event_id).payload as { agent_team: { purpose: string } }).agent_team.purpose, "test");
       f.sharing.complete(f.a, job.id, { claim_attempt: claim.capsule.claim_attempt, idempotency_key: `shared-probe-result-${index}`,
         observed_model: f.sharedTarget.model, observed_reasoning_effort: "high", outcome: "completed", executor_stopped: true,
-        payload: { content: lines.join("\n"), status: "completed" } });
+        payload: { content: reply, status: "completed" } });
     }
     for (let spin = 0; spin < 20; spin++) { await f.teams.pump(); await new Promise(resolve => setImmediate(resolve)); }
     const tested = f.library.read(f.b, saved.id);
@@ -340,13 +339,12 @@ test("a shared allowance exhausted after the first probe phase cannot skip the r
       }
       const job = f.sharing.listJobs(f.a, f.source.project_id).jobs.find(item => item.status === "queued")!; assert.ok(job);
       const claimed = f.sharing.claim(f.a, job.id, { idempotency_key: `shared-route-quota-claim-${index}` });
-      const encoded = claimed.capsule.content.split("\n").find(line => line.startsWith('["GT_TEAM_OK:'));
-      assert.ok(encoded); const lines = JSON.parse(encoded) as string[];
+      const reply = probeReplyFromPrompt(claimed.capsule.content), lines = reply.split("\n");
       assert.equal(lines.length, 1, "This only completes the individual-module phase");
       f.sharing.complete(f.a, job.id, { claim_attempt: claimed.capsule.claim_attempt,
         idempotency_key: `shared-route-quota-complete-${index}`, observed_model: f.sharedTarget.model,
         observed_reasoning_effort: "high", outcome: "completed", executor_stopped: true,
-        payload: { content: lines.join("\n"), status: "completed" } });
+        payload: { content: reply, status: "completed" } });
     }
     for (let spin = 0; spin < 20; spin++) { await f.teams.pump(); await new Promise(resolve => setImmediate(resolve)); }
     const failed = f.teams.read(f.b, f.source.id, accepted.run.id).run;
@@ -388,11 +386,11 @@ test("a saved shared Team reuses the same project grant across Multi and Solo, w
     }
     const probeJob = f.sharing.listJobs(f.a, f.source.project_id).jobs.find(job => job.status === "queued")!; assert.ok(probeJob);
     const probeClaim = f.sharing.claim(f.a, probeJob.id, { idempotency_key: "shared-library-cross-session-probe-claim" });
-    const encoded = probeClaim.capsule.content.split("\n").find(line => line.startsWith('["GT_TEAM_OK:')); assert.ok(encoded);
+    const reply = probeReplyFromPrompt(probeClaim.capsule.content);
     f.sharing.complete(f.a, probeJob.id, { claim_attempt: probeClaim.capsule.claim_attempt,
       idempotency_key: "shared-library-cross-session-probe-result", observed_model: f.sharedTarget.model,
       observed_reasoning_effort: "high", outcome: "completed", executor_stopped: true,
-      payload: { content: (JSON.parse(encoded) as string[]).join("\n"), status: "completed" } });
+      payload: { content: reply, status: "completed" } });
     for (let spin = 0; spin < 20; spin++) {
       await f.teams.pump(); if (f.teams.read(f.b, f.source.id, testRun.id).run.status === "completed") break;
       await new Promise(resolve => setImmediate(resolve));
