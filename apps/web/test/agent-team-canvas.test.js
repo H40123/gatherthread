@@ -295,7 +295,7 @@ test("remote canvas redraw preserves module keyboard focus and subsequent arrow 
   f.draft.nodes[0] = { ...f.draft.nodes[0], label: "Updated remotely", x: 100 };
   f.canvas.render();
   assert.equal(f.document.activeElement, f.title("a"));
-  assert.equal(f.document.activeElement.textContent, "Updated remotely");
+  assert.equal(f.document.activeElement.querySelector(".team-node-label").textContent, "Updated remotely");
   f.document.activeElement.dispatch("keydown", { key: "ArrowRight" });
   assert.equal(f.draft.nodes[0].x, 110); assert.equal(f.changes(), 1);
 });
@@ -388,4 +388,37 @@ test("a programmatic port click cannot consume the pending compatibility click o
   f.viewport.dispatch("pointerdown", { pointerId: 1 }); f.viewport.dispatch("pointerup", { pointerId: 1 });
   const independent = f.viewport.dispatch("click", { detail: 1, pointerId: 1 });
   assert.equal(independent.prevented, false); assert.equal(f.viewport.dataset.linking, "false");
+});
+
+test("new module position follows the visible center across scroll and zoom without changing the layout", () => {
+  const f = fixture(), before = structuredClone(f.draft);
+  assert.deepEqual(f.canvas.insertionPosition(), { x: 286, y: 183 });
+  f.hud.children[2].dispatch("click");
+  f.viewport.scrollLeft = 900; f.viewport.scrollTop = 340;
+  assert.deepEqual(f.canvas.insertionPosition(), { x: 977, y: 434 });
+  assert.equal(f.viewport.scrollLeft, 900); assert.equal(f.viewport.scrollTop, 340);
+  assert.deepEqual(f.draft, before); assert.equal(f.changes(), 0);
+  f.viewport.clientWidth = 120; f.viewport.clientHeight = 60;
+  f.viewport.scrollLeft = 0; f.viewport.scrollTop = 0;
+  assert.deepEqual(f.canvas.insertionPosition(), { x: 20, y: 20 });
+  f.viewport.scrollLeft = 20000; f.viewport.scrollTop = 20000;
+  assert.deepEqual(f.canvas.insertionPosition(), { x: 10000, y: 10000 });
+});
+
+test("flow hit areas select the exact route and fixed-size arrows survive selection and bidirectional redraw", () => {
+  const f = fixture(), edge = f.host.querySelector("[data-edge-id='existing']");
+  const hit = edge.querySelector(".team-edge-hit"), line = edge.querySelector(".team-edge-line");
+  assert.equal(hit.attributes.d, line.attributes.d);
+  assert.equal(hit.attributes["marker-end"], undefined);
+  hit.dispatch("click"); assert.deepEqual(f.canvas.pinned(), { kind: "edge", id: "existing" });
+  f.draft.edges[0].direction = "bidirectional"; f.canvas.render();
+  const next = f.host.querySelector("[data-edge-id='existing']");
+  assert.equal(next.dataset.highlighted, "true");
+  assert.equal(next.querySelector(".team-edge-line").attributes["marker-start"], "url(#team-arrow-start)");
+  const markers = f.host.querySelector(".team-canvas-lines").children[0].children;
+  assert.equal(markers.length, 2);
+  for (const marker of markers) {
+    assert.equal(marker.attributes.markerUnits, "userSpaceOnUse");
+    assert.equal(marker.attributes.markerWidth, "9"); assert.equal(marker.attributes.markerHeight, "9");
+  }
 });

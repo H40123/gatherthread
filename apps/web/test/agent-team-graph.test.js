@@ -208,15 +208,15 @@ test("deleting a node removes all incident flows and repairs the entry without m
   assert.equal("entry_node_id" in empty, false);
 });
 
-test("Bezier flows connect the output and input ports and retain finite geometry in either direction", () => {
+test("Bezier flows leave arrows outside the ports and retain finite geometry in either direction", () => {
   const source = { x: 10, y: 20 }, target = { x: 600, y: 150 };
   const path = teamEdgePath(source, target);
-  assert.match(path, new RegExp(`^M ${source.x + TEAM_NODE_WIDTH} ${source.y + TEAM_NODE_HEIGHT / 2} C `));
-  assert.ok(path.endsWith(`${target.x} ${target.y + TEAM_NODE_HEIGHT / 2}`));
+  assert.match(path, new RegExp(`^M ${source.x + TEAM_NODE_WIDTH + 16} ${source.y + TEAM_NODE_HEIGHT / 2} C `));
+  assert.ok(path.endsWith(`${target.x - 16} ${target.y + TEAM_NODE_HEIGHT / 2}`));
   assert.doesNotMatch(path, /NaN|Infinity/);
   const reverse = teamEdgePath(target, source);
   assert.match(reverse, /^M .* C /);
-  assert.ok(reverse.endsWith(`${source.x} ${source.y + TEAM_NODE_HEIGHT / 2}`));
+  assert.ok(reverse.endsWith(`${source.x - 16} ${source.y + TEAM_NODE_HEIGHT / 2}`));
   assert.doesNotMatch(reverse, /NaN|Infinity/);
 });
 

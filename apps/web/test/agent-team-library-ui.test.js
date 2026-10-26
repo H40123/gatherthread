@@ -2410,3 +2410,32 @@ test("an uncertain Team Disable keeps its exact recovery key without normal writ
   assert.equal(f.calls.length, 2); assert.deepEqual(f.calls[1], f.calls[0]);
   assert.equal(f.calls[1][3].enabled, false); assert.equal(f.button("Check the previous action").hidden, true);
 });
+
+test("blank and favorite modules stack in the scrolled and zoomed viewport center without shifting existing modules", async () => {
+  const f = fixture({ initial: [team()], modules: [{ id: "favorite-a", module }] });
+  await open(f);
+  const viewport = f.document.body.querySelector(".team-canvas-viewport");
+  f.document.body.querySelector(".team-canvas-tools").children[2].click();
+  viewport.scrollLeft = 900; viewport.scrollTop = 340;
+  const original = f.document.body.querySelector("[data-node-id='node-a']");
+  const before = { ...original.style };
+  f.el("team-add-blank").click();
+  let cards = f.document.body.querySelectorAll("[data-node-id]");
+  assert.equal(cards.length, 2);
+  assert.equal(cards[1].style.left, "977px"); assert.equal(cards[1].style.top, "434px");
+  assert.equal(cards[1].dataset.highlighted, "true");
+  assert.deepEqual(cards[0].style, before);
+  assert.equal(viewport.scrollLeft, 900); assert.equal(viewport.scrollTop, 340);
+  f.el("team-add-favorite").click();
+  f.document.body.querySelector("[data-team-favorite-control='pick:favorite-a']").click();
+  cards = f.document.body.querySelectorAll("[data-node-id]");
+  assert.equal(cards.length, 3);
+  assert.equal(cards[2].style.left, "977px"); assert.equal(cards[2].style.top, "434px");
+  assert.equal(cards[2].dataset.highlighted, "true"); assert.equal(cards[1].dataset.highlighted, "false");
+  assert.equal(viewport.scrollLeft, 900); assert.equal(viewport.scrollTop, 340);
+  assert.deepEqual(cards[0].style, before);
+  f.el("team-save").click(); await flush();
+  const saved = f.calls.find(call => call[0] === "save")[2].draft;
+  assert.deepEqual(saved.nodes[0], team().draft.nodes[0]);
+  assert.equal(saved.nodes[1].x, 977); assert.equal(saved.nodes[2].x, 977);
+});
