@@ -30,7 +30,7 @@ APP = BUILD / "GatherThread Launcher.app"
 RESOURCES = APP / "Contents" / "Resources"
 MINIMUM_MACOS_VERSION = "13.5"
 APP_NAME = "GatherThread Launcher.app"
-LAUNCHER_VERSION = "0.1.5"
+LAUNCHER_VERSION = "0.1.6"
 DMG_METADATA = ".gatherthread"
 DMG_ENTRIES = {APP_NAME, "Applications", DMG_METADATA}
 DMG_METADATA_ENTRIES = {"READ ME FIRST.html", "BUILD_PROVENANCE.json", "background.png", "layout.json"}
@@ -156,7 +156,7 @@ def validate_bundle(app: Path) -> None:
                 or info.get("CFBundleIdentifier") != "cn.gatherthread.codex-launcher"
                 or info.get("LSMinimumSystemVersion") != MINIMUM_MACOS_VERSION
                 or info.get("CFBundleShortVersionString") != LAUNCHER_VERSION
-                or info.get("CFBundleVersion") != "15"):
+                or info.get("CFBundleVersion") != "16"):
             raise ValueError("Application identity or system minimum is invalid")
         version = info.get("GatherThreadReleaseVersion")
         if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?", version):

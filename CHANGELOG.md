@@ -4,6 +4,24 @@ All notable changes to GatherThread are documented here. The project follows Sem
 
 ## [Unreleased]
 
+## [0.1.0-beta.6] - 2026-10-30
+
+- Add an Agent Team canvas, reusable presets and versioned JSON configuration
+  for browser preferences and Team definitions. Let AI prepare a Team in a new
+  Solo draft; importing configuration still requires review, saving, testing and
+  explicit enablement before execution.
+- Remove a newly created empty Solo when leaving it, with server-side checks
+  that preserve sent messages, concurrent writes and all Multi conversations.
+- Refine work-page motion, glass surfaces and message colors; preserve readable
+  hover/focus states, keyboard operation, reduced-motion settings and touch
+  gestures across the new canvas and existing workspace controls.
+- Improve Launcher connection recovery and bounded disconnect handling, protect
+  current state from stale child processes, and add the branded welcome panel.
+
+Matching npm packages/plugins use `0.1.0-beta.6`; the macOS Launcher displays
+`0.1.6`, build `16`. Preserve earlier artifacts and their source provenance.
+See the [release record](docs/releases/0.1.0-beta.6.md) for upgrade boundaries.
+
 ## [0.1.0-beta.5] - 2026-10-25
 
 - Exclude Codex Desktop's app-generated next-message suggestions from cloud
