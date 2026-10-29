@@ -1,6 +1,6 @@
 # Claude Code · GatherThread
 
-Connect Claude Code through the local connector and native plugin, using the matching [Beta 5 packages and Launcher](releases/0.1.0-beta.5.md). This does not install Claude Code, supply a model subscription, or change your existing Codex/DSH connections. Use the website's current downloads, not an older Launcher that only supports Codex.
+Connect Claude Code through the local connector and native plugin, using the matching [Beta 6 packages and Launcher](releases/0.1.0-beta.6.md). This does not install Claude Code, supply a model subscription, or change your existing Codex/DSH connections. Use the website's current downloads, not an older Launcher that only supports Codex.
 
 ## Connect / 连接
 

@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const EXPECTED_VERSION = "0.1.0-beta.5";
+const EXPECTED_VERSION = "0.1.0-beta.6";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const manifestPaths = [
   "package.json",
@@ -108,7 +108,7 @@ const requiredFiles = [
   "docs/INTERFACE_CONTRACTS.md",
   "docs/ALIYUN_ECS.md",
   "docs/ALIYUN_ECS.zh-CN.md",
-  "docs/releases/0.1.0-beta.5.md",
+  "docs/releases/0.1.0-beta.6.md",
   "docs/CODEX_CONNECT.md",
   "docs/CODEX_CONNECT.zh-CN.md",
   "docs/DSH_CONNECT.md",
@@ -251,7 +251,7 @@ assert.match(webDomain, /LOCAL_CODEX_CONNECTOR\.tgz/);
 assert.doesNotMatch(webDomain, /@gatherthread\/codex-connect@0\.1\.0-beta\.2/);
 
 const installer = await readFile(join(root, "deploy/aliyun-ecs/install.sh"), "utf8");
-assert.match(installer, /release_version="0\.1\.0-beta\.5"/);
+assert.match(installer, /release_version="0\.1\.0-beta\.6"/);
 assert.match(installer, /grep -Fq[^\n]*\$release_version/,
   "installer manifest validation must reuse its current release version");
 assert.match(installer, /GATHERTHREAD_SERVER_HOST=127\.0\.0\.1/);

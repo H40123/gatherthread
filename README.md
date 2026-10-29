@@ -8,7 +8,7 @@ GatherThread puts your team's discussion, AI-assisted work, and file review in o
 
 ![GatherThread: work together across devices, with your own Agents](docs/assets/product/cover.en.jpg)
 
-Open source · Self-hostable · Current version identifier **0.1.0-beta.5** · [Apache 2.0](LICENSE)
+Open source · Self-hostable · Current version identifier **0.1.0-beta.6** · [Apache 2.0](LICENSE)
 
 Public-registration Beta: verify your email and choose a password to create an account. Available cloud models and allowances are shown in the workspace. Project invitations join a team; they are not account registration codes. [Release history](CHANGELOG.md) · [Developer test environment](docs/TEST_ENVIRONMENT.md)
 
@@ -18,7 +18,7 @@ Public-registration Beta: verify your email and choose a password to create an a
 
 **Keep going beyond your desk.** The same account can be signed in on computers, phones, and tablets at once. On your phone, continue the discussion, review progress, or ask your connected computer Agent to keep working. Move to another computer by downloading the file version you saved.
 
-**Multi-Agent teams (Beta 5 preview).** Configure several connected Agents as a team, test the setup, then let them divide a task and communicate directly within the limits you choose. Cross-member collaboration requires each owner's explicit permission. Calls run one at a time; broader autonomous collaboration remains in development.
+**Multi-Agent teams (Beta 6 preview).** Configure several connected Agents as a team, test the setup, then let them divide a task and communicate directly within the limits you choose. Cross-member collaboration requires each owner's explicit permission. Calls run one at a time; broader autonomous collaboration remains in development.
 
 For today's projects, connect Codex, DeepSeek Harness or Claude Code, or use the cloud trial Agent for a small task without local setup. Choose from that Agent's supported models and options; cloud usage allowances are shown in the workspace.
 
@@ -107,7 +107,7 @@ After message deletion, all future Agent history prepared by GatherThread will e
 
 ## Try your Agents as a team
 
-**Multi-Agent teams are a bounded preview in Beta 5.** Open **Agent teams**, add connected Agents as modules, test the exact setup, then enable it to start a task. Own Codex/DSH connections, explicitly shared native connections and eligible cloud models keep their existing permissions. Set call/time limits and use the Team's Pause/Stop controls. Claude Code modules and broader autonomous collaboration are not included in this preview. [Scope and release notes](docs/releases/0.1.0-beta.5.md)
+**Multi-Agent teams are a bounded preview in Beta 6.** Open **Agent teams**, add connected Agents as modules, test the exact setup, then enable it to start a task. Own Codex/DSH connections, explicitly shared native connections and eligible cloud models keep their existing permissions. Set call/time limits and use the Team's Pause/Stop controls. Claude Code modules and broader autonomous collaboration are not included in this preview. [Scope and release notes](docs/releases/0.1.0-beta.6.md)
 
 ### Explore, contribute, or self-host
 
