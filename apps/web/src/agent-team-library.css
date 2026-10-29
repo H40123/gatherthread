@@ -69,6 +69,9 @@
 .team-graph-node:nth-child(16n + 15) { --team-node-accent: #8d789b; }
 .team-graph-node:nth-child(16n + 16) { --team-node-accent: #b36565; }
 .team-graph-node[data-highlighted="true"] { z-index: 2; border-color: var(--teal); outline: 2px solid var(--teal); outline-offset: 2px; box-shadow: 0 6px 18px color-mix(in srgb, var(--teal) 14%, transparent); }
+/* Central insertion may stack cards. Keep the keyboard target above the
+   selected card while its title or connection ports have focus. */
+.team-graph-node:focus-within { z-index: 3; }
 .team-node-drag { display: flex; align-items: center; gap: 8px; flex: 0 0 38px; width: 100%; min-height: 38px; padding: 8px 12px; margin: 0 0 2px; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--team-node-accent) 25%, var(--line)); border-radius: 13px 13px 0 0; background: var(--team-node-wash); text-align: left; font: inherit; font-size: .8125rem; font-weight: 650; color: var(--ink); cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
 .team-node-drag:hover { background: color-mix(in srgb, var(--team-node-accent) 23%, var(--paper-raised)); }
 .team-node-drag:active { cursor: grabbing; }
