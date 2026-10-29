@@ -529,12 +529,10 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   }
   function insertModule(snapshot) {
     if (!draft || draft.nodes.length >= 16) { showLocalError("Maximum 16 modules and 32 data flows."); return; }
-    const index = draft.nodes.length, id = makeKey("module"); let slot = 0;
-    while (slot < 64 && draft.nodes.some(node => Math.abs(node.x - (60 + slot % 4 * 290)) < 245
-      && Math.abs(node.y - (70 + Math.floor(slot / 4) * 180)) < 130)) slot++;
+    const index = draft.nodes.length, id = makeKey("module"), position = canvas.insertionPosition();
     draft.nodes.push({ ...(snapshot ? structuredClone(snapshot) : { label: `${t("Module")} ${index + 1}`, role: "", target: null }),
-      id, x: 60 + slot % 4 * 290, y: 70 + Math.floor(slot / 4) * 180 });
-    if (!draft.entry_node_id) draft.entry_node_id = draft.nodes[0].id; changed(); canvas.select({ kind: "node", id }); canvas.reveal(id); renderInspector();
+      id, ...position });
+    if (!draft.entry_node_id) draft.entry_node_id = draft.nodes[0].id; changed(); canvas.select({ kind: "node", id }); canvas.render(); renderInspector();
   }
   function editorWrites() { return pendingFor(editId).filter(intent => ["save", "control", "disable"].includes(intent.kind)); }
   function renderLeavePrompt() {

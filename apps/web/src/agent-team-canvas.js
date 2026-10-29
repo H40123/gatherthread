@@ -73,19 +73,23 @@ export function mountTeamCanvas({ document: doc, host, getDraft, onChange, onSel
     const defs = doc.createElementNS(svg.namespaceURI, "defs");
     for (const [id, orient] of [["team-arrow-end", "auto"], ["team-arrow-start", "auto-start-reverse"]]) {
       const marker = doc.createElementNS(svg.namespaceURI, "marker");
-      for (const [key, value] of Object.entries({ id, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient })) marker.setAttribute(key, value);
+      for (const [key, value] of Object.entries({ id, viewBox: "0 0 10 10", refX: "9", refY: "5", markerUnits: "userSpaceOnUse", markerWidth: "9", markerHeight: "9", orient })) marker.setAttribute(key, value);
       const shape = doc.createElementNS(svg.namespaceURI, "path"); shape.setAttribute("d", "M 0 0 L 10 5 L 0 10 z"); shape.setAttribute("fill", "currentColor"); marker.append(shape); defs.append(marker);
     }
     svg.append(defs);
     for (const edge of draft.edges) {
       const from = draft.nodes.find(node => node.id === edge.source), to = draft.nodes.find(node => node.id === edge.target); if (!from || !to) continue;
-      const path = doc.createElementNS(svg.namespaceURI, "path"); path.setAttribute("d", teamEdgePath(from, to));
-      path.dataset.edgeId = edge.id; path.setAttribute("tabindex", "0"); path.setAttribute("role", "button");
-      path.setAttribute("aria-label", `${from.label} ${edge.direction === "bidirectional" ? "↔" : "→"} ${to.label}`);
+      const group = doc.createElementNS(svg.namespaceURI, "g"); group.classList.add("team-edge");
+      group.dataset.edgeId = edge.id; group.setAttribute("tabindex", "0"); group.setAttribute("role", "button");
+      group.setAttribute("aria-label", `${from.label} ${edge.direction === "bidirectional" ? "↔" : "→"} ${to.label}`);
+      const path = doc.createElementNS(svg.namespaceURI, "path"); path.classList.add("team-edge-line"); path.setAttribute("d", teamEdgePath(from, to));
       path.setAttribute("marker-end", "url(#team-arrow-end)"); if (edge.direction === "bidirectional") path.setAttribute("marker-start", "url(#team-arrow-start)");
-      path.addEventListener("click", event => { event.stopPropagation(); select({ kind: "edge", id: edge.id }); });
-      path.addEventListener("keydown", event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); select({ kind: "edge", id: edge.id }); } });
-      path.addEventListener("pointerenter", () => hover({ kind: "edge", id: edge.id })); path.addEventListener("pointerleave", () => hover(null)); svg.append(path);
+      // A generous invisible hit area keeps the thin line easy to select without enlarging its arrow.
+      const hit = doc.createElementNS(svg.namespaceURI, "path"); hit.classList.add("team-edge-hit"); hit.setAttribute("d", teamEdgePath(from, to));
+      group.append(path, hit);
+      group.addEventListener("click", event => { event.stopPropagation(); select({ kind: "edge", id: edge.id }); });
+      group.addEventListener("keydown", event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); select({ kind: "edge", id: edge.id }); } });
+      group.addEventListener("pointerenter", () => hover({ kind: "edge", id: edge.id })); group.addEventListener("pointerleave", () => hover(null)); svg.append(group);
     }
     highlight();
     if (focus?.kind === "edge") restoreFocus(focus);
@@ -108,7 +112,11 @@ export function mountTeamCanvas({ document: doc, host, getDraft, onChange, onSel
     for (const node of draft?.nodes ?? []) {
       const card = el("article", "team-graph-node"); card.dataset.nodeId = node.id;
       card.style.left = `${node.x}px`; card.style.top = `${node.y}px`;
-      const title = button(node.label); title.className = "team-node-drag"; title.setAttribute("aria-label", `${t("Select module")}: ${node.label}`);
+      const title = button(""); title.className = "team-node-drag"; title.setAttribute("aria-label", `${t("Select module")}: ${node.label}`);
+      title.title = t("Drag to move; use arrow keys when focused.");
+      const grip = el("span", "team-node-grip"), label = el("span", "team-node-label");
+      grip.setAttribute("aria-hidden", "true");
+      label.textContent = node.label; title.append(grip, label);
       const agent = el("span", "team-node-agent"); agent.textContent = node.target ? `${node.target.kind === "cloud" ? t("Cloud Agent") : node.target.harness === "codex" ? "Codex" : "DSH"} · ${node.target.model}` : t("Choose an Agent");
       const role = el("span", "team-node-role"); role.textContent = node.role || t("No identity yet");
       const entry = el("span", "team-node-entry"); entry.textContent = t("Start"); entry.hidden = (draft.entry_node_id ?? draft.nodes[0]?.id) !== node.id;
@@ -207,7 +215,10 @@ export function mountTeamCanvas({ document: doc, host, getDraft, onChange, onSel
     zoom = 1; viewport.scrollLeft = 0; viewport.scrollTop = 0; render();
     const draft = getDraft(), node = draft?.nodes.find(item => item.id === id) ?? draft?.nodes[0];
     if (node) { viewport.scrollLeft = Math.max(0, node.x - 80); viewport.scrollTop = Math.max(0, node.y - 80); }
-  }, reveal(id) {
-    render(); const node = getDraft()?.nodes.find(item => item.id === id); if (node) { viewport.scrollLeft = Math.max(0, node.x * zoom - 80); viewport.scrollTop = Math.max(0, node.y * zoom - 80); }
+  }, insertionPosition() {
+    // Overlap is intentional: the selected new card sits above existing modules.
+    const width = viewport.clientWidth || TEAM_NODE_WIDTH + 80, height = viewport.clientHeight || TEAM_NODE_HEIGHT + 80;
+    return { x: Math.max(20, Math.min(10000, Math.round((viewport.scrollLeft + width / 2) / zoom - TEAM_NODE_WIDTH / 2))),
+      y: Math.max(20, Math.min(10000, Math.round((viewport.scrollTop + height / 2) / zoom - TEAM_NODE_HEIGHT / 2))) };
   } };
 }
