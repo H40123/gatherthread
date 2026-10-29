@@ -1,31 +1,32 @@
-import { renderAvatar, isAgentReply, eventAuthorLabel, eventExecutionOwner } from "./avatars.js?v=20261024-launcher-sharing-1";
-import { mountAvatarSettings } from "./avatar-settings.js?v=20261024-launcher-sharing-1";
-import { mountCloudGithub } from "./cloud-github-view.js?v=20261024-launcher-sharing-1";
+import { mountMotion } from "./motion.js?v=20261029-motion-1";
+import { renderAvatar, isAgentReply, eventAuthorLabel, eventExecutionOwner } from "./avatars.js?v=20261029-motion-1";
+import { mountAvatarSettings } from "./avatar-settings.js?v=20261029-motion-1";
+import { mountCloudGithub } from "./cloud-github-view.js?v=20261029-motion-1";
 import { mountAgentManagement } from "./agent-management.js";
-import { mountSharedAgents } from "./shared-agent-view.js?v=20261024-launcher-sharing-1";
+import { mountSharedAgents } from "./shared-agent-view.js?v=20261029-motion-1";
 import { mountAgentTeams } from "./agent-team-library-view.js?v=20261016-team-v2";
 import { mountTeamRunNotice } from "./agent-team-run-notice.js?v=20261018-team-errors";
 import { teamEventPresentation } from "./agent-team-event.js?v=20261016-team-v2";
 import { mountDeviceAuthorization } from "./device-authorization.js";
-import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261024-launcher-sharing-1";
+import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261029-motion-1";
 import { mountAccountDevices } from "./account-devices.js";
-import { mountPersonalCloudApi } from "./personal-cloud-api.js?v=20261024-launcher-sharing-1";
-import { mountCloudCodeConsent } from "./cloud-code-consent.js?v=20261024-launcher-sharing-1";
-import { cloudRequestInput, continueCloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261024-launcher-sharing-1";
-import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261024-launcher-sharing-1";
+import { mountPersonalCloudApi } from "./personal-cloud-api.js?v=20261029-motion-1";
+import { mountCloudCodeConsent } from "./cloud-code-consent.js?v=20261029-motion-1";
+import { cloudRequestInput, continueCloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261029-motion-1";
+import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261029-motion-1";
 import { mountFileWorkspace } from "./workspace-files.js";
-import { mountSessionToolbar } from "./session-toolbar.js";
+import { mountSessionToolbar } from "./session-toolbar.js?v=20261029-motion-1";
 import { mountInterfaceMode } from "./interface-mode.js";
-import { createSessionVisibilityController } from "./session-visibility.js?v=20261024-launcher-sharing-1";
+import { createSessionVisibilityController } from "./session-visibility.js?v=20261029-motion-1";
 import { mountMobileSettings } from "./mobile-settings-view.js";
 import { mountMobileCodeView } from "./mobile-code-view.js";
 import { mountRegistration } from "./registration.js";
-import { HttpCollaborationApi, MockCollaborationApi } from "./api.js?v=20261024-launcher-sharing-1";
-import { mountMessageActions, agentWorkStatus } from "./message-actions.js?v=20261024-launcher-sharing-1";
-import { mountMessageDeletion } from "./message-deletion.js?v=20261024-launcher-sharing-1";
+import { HttpCollaborationApi, MockCollaborationApi } from "./api.js?v=20261029-motion-1";
+import { mountMessageActions, agentWorkStatus } from "./message-actions.js?v=20261029-motion-1";
+import { mountMessageDeletion } from "./message-deletion.js?v=20261029-motion-1";
 import { positionSessionContextPanel, bindSessionContextPanel } from "./session-context-panel.js";
-import { ExampleCollaborationApi } from "./example-api.js?v=20261024-launcher-sharing-1";
-import { mountOnboarding } from "./onboarding.js?v=20261024-launcher-sharing-1";
+import { ExampleCollaborationApi } from "./example-api.js?v=20261029-motion-1";
+import { mountOnboarding } from "./onboarding.js?v=20261029-motion-1";
 import { projectInvitationShareText } from "./invitation-share.js?v=20261012-invite-1";
 import { mountInvitationLink } from "./invitation-link.js?v=20261012-invite-1";
 import {
@@ -62,14 +63,14 @@ import {
   sessionMetadataFromEvent,
   sessionDeliveryMode,
   snapshotStatusView,
-} from "./domain.js?v=20261024-launcher-sharing-1";
-import { SessionSync } from "./realtime.js?v=20261024-launcher-sharing-1";
-import { mountCodeSync } from "./code-sync-view.js?v=20261024-launcher-sharing-1";
-import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20261024-launcher-sharing-1";
-import { mountHistorySummaries } from "./history-summary-view.js?v=20261024-launcher-sharing-1";
+} from "./domain.js?v=20261029-motion-1";
+import { SessionSync } from "./realtime.js?v=20261029-motion-1";
+import { mountCodeSync } from "./code-sync-view.js?v=20261029-motion-1";
+import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20261029-motion-1";
+import { mountHistorySummaries } from "./history-summary-view.js?v=20261029-motion-1";
 import { DEFAULT_HISTORY_SUMMARY_INSTRUCTIONS } from "./history-summary-policy.js";
 import { createAmbientCanvas } from "./ambient-canvas.js?v=20260829-14";
-import { createLocalizer, memberRemovalAriaLabel, memberRoleAriaLabel } from "./i18n.js?v=20261024-launcher-sharing-1";
+import { createLocalizer, memberRemovalAriaLabel, memberRoleAriaLabel } from "./i18n.js?v=20261029-motion-1";
 import { automaticDeviceName } from "./device-name.js?v=20260830-1";
 import {
   CODEX_HARNESS,
@@ -86,7 +87,7 @@ import {
   resolveCodexRuntime,
   resolveDshRuntime,
   withoutDshPairingHash,
-} from "./dsh.js?v=20261024-launcher-sharing-1";
+} from "./dsh.js?v=20261029-motion-1";
 import { renderMarkdown } from "./markdown.js?v=20260829-1";
 import { calendarDayKey, formatFullTimestamp, formatTimelineDay } from "./timeline-dates.js?v=20260927-1";
 import {
@@ -132,7 +133,7 @@ import {
   withProjectDshProfile,
   withProjectCloudProfile,
   withProjectEnabledHarnesses,
-} from "./settings.js?v=20260925-4";
+} from "./settings.js?v=20261029-motion-1";
 
 const query = new URLSearchParams(location.search);
 const configuredApiUrl = query.get("api") ?? "";
@@ -213,15 +214,16 @@ let sharingSourceRuntimes = [];
 let pendingSharedAgentIntent = null;
 
 const element = (id) => document.getElementById(id);
+const motion = mountMotion({ document, window });
 const authView = element("auth-view");
 const workspace = element("workspace");
 const loginError = element("email-login-error");
 const authEntryChooser = element("auth-entry-chooser");
 const authIdentity = element("auth-identity");
 const authEntryChoices = [
-  { entry: "email-login", button: element("auth-select-email-login"), panel: element("auth-email-login-panel") },
-  { entry: "register", button: element("auth-select-register"), panel: element("auth-register-panel") },
-  { entry: "password-reset", button: element("auth-select-password-reset"), panel: element("auth-password-reset-panel") },
+  { entry: "email-login", button: element("auth-select-email-login"), panel: element("auth-email-login-panel"), heading: element("auth-email-login-heading").parentElement },
+  { entry: "register", button: element("auth-select-register"), panel: element("auth-register-panel"), heading: element("auth-register-heading").parentElement },
+  { entry: "password-reset", button: element("auth-select-password-reset"), panel: element("auth-password-reset-panel"), heading: element("auth-password-reset-heading").parentElement },
 ];
 const sessionList = element("session-list");
 const projectSelect = element("project-select");
@@ -852,7 +854,10 @@ function setActiveAuthEntry(entry, { focus = false } = {}) {
   else passwordResetUi.clear();
   authEntryChooser.hidden = entry !== "choose";
   authIdentity.hidden = entry === "choose" || entry === "password-reset";
-  for (const choice of authEntryChoices) choice.panel.hidden = choice.entry !== entry;
+  for (const choice of authEntryChoices) {
+    choice.panel.hidden = choice.entry !== entry;
+    choice.heading.hidden = choice.entry !== entry;
+  }
   if (focus) element(entry === "choose" ? "auth-select-email-login"
     : entry === "register" ? "claim-display-name" : entry === "password-reset" ? "password-reset-email" : "email-login-email").focus();
 }
@@ -2717,6 +2722,9 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
     }
   }
   messageActions.readVisible();
+  motion.timeline({ container: timelineRegion,
+    scope: `${state.currentUser?.id}:${state.project?.id}:${state.session?.id}`,
+    events, follow: followNewEvents && scrollSnapshot.follow });
 }
 
 /**
@@ -5130,9 +5138,11 @@ function installLayoutResizer(resizer, side) {
     event.preventDefault();
     resizer.setPointerCapture(event.pointerId);
     resizer.dataset.dragging = "true";
+    document.documentElement.dataset.layoutDragging = "true";
     const move = (moveEvent) => applyWidth(side === "left" ? moveEvent.clientX : window.innerWidth - moveEvent.clientX);
     const finish = () => {
       delete resizer.dataset.dragging;
+      delete document.documentElement.dataset.layoutDragging;
       resizer.removeEventListener("pointermove", move);
       resizer.removeEventListener("pointerup", finish);
       resizer.removeEventListener("pointercancel", finish);

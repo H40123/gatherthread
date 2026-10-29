@@ -43,6 +43,9 @@ export function mountSessionToolbar({ document: doc }) {
   }
   for (const group of groups) {
     listen(group.trigger, "click", () => {
+      // Safari does not focus buttons on pointer activation. Keep Escape and
+      // keyboard traversal inside the disclosure after opening it there too.
+      group.trigger.focus({ preventScroll: true });
       if (group.panel.hidden) open(group.root.id); else close(group);
     });
     listen(group.trigger, "keydown", event => {

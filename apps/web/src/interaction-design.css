@@ -1,0 +1,314 @@
+/* Shared interaction/material system. Content stays still; controls respond. */
+:root {
+  --motion-press: 90ms;
+  --motion-fast: 180ms;
+  --motion-surface: 280ms;
+  --motion-ease: cubic-bezier(.22, 1, .36, 1);
+  --motion-settle: cubic-bezier(.2, .8, .2, 1);
+  --control-rim: color-mix(in srgb, var(--ink) 10%, transparent);
+  --control-surface: color-mix(in srgb, var(--paper-raised) 58%, transparent);
+  --material-surface: color-mix(in srgb, var(--paper-raised) 82%, transparent);
+  --material-shine: rgba(255, 255, 255, .8);
+  --material-shadow: 0 24px 70px rgb(22 42 45 / .16), 0 3px 12px rgb(22 42 45 / .06);
+  --action-fill: #087f73;
+  --action-fill-deep: #076d63;
+  --action-ink: #fff;
+  --bubble-self-bg: #b8ef8e;
+  --bubble-self-border: #83c75e;
+  --bubble-agent-bg: #ffe58a;
+  --bubble-agent-border: #e4bc42;
+  --bubble-ink: #202818;
+  --bubble-soft: #465537;
+}
+:root[data-theme="dark"] {
+  --control-surface: rgba(255, 255, 255, .055);
+  --material-surface: rgba(31, 37, 39, .87);
+  --material-shine: rgba(255, 255, 255, .14);
+  --material-shadow: 0 28px 78px rgb(0 0 0 / .38), 0 4px 16px rgb(0 0 0 / .22);
+  --action-fill: #6ed6bf; --action-fill-deep: #4dbca9; --action-ink: #0b3028;
+  --bubble-self-bg: #9dca78;
+  --bubble-self-border: #b0db8c;
+  --bubble-agent-bg: #dfc765;
+  --bubble-agent-border: #ecd784;
+  --bubble-ink: #202818;
+  --bubble-soft: #39462e;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] {
+    --control-surface: rgba(255, 255, 255, .055);
+    --material-surface: rgba(31, 37, 39, .87);
+    --material-shine: rgba(255, 255, 255, .14);
+    --material-shadow: 0 28px 78px rgb(0 0 0 / .38), 0 4px 16px rgb(0 0 0 / .22);
+    --action-fill: #6ed6bf; --action-fill-deep: #4dbca9; --action-ink: #0b3028;
+    --bubble-self-bg: #9dca78; --bubble-self-border: #b0db8c;
+    --bubble-agent-bg: #dfc765; --bubble-agent-border: #ecd784;
+    --bubble-ink: #202818; --bubble-soft: #39462e;
+  }
+}
+
+/* The native click remains immediate. No handlers delay form submission. */
+body :is(button, summary, [role="button"], .fw-tree-row, a.button) {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) ease, border-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease, opacity var(--motion-fast) ease,
+    filter var(--motion-fast) var(--motion-ease);
+}
+body :is(button, summary, [role="button"], a.button):not(:disabled):not([aria-disabled="true"]):is(:active, [data-key-pressed="true"]) {
+  /* Shade the surface without shrinking its pointer hit area. */
+  scale: none;
+  transform: none;
+  filter: brightness(.94);
+  transition-duration: var(--motion-press);
+}
+body :is(input, select, textarea) {
+  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) var(--motion-ease);
+}
+body :is(button, a, summary, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 3px;
+}
+body :is(button, summary, [role="button"]):disabled { cursor: not-allowed; }
+body button svg { stroke-linecap: round; stroke-linejoin: round; }
+/* Hover is a tint, not a positional move. A moving hit area can repeatedly
+   enter/leave beneath a stationary pointer, especially near a button's edge. */
+html .button:not(:disabled):hover { transform: none; }
+/* Never let a legacy CSS transform transition chase Anime.js frame updates. */
+html [data-motion-active="true"] { transition-property: background-color, border-color, box-shadow !important; }
+
+/* A clear glass rim is reserved for navigation and floating controls. */
+html .workspace :is(.workspace-icon-button, .sidebar-toggle-button, .session-toolbar-trigger, .composer-agent-button),
+html .auth-language-button, html .auth-entry-back {
+  border: 1px solid var(--control-rim);
+  background: var(--control-surface);
+  box-shadow: inset 0 1px 0 var(--material-shine), 0 2px 5px rgb(20 40 40 / .025);
+  border-radius: 12px;
+  backdrop-filter: blur(16px) saturate(1.35);
+  -webkit-backdrop-filter: blur(16px) saturate(1.35);
+}
+@media (hover: hover) {
+  html :is(.workspace-icon-button, .sidebar-toggle-button, .session-toolbar-trigger, .composer-agent-button, .auth-entry-back):hover:not(:disabled) {
+    background: color-mix(in srgb, var(--paper-raised) 86%, transparent);
+    border-color: color-mix(in srgb, var(--teal) 27%, var(--control-rim));
+    box-shadow: inset 0 1px var(--material-shine), 0 3px 10px rgb(20 40 40 / .06);
+    transform: none;
+  }
+}
+html .workspace :is(.workspace-icon-button, .session-toolbar-trigger)[aria-expanded="true"] {
+  color: var(--teal-dark);
+  background: var(--teal-wash);
+  border-color: color-mix(in srgb, var(--teal) 22%, transparent);
+}
+html .button-primary {
+  color: var(--action-ink);
+  background-color: var(--action-fill);
+  background-image: linear-gradient(165deg, rgb(255 255 255 / .04), transparent);
+  border: 1px solid color-mix(in srgb, var(--teal-dark) 70%, transparent);
+  box-shadow: inset 0 1px rgb(255 255 255 / .2), 0 3px 9px color-mix(in srgb, var(--teal) 15%, transparent);
+}
+/* Keep the same image layer in both states; replacing a gradient with a flat
+   background snaps rather than interpolating in Safari and Chromium. */
+html .button-primary:not(:disabled):hover {
+  color: var(--action-ink);
+  background-color: var(--action-fill-deep);
+  background-image: linear-gradient(165deg, rgb(255 255 255 / .04), transparent);
+  box-shadow: inset 0 1px rgb(255 255 255 / .22), 0 4px 14px color-mix(in srgb, var(--teal) 24%, transparent);
+}
+html .button-secondary { border-color: var(--control-rim); background: var(--control-surface); box-shadow: inset 0 1px var(--material-shine); }
+html .button-secondary:not(:disabled):hover { background-color: color-mix(in srgb, var(--teal) 7%, var(--paper-raised)); }
+html .composer .composer-management-button {
+  color: var(--teal-dark); background: transparent; border-color: transparent; box-shadow: none;
+  padding-inline: 10px; font-size: .8rem; font-weight: 600;
+}
+html .composer .composer-management-button:not(:disabled):hover {
+  color: var(--teal-dark); background: color-mix(in srgb, var(--teal) 8%, transparent);
+  border-color: transparent; box-shadow: none;
+}
+
+/* Less chrome around the conversation, a separate floating writing surface. */
+html .workspace .session-header { background: transparent; box-shadow: none; }
+html .workspace .session-header h1 { font-size: 1.19rem; letter-spacing: -.024em; }
+html .workspace .session-rail { background: color-mix(in srgb, var(--paper) 60%, transparent); }
+html .workspace .session-button { border-radius: 15px; box-shadow: none; }
+html .workspace .session-button[aria-current="true"], html .workspace .session-button-active {
+  background: var(--control-surface); border-color: var(--control-rim);
+  box-shadow: inset 0 1px var(--material-shine), 0 4px 15px rgb(22 40 42 / .045);
+}
+html .workspace .composer {
+  border: 1px solid var(--control-rim);
+  background: var(--material-surface);
+  border-radius: 23px;
+  box-shadow: inset 0 1px var(--material-shine), 0 6px 26px rgb(20 40 45 / .06);
+  backdrop-filter: blur(24px) saturate(1.2);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+}
+html .workspace .composer:focus-within { border-color: color-mix(in srgb, var(--teal) 35%, var(--control-rim)); }
+html .workspace .composer textarea {
+  border: 1px solid transparent; border-radius: 14px; background: transparent; box-shadow: none;
+}
+html .workspace .composer textarea:focus { border-color: transparent; box-shadow: none; }
+html .workspace .composer textarea:focus-visible { outline-offset: -2px; }
+
+/* Message colors communicate authorship at a glance, not decoration. */
+html .event-card { border-radius: 18px; box-shadow: 0 2px 5px rgb(20 40 40 / .025); }
+html .event-card:is(.event-bubble-self, .event-bubble-agent) {
+  --ink: var(--bubble-ink); --ink-soft: var(--bubble-soft);
+  color: var(--bubble-ink); border-width: 1px;
+  box-shadow: inset 0 1px rgb(255 255 255 / .23), 0 2px 5px rgb(20 40 40 / .025);
+}
+html .event-card.event-bubble-self { background: var(--bubble-self-bg); border-color: var(--bubble-self-border); }
+html .event-card.event-bubble-agent { background: var(--bubble-agent-bg); border-color: var(--bubble-agent-border); }
+html .event-card:is(.event-bubble-self, .event-bubble-agent) .markdown-body a { color: var(--bubble-ink); text-decoration: underline; text-underline-offset: 3px; }
+html .event-card:is(.event-bubble-self, .event-bubble-agent) .markdown-body :is(pre, code) {
+  color: var(--bubble-ink); background: rgb(255 255 255 / .3); border-color: rgb(32 40 24 / .18);
+}
+html .event-card:is(.event-bubble-self, .event-bubble-agent) .markdown-body pre code { background: transparent; border: 0; }
+html .event-card:is(.event-bubble-self, .event-bubble-agent) :is(.agent-worklog-state, .agent-plan-status, .message-action) { color: var(--bubble-soft); }
+html .event-card.event-bubble-self.event-agent_request { border-left: 3px solid #438b2f; }
+html .event-card.event-bubble-agent.event-agent_response-failed { --ink: inherit; --ink-soft: inherit; --bubble-ink: var(--ink); --bubble-soft: var(--ink-soft); background: color-mix(in srgb, var(--paper-raised) 92%, var(--danger)); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); color: var(--ink); }
+html .event-card:is(.event-bubble-self, .event-bubble-agent) :is(.event-type, .event-sequence, .event-time-button) { color: var(--bubble-soft); }
+html .event-card .message-quote { border-radius: 10px; border: 0; background: rgb(0 0 0 / .055); }
+html .agent-worklog { border-radius: 13px; }
+
+/* Surfaces retain native focus, modal semantics and immediate state updates.
+   Discrete display/overlay transitions keep the exit visible in the top layer. */
+html body dialog {
+  --surface-x: 0px; --surface-y: 14px; --surface-scale: .975;
+  border: 1px solid var(--control-rim);
+  border-radius: 24px;
+  background: var(--material-surface);
+  color: var(--ink);
+  box-shadow: inset 0 1px var(--material-shine), var(--material-shadow);
+  backdrop-filter: blur(30px) saturate(1.3);
+  -webkit-backdrop-filter: blur(30px) saturate(1.3);
+}
+html body dialog::backdrop {
+  background: rgb(12 22 26 / .28);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+@supports (transition-behavior: allow-discrete) {
+  html body dialog {
+    opacity: 0;
+    transform: translate(var(--surface-x), var(--surface-y)) scale(var(--surface-scale));
+    transition: opacity var(--motion-fast) ease, transform var(--motion-surface) var(--motion-ease),
+      display var(--motion-surface) allow-discrete, overlay var(--motion-surface) allow-discrete;
+  }
+  html body dialog[open] { opacity: 1; transform: translate(0, 0) scale(1); }
+  html body dialog::backdrop {
+    opacity: 0;
+    transition: opacity var(--motion-surface) ease, display var(--motion-surface) allow-discrete, overlay var(--motion-surface) allow-discrete;
+  }
+  html body dialog[open]::backdrop { opacity: 1; }
+  @starting-style {
+    html body dialog[open] { opacity: 0; transform: translate(var(--surface-x), var(--surface-y)) scale(var(--surface-scale)); }
+    html body dialog[open]::backdrop { opacity: 0; }
+  }
+  html .session-toolbar-panel {
+    opacity: 1; translate: 0 0;
+    transition: opacity var(--motion-fast) ease, translate var(--motion-fast) var(--motion-ease), display var(--motion-fast) allow-discrete;
+  }
+  html .session-toolbar-panel[hidden] { opacity: 0; translate: 0 -6px; }
+  @starting-style { html .session-toolbar-panel:not([hidden]) { opacity: 0; translate: 0 -6px; } }
+}
+html :is(.session-toolbar-panel, .fw-actions-menu, .fw-tab-menu, .fw-tab-picker-menu) {
+  background: var(--material-surface); border-color: var(--control-rim);
+  box-shadow: inset 0 1px var(--material-shine), var(--material-shadow);
+  backdrop-filter: blur(30px) saturate(1.35); -webkit-backdrop-filter: blur(30px) saturate(1.35);
+  border-radius: 17px;
+}
+html .session-toolbar-panel .session-toolbar-action { border-radius: 11px; }
+html .dialog-heading h2 { letter-spacing: -.025em; }
+html .settings-navigation { background: color-mix(in srgb, var(--paper-muted) 56%, transparent); }
+html .settings-navigation a { transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease; }
+html .settings-navigation a:hover { background: var(--control-surface); }
+html .settings-header, html .settings-footer { background: var(--control-surface); }
+
+/* Native details are accessible while the body unfolds; no JS height timers. */
+@supports selector(details::details-content) {
+  html details::details-content {
+    opacity: 0;
+    transition: opacity var(--motion-fast) ease, content-visibility var(--motion-fast) allow-discrete;
+  }
+  html details[open]::details-content { opacity: 1; }
+}
+@supports (interpolate-size: allow-keywords) {
+  html details::details-content {
+    interpolate-size: allow-keywords;
+    block-size: 0;
+    overflow: clip;
+    transition: block-size var(--motion-surface) var(--motion-ease), opacity var(--motion-fast) ease,
+      content-visibility var(--motion-surface) allow-discrete;
+  }
+  html details[open]::details-content { block-size: auto; }
+}
+html details > summary::after, html .file-workspace-chevron { transition: transform var(--motion-surface) var(--motion-ease); }
+
+/* Flush desktop rails; the controls, not the entire workspace, carry rounding. */
+@media (min-width: 1161px) {
+  html:not([data-mobile-workspace="true"]) #workspace .workspace-grid {
+    transition: grid-template-columns var(--motion-surface) var(--motion-ease);
+  }
+  @supports (transition-behavior: allow-discrete) {
+    html #session-rail, html #file-workspace-host { transition: opacity var(--motion-fast) ease, translate var(--motion-surface) var(--motion-ease), display var(--motion-surface) allow-discrete; opacity: 1; translate: 0 0; }
+    html #workspace[data-left-rail-collapsed="true"] #session-rail { opacity: 0; translate: -20px 0; pointer-events: none; }
+    html #workspace[data-right-panel-collapsed="true"] #file-workspace-host { opacity: 0; translate: 20px 0; pointer-events: none; }
+    @starting-style {
+      html #workspace:not([data-left-rail-collapsed="true"]) #session-rail { opacity: 0; translate: -20px 0; }
+      html #workspace:not([data-right-panel-collapsed="true"]) #file-workspace-host { opacity: 0; translate: 20px 0; }
+    }
+  }
+}
+html[data-layout-dragging="true"] #workspace .workspace-grid { transition: none; }
+html .fw-topbar { padding: 6px 8px; min-height: 49px; background: var(--control-surface); }
+html .fw-tab-wrap { border-radius: 11px; transition: background-color var(--motion-fast) ease; }
+html .fw-tab-wrap.is-active { background: var(--material-surface); border-color: var(--control-rim); box-shadow: inset 0 1px var(--material-shine), 0 2px 7px rgb(20 40 40 / .04); }
+html .file-workspace .fw-tab { font-size: .76rem; font-weight: 580; }
+html .fw-file-tools { gap: 4px; }
+html .fw-tree-row { border-radius: 9px; }
+
+/* A back chevron stays beside the form heading, above identity fields. */
+html .login-panel { border-radius: 28px; }
+html .login-panel::before { display: none; }
+html .login-panel::after { background: var(--material-surface); border-color: var(--control-rim); box-shadow: inset 0 1px var(--material-shine), var(--material-shadow); }
+html .auth-form-heading { display: flex; align-items: center; gap: 12px; margin: 24px 0 12px; }
+html .auth-form-heading[hidden] { display: none; }
+html .auth-form-heading h3 { margin: 0; font-size: 1.08rem; font-weight: 650; line-height: 1.35; letter-spacing: -.015em; }
+html .auth-entry-back { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 36px; width: 36px; height: 36px; min-height: 36px; padding: 8px; color: var(--ink); text-decoration: none; }
+html .auth-entry-back svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+html .auth-entry-panel { margin-top: 14px; }
+html .auth-entry-choice { border-radius: 17px; background: var(--control-surface); border-color: var(--control-rim); }
+html .login-panel input:not([type="checkbox"]) { border-radius: 13px; border-color: var(--control-rim); }
+html .login-panel h2 { font-size: clamp(1.85rem, 3vw, 2.5rem); letter-spacing: -.04em; line-height: 1.15; }
+
+/* Mobile surfaces rise from their controls; the conversation drawer comes left. */
+html[data-mobile-workspace="true"] dialog.mobile-workspace-dialog { --surface-y: 32px; --surface-scale: 1; }
+html[data-mobile-workspace="true"] #mobile-sessions-dialog { --surface-x: -40px; --surface-y: 0px; --surface-scale: 1; }
+html[data-mobile-workspace="true"] #mobile-members-dialog { --surface-x: 30px; --surface-y: 0px; --surface-scale: 1; border-radius: 0; }
+html[data-mobile-workspace="true"] .workspace .composer { border-radius: 20px; }
+html[data-mobile-workspace="true"] .auth-entry-back { flex-basis: 44px; width: 44px; height: 44px; }
+html[data-mobile-workspace="true"] #mobile-tools-content .session-toolbar-panel { background: transparent; box-shadow: none; border-radius: 0; backdrop-filter: none; -webkit-backdrop-filter: none; }
+@media (pointer: coarse) {
+  html .auth-entry-back { flex-basis: 44px; width: 44px; height: 44px; }
+}
+
+/* Accessibility is a material variant, not an afterthought. */
+:root[data-contrast="high"] { --control-rim: color-mix(in srgb, var(--ink) 25%, transparent); --material-surface: var(--paper-raised); }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root, :root[data-theme] { --control-surface: var(--paper-raised); --material-surface: var(--paper-raised); }
+  html body :is(dialog, .composer, .workspace-icon-button, .sidebar-toggle-button, .session-toolbar-trigger, .composer-agent-button, .auth-language-button, .auth-entry-back, .session-toolbar-panel, .fw-actions-menu, .fw-tab-menu, .fw-tab-picker-menu),
+  html body .login-panel::after, html body dialog::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+@media (forced-colors: active) {
+  html body :is(dialog, button, summary, .event-card, .composer, .session-toolbar-panel, .fw-tab-wrap.is-active) { background: Canvas; color: CanvasText; border: 1px solid ButtonText; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+  html .event-card:is(.event-bubble-self, .event-bubble-agent) { --bubble-ink: CanvasText; --bubble-soft: CanvasText; border-color: CanvasText; background: Canvas; color: CanvasText; }
+}
+html[data-motion-resolved="reduce"] *, html[data-motion-resolved="reduce"] *::before,
+html[data-motion-resolved="reduce"] *::after, html[data-motion-resolved="reduce"] *::backdrop,
+html[data-motion-resolved="reduce"] details::details-content { transition-duration: 0s !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
+html[data-motion-resolved="reduce"] :is(dialog, .composer, .workspace-icon-button, .sidebar-toggle-button, .session-toolbar-trigger, .composer-agent-button, .auth-language-button, .auth-entry-back, .session-toolbar-panel, .fw-actions-menu, .fw-tab-menu, .fw-tab-picker-menu),
+html[data-motion-resolved="reduce"] .login-panel::after, html[data-motion-resolved="reduce"] dialog::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-motion="full"]) *, html:not([data-motion="full"]) *::before, html:not([data-motion="full"]) *::after, html:not([data-motion="full"]) *::backdrop { transition-duration: 0s !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
+}

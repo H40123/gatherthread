@@ -22,6 +22,27 @@ npm run build
 
 The static build is written to `apps/web/dist`.
 
+## Interaction and motion
+
+`src/interaction-design.css` owns the workspace materials, authorship colors, press feedback and native dialog/menu transitions. `src/motion.js` uses the locally bundled Anime.js runtime for surface entrances and new messages. Existing action handlers and native focus/close semantics remain immediate. No animation waits before an API call, and no remote animation script is loaded.
+
+- Buttons respond in 90–180 ms; hover only changes tint and shadow, with stable hit areas and readable labels. Dialogs and panels settle in 220–280 ms; new messages rise 18 px over 340 ms. The elapsed entrance survives a timeline DOM replacement; history, pagination, completed work and stream refreshes do not replay it.
+- Navigation and floating controls use translucent surfaces. Own messages use green, Agent answers yellow, and other members a neutral surface. Body and secondary text meet 4.5:1 contrast in both themes; code and links retain readable surfaces within colored bubbles.
+- The existing motion preference and OS reduced-motion setting control both CSS and Anime.js. High contrast remains opt-in for new browsers, with existing explicit preferences preserved. Reduced transparency and forced colors have solid-material alternatives.
+- Authentication uses a small, named Back chevron beside the form heading. Project/GitHub steps, Agent options, file previews, summary menus, settings, mobile sheets and desktop rails share the motion rules without changing their permission checks or form state.
+
+Design references: [Apple motion guidance](https://developer.apple.com/design/human-interface-guidelines/motion) and [OneTake](https://github.com/feitangyuan/onetake) for visual continuity. OneTake is a reference tool, not a shipped dependency; its noncommercial source, templates and assets are not copied into GatherThread. Anime.js is bundled with its MIT notice in the generated third-party licenses directory.
+
+After building and starting the local web server, run the focused browser checks with an existing Playwright installation:
+
+```bash
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs MOTION_ORIGIN=http://127.0.0.1:18847 node tests/browser/ui-motion.mjs
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs MOTION_BROWSER=webkit MOTION_ORIGIN=http://127.0.0.1:18847 node tests/browser/ui-motion.mjs
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs MOTION_BROWSER=webkit MOTION_ORIGIN=http://127.0.0.1:18847 node tests/browser/ui-hover.mjs
+```
+
+These checks use disposable local example/mock data at desktop, phone and tablet sizes. They check message continuity, stable worklogs, rapid modal toggling, focus restoration, reduced motion, visible send actions and authentication navigation. Hover checks sample transitions in both themes and contrast settings, including the pointer resting on the button edge. WebKit coverage does not substitute for a native Safari check.
+
 ## Brand assets
 
 The invitation confirmation header uses `brand/lockup-color-transparent-light.svg` and `brand/lockup-color-transparent-dark.svg`, matching the approved `final-f` exports at `logo/svg/` in commit `74161e2` byte for byte. These are also the login/workspace lockups; the invitation header displays them at 184 CSS pixels with the existing light/dark theme selection. See the [approved asset usage guide](https://github.com/TH060419/gatherthread/blob/74161e2/logo/README.md).

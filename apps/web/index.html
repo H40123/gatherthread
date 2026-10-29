@@ -16,7 +16,8 @@
     />
     <title>GatherThread</title>
     <script async src="./src/page-recovery.js?v=20261018-recovery-1"></script>
-    <link rel="stylesheet" href="./src/styles.css?v=20261024-launcher-sharing-1" data-page-required-style />
+    <link rel="stylesheet" href="./src/styles.css?v=20261029-motion-1" data-page-required-style />
+    <link rel="stylesheet" href="./src/interaction-design.css?v=20261029-motion-1" data-page-required-style />
     <link rel="stylesheet" href="./src/page-recovery.css?v=20261024-recovery-2" data-page-required-style />
   </head>
   <body>
@@ -79,6 +80,18 @@
         <h2 id="login-title" tabindex="-1">Enter your workspace</h2>
         <p id="invitation-auth-hint" class="field-help" hidden>Sign in or register to review your project invitation. Joining requires your confirmation.</p>
         <p class="muted">Sign in or create an account to collaborate.</p>
+        <div class="auth-form-heading" data-auth-entry-heading="email-login" hidden>
+          <button class="auth-entry-back" type="button" aria-label="Back" title="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
+          <h3 id="auth-email-login-heading">Sign in with email and password</h3>
+        </div>
+        <div class="auth-form-heading" data-auth-entry-heading="register" hidden>
+          <button class="auth-entry-back" type="button" aria-label="Back" title="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
+          <h3 id="auth-register-heading">Create an account with email</h3>
+        </div>
+        <div class="auth-form-heading" data-auth-entry-heading="password-reset" hidden>
+          <button class="auth-entry-back" type="button" aria-label="Back" title="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
+          <h3 id="auth-password-reset-heading">Reset your password</h3>
+        </div>
         <nav id="auth-entry-chooser" class="auth-entry-chooser" aria-label="Choose how to enter">
           <p class="field-help">Choose one way to enter. You can come back and switch at any time.</p>
           <button id="auth-select-email-login" class="auth-entry-choice" type="button" aria-controls="auth-email-login-panel">
@@ -102,8 +115,6 @@
           <p id="auth-identity-help" class="field-help">Display names appear to collaborators. The device name helps you recognize this browser.</p>
         </div>
         <section id="auth-email-login-panel" class="auth-entry-panel" aria-labelledby="auth-email-login-heading" hidden>
-          <button class="text-button auth-entry-back" type="button">← Back</button>
-          <h3 id="auth-email-login-heading">Sign in with email and password</h3>
           <form id="email-login-form" novalidate>
             <label for="email-login-email">Email address</label>
             <input id="email-login-email" type="email" autocomplete="username" maxlength="254" required />
@@ -122,8 +133,6 @@
           </form>
         </section>
         <section id="auth-register-panel" class="auth-entry-panel" aria-labelledby="auth-register-heading" hidden>
-          <button class="text-button auth-entry-back" type="button">← Back</button>
-          <h3 id="auth-register-heading">Create an account with email</h3>
           <form id="registration-form" novalidate>
             <label for="registration-email">Email address</label>
             <input id="registration-email" type="email" autocomplete="email" maxlength="254" required aria-describedby="registration-help registration-error" />
@@ -155,8 +164,6 @@
           </form>
         </section>
         <section id="auth-password-reset-panel" class="auth-entry-panel" aria-labelledby="auth-password-reset-heading" hidden>
-          <button class="text-button auth-entry-back" type="button">← Back</button>
-          <h3 id="auth-password-reset-heading">Reset your password</h3>
           <form id="password-reset-form" novalidate>
             <label for="password-reset-email">Email address</label>
             <input id="password-reset-email" type="email" autocomplete="email" maxlength="254" required aria-describedby="password-reset-help password-reset-error" />
@@ -545,11 +552,11 @@
                 <button id="mobile-compose-tools-button" class="icon-button mobile-workspace-only" type="button" aria-label="Conversation tools" title="Conversation tools" aria-haspopup="dialog" aria-controls="mobile-tools-dialog"><span aria-hidden="true">＋</span></button>
                 <div id="composer-agent-controls" class="composer-agent-controls">
                   <button id="mobile-agent-button" class="mobile-agent-button composer-agent-button" type="button" aria-label="Agent, model and reasoning" title="Agent, model and reasoning" aria-haspopup="dialog" aria-controls="mobile-agent-dialog" aria-expanded="false"><span id="mobile-agent-label" data-i18n-skip>Codex</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></button>
-                  <button id="manage-agents-button" class="button button-primary composer-management-button" type="button" aria-haspopup="dialog" aria-controls="agent-management-dialog" disabled><span>Manage my Agents</span></button>
+                  <button id="manage-agents-button" class="button button-secondary composer-management-button" type="button" aria-haspopup="dialog" aria-controls="agent-management-dialog" disabled><span>Manage my Agents</span></button>
                 </div>
                 <div class="intent-help" id="send-chat-help">
                   <button id="send-chat-button" class="button button-secondary" type="button">
-                    <span aria-hidden="true">↗</span><span class="desktop-send-label">Send chat</span><span class="mobile-send-label">Chat only</span>
+                    <span aria-hidden="true">↑</span><span class="desktop-send-label">Send chat</span><span class="mobile-send-label">Chat only</span>
                   </button>
                   <span>Share only · no agent run</span>
                 </div>
@@ -1592,6 +1599,6 @@ codex plugin add gatherthread@gatherthread-source</code>
       <button id="dismiss-attention-notice" class="attention-notice-dismiss" type="button" aria-label="Dismiss notification">×</button>
     </div>
     <div id="announcement" class="sr-only" aria-live="polite" aria-atomic="true"></div>
-    <script type="module" src="./src/bootstrap.js?v=20261024-launcher-sharing-1"></script>
+    <script type="module" src="./src/bootstrap.js?v=20261029-motion-1"></script>
   </body>
 </html>
