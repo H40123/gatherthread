@@ -46,10 +46,11 @@
   }
 }
 
+/* Component-specific drag/resize gestures take precedence over this default. */
+:where(button, summary, [role="button"], .fw-tree-row, a.button) { touch-action: manipulation; }
 /* The native click remains immediate. No handlers delay form submission. */
 body :is(button, summary, [role="button"], .fw-tree-row, a.button) {
   -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
   transition: background-color var(--motion-fast) var(--motion-ease),
     color var(--motion-fast) ease, border-color var(--motion-fast) ease,
     box-shadow var(--motion-fast) ease, opacity var(--motion-fast) ease,
