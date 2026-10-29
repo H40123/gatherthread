@@ -210,7 +210,7 @@ test("the composer exposes one management entry beside model selection and retai
   assert.equal([...html.matchAll(/\bid="manage-agents-button"/gu)].length, 1);
   assert.match(controls, /id="mobile-agent-button"[\s\S]*?id="manage-agents-button"/u);
   assert.match(elementMarkup(controls, "manage-agents-button"), /aria-controls="agent-management-dialog"/u);
-  assert.match(elementMarkup(controls, "manage-agents-button"), /class="[^"]*\bbutton-primary\b/u);
+  assert.match(elementMarkup(controls, "manage-agents-button"), /class="[^"]*\bbutton-secondary\b/u);
   for (const id of ["connect-codex-button", "connect-dsh-button", "connect-claude-button", "add-agent-button", "agent-sharing-button", "agent-teams-button"]) {
     assert.equal([...html.matchAll(new RegExp(`\\bid="${id}"`, "gu"))].length, 1, id);
     assert.doesNotMatch(rail, new RegExp(`\\bid="${id}"`, "u"));
