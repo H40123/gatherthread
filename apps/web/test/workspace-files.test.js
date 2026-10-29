@@ -370,6 +370,77 @@ test("refreshing the tree after another tab saves cannot rebase a stale buffer o
   assert.equal(f.host.querySelector("[data-save-for]").disabled, true); f.controller.destroy();
 });
 
+for (const clipboardAction of ["Copy", "Cut"]) test(`${clipboardAction} keeps the selected source version when another save refreshes the tree`, async () => {
+  const initial = "a".repeat(40), changed = "b".repeat(40); let head = initial; const writes = [];
+  const f = fixture({ prompt: () => "copied.js", api: {
+    async getFileTree() { return { commit: head, connection_revision: "binding-1", can_write: true, entries: [{ path: "a.js", size: 4 }, { path: "b.js", size: 4 }] }; },
+    async mutateFiles(_project, input) {
+      writes.push(input);
+      if (input.base_commit !== head) throw Object.assign(new Error("head changed"), { status: 409 });
+      head = changed; return { branch_id: "own", commit: changed };
+    },
+  } });
+  await f.controller.open(); await f.treeItem("b.js").click(); await flush(); await f.tab("files").click();
+  await f.host.querySelectorAll("button").find(node => node.textContent === clipboardAction).click();
+  await f.treeItem("a.js").click(); await flush(); f.editors.at(-1).change("save another file");
+  await f.host.querySelector("[data-save-for]").click(); await flush();
+  await f.tab("files").click(); await f.host.querySelectorAll("button").find(node => node.textContent === "Paste").click(); await flush();
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1].base_commit, initial, "pasting cannot silently select a newer source version");
+  assert.equal(writes[1].connection_revision, "binding-1");
+  assert.match(f.host.textContent, /Your edits are kept/u); f.controller.destroy();
+});
+
+for (const clipboardAction of ["Copy", "Cut"]) test(`${clipboardAction} can paste once on the acknowledged head after cancelling its first prompt`, async () => {
+  let destination = null; const f = fixture({ prompt: () => destination });
+  await f.controller.open(); await f.treeItem("b.js").click(); await flush(); await f.tab("files").click();
+  await f.host.querySelectorAll("button").find(node => node.textContent === clipboardAction).click();
+  await f.host.querySelectorAll("button").find(node => node.textContent === "Paste").click(); await flush();
+  assert.equal(f.calls.filter(([kind]) => kind === "mutate").length, 0);
+  f.controller.close(); await f.controller.show();
+  destination = "pasted.js";
+  await f.host.querySelectorAll("button").find(node => node.textContent === "Paste").click(); await flush();
+  const writes = f.calls.filter(([kind]) => kind === "mutate");
+  assert.equal(writes.length, 1); assert.equal(writes[0][1].base_commit, "a".repeat(40));
+  assert.deepEqual(writes[0][1].operations, [{ type: clipboardAction === "Copy" ? "copy" : "move", path: "b.js", destination: "pasted.js" }]);
+  assert.match(f.host.textContent, /File operation completed/u); f.controller.destroy();
+});
+
+test("a file import waiting for bytes cannot overwrite content added by a concurrent save", async () => {
+  const initial = "a".repeat(40), changed = "b".repeat(40), bytes = deferred(); let head = initial; const writes = [];
+  const f = fixture({ api: {
+    async getFileTree() { return { commit: head, connection_revision: "binding-1", can_write: true,
+      entries: [{ path: "a.js", size: 4 }, ...(head === changed ? [{ path: "imported.js", size: 9 }] : [])] }; },
+    async mutateFiles(_project, input) {
+      writes.push(input);
+      if (input.base_commit !== head) throw Object.assign(new Error("head changed"), { status: 409 });
+      head = changed; return { branch_id: "own", commit: changed };
+    },
+  } });
+  await f.controller.open();
+  await f.host.querySelectorAll("button").find(node => node.textContent === "Import files").click();
+  const picker = f.host.querySelectorAll("input").find(node => node.type === "file");
+  picker.files = [{ name: "imported.js", size: 4, arrayBuffer: () => bytes.promise }];
+  const importing = picker.fire("change"); await flush();
+  await f.treeItem("a.js").click(); await flush(); f.editors.at(-1).change("save while import is reading");
+  await f.host.querySelector("[data-save-for]").click(); await flush();
+  bytes.resolve(new TextEncoder().encode("test").buffer); await importing; await flush();
+  assert.equal(writes.length, 2); assert.equal(writes[1].base_commit, initial);
+  assert.equal(writes[1].connection_revision, "binding-1");
+  assert.match(f.host.textContent, /Your edits are kept/u); f.controller.destroy();
+});
+
+test("a file import waiting for bytes cannot follow an account switch", async () => {
+  const bytes = deferred(); const f = fixture(); await f.controller.open();
+  await f.host.querySelectorAll("button").find(node => node.textContent === "Import files").click();
+  const picker = f.host.querySelectorAll("input").find(node => node.type === "file");
+  picker.files = [{ name: "imported.js", size: 4, arrayBuffer: () => bytes.promise }];
+  const importing = picker.fire("change"); await flush();
+  f.setContext({ ...f.getContext(), userId: "bob", projectId: "project-b" }); await f.controller.updateContext();
+  bytes.resolve(new TextEncoder().encode("test").buffer); await importing; await flush();
+  assert.equal(f.calls.some(([kind]) => kind === "mutate"), false); f.controller.destroy();
+});
+
 test("a same-commit GitHub repository rebind blocks old buffers and preserves their pinned revision", async () => {
   const commit = "a".repeat(40); let revision = "repository-one"; const writes = [];
   const f = fixture({ api: {

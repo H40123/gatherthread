@@ -1,32 +1,35 @@
-import { mountMotion } from "./motion.js?v=20261029-motion-1";
-import { renderAvatar, isAgentReply, eventAuthorLabel, eventExecutionOwner } from "./avatars.js?v=20261029-motion-1";
-import { mountAvatarSettings } from "./avatar-settings.js?v=20261029-motion-1";
-import { mountCloudGithub } from "./cloud-github-view.js?v=20261029-motion-1";
+import { mountMotion } from "./motion.js?v=20261030-config-1";
+import { renderAvatar, isAgentReply, eventAuthorLabel, eventExecutionOwner } from "./avatars.js?v=20261030-config-1";
+import { mountAvatarSettings } from "./avatar-settings.js?v=20261030-config-1";
+import { mountCloudGithub } from "./cloud-github-view.js?v=20261030-config-1";
 import { mountAgentManagement } from "./agent-management.js";
-import { mountSharedAgents } from "./shared-agent-view.js?v=20261029-motion-1";
-import { mountAgentTeams } from "./agent-team-library-view.js?v=20261016-team-v2";
+import { mountSharedAgents } from "./shared-agent-view.js?v=20261030-config-1";
+import { mountAgentTeams } from "./agent-team-library-view.js?v=20261030-config-1";
 import { mountTeamRunNotice } from "./agent-team-run-notice.js?v=20261018-team-errors";
 import { teamEventPresentation } from "./agent-team-event.js?v=20261016-team-v2";
 import { mountDeviceAuthorization } from "./device-authorization.js";
-import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261029-motion-1";
+import { createAccountEmailHint, mountCodexLauncher, mountAgentPackageDownloads } from "./codex-launcher.js?v=20261030-config-1";
 import { mountAccountDevices } from "./account-devices.js";
-import { mountPersonalCloudApi } from "./personal-cloud-api.js?v=20261029-motion-1";
-import { mountCloudCodeConsent } from "./cloud-code-consent.js?v=20261029-motion-1";
-import { cloudRequestInput, continueCloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261029-motion-1";
-import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261029-motion-1";
-import { mountFileWorkspace } from "./workspace-files.js";
-import { mountSessionToolbar } from "./session-toolbar.js?v=20261029-motion-1";
+import { mountPersonalCloudApi } from "./personal-cloud-api.js?v=20261030-config-1";
+import { mountCloudCodeConsent } from "./cloud-code-consent.js?v=20261030-config-1";
+import { cloudRequestInput, continueCloudRequestInput, mountAgentRequestControl, retryAgentRequestPermission } from "./agent-request-control.js?v=20261030-config-1";
+import { mountMobileWorkspace, mobileControlLabel } from "./mobile-workspace.js?v=20261030-config-1";
+import { mountFileWorkspace } from "./workspace-files.js?v=20261030-config-1";
+import { mountSessionToolbar } from "./session-toolbar.js?v=20261030-config-1";
 import { mountInterfaceMode } from "./interface-mode.js";
-import { createSessionVisibilityController } from "./session-visibility.js?v=20261029-motion-1";
+import { mountPreferencesConfiguration } from "./configuration.js?v=20261030-config-1";
+import { CONFIGURATION_SKILL, configurationPrompt, configurationSkillContent, teamConfigurationsInReply } from "./configuration-assistant.js?v=20261030-config-1";
+import { createSoloDrafts } from "./solo-drafts.js?v=20261030-config-1";
+import { createSessionVisibilityController } from "./session-visibility.js?v=20261030-config-1";
 import { mountMobileSettings } from "./mobile-settings-view.js";
 import { mountMobileCodeView } from "./mobile-code-view.js";
 import { mountRegistration } from "./registration.js";
-import { HttpCollaborationApi, MockCollaborationApi } from "./api.js?v=20261029-motion-1";
-import { mountMessageActions, agentWorkStatus } from "./message-actions.js?v=20261029-motion-1";
-import { mountMessageDeletion } from "./message-deletion.js?v=20261029-motion-1";
+import { HttpCollaborationApi, MockCollaborationApi } from "./api.js?v=20261030-config-1";
+import { mountMessageActions, agentWorkStatus } from "./message-actions.js?v=20261030-config-1";
+import { mountMessageDeletion } from "./message-deletion.js?v=20261030-config-1";
 import { positionSessionContextPanel, bindSessionContextPanel } from "./session-context-panel.js";
-import { ExampleCollaborationApi } from "./example-api.js?v=20261029-motion-1";
-import { mountOnboarding } from "./onboarding.js?v=20261029-motion-1";
+import { ExampleCollaborationApi } from "./example-api.js?v=20261030-config-1";
+import { mountOnboarding } from "./onboarding.js?v=20261030-config-1";
 import { projectInvitationShareText } from "./invitation-share.js?v=20261012-invite-1";
 import { mountInvitationLink } from "./invitation-link.js?v=20261012-invite-1";
 import {
@@ -63,14 +66,14 @@ import {
   sessionMetadataFromEvent,
   sessionDeliveryMode,
   snapshotStatusView,
-} from "./domain.js?v=20261029-motion-1";
-import { SessionSync } from "./realtime.js?v=20261029-motion-1";
-import { mountCodeSync } from "./code-sync-view.js?v=20261029-motion-1";
-import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20261029-motion-1";
-import { mountHistorySummaries } from "./history-summary-view.js?v=20261029-motion-1";
+} from "./domain.js?v=20261030-config-1";
+import { SessionSync } from "./realtime.js?v=20261030-config-1";
+import { mountCodeSync } from "./code-sync-view.js?v=20261030-config-1";
+import { mountCodeStorageSettings } from "./code-storage-settings.js?v=20261030-config-1";
+import { mountHistorySummaries } from "./history-summary-view.js?v=20261030-config-1";
 import { DEFAULT_HISTORY_SUMMARY_INSTRUCTIONS } from "./history-summary-policy.js";
 import { createAmbientCanvas } from "./ambient-canvas.js?v=20260829-14";
-import { createLocalizer, memberRemovalAriaLabel, memberRoleAriaLabel } from "./i18n.js?v=20261029-motion-1";
+import { createLocalizer, memberRemovalAriaLabel, memberRoleAriaLabel } from "./i18n.js?v=20261030-config-1";
 import { automaticDeviceName } from "./device-name.js?v=20260830-1";
 import {
   CODEX_HARNESS,
@@ -87,7 +90,7 @@ import {
   resolveCodexRuntime,
   resolveDshRuntime,
   withoutDshPairingHash,
-} from "./dsh.js?v=20261029-motion-1";
+} from "./dsh.js?v=20261030-config-1";
 import { renderMarkdown } from "./markdown.js?v=20260829-1";
 import { calendarDayKey, formatFullTimestamp, formatTimelineDay } from "./timeline-dates.js?v=20260927-1";
 import {
@@ -133,7 +136,7 @@ import {
   withProjectDshProfile,
   withProjectCloudProfile,
   withProjectEnabledHarnesses,
-} from "./settings.js?v=20261029-motion-1";
+} from "./settings.js?v=20261030-config-1";
 
 const query = new URLSearchParams(location.search);
 const configuredApiUrl = query.get("api") ?? "";
@@ -234,6 +237,14 @@ const timelineRegion = element("timeline-region");
 const timelineBottomButton = element("timeline-bottom-button");
 const timelineEmpty = element("timeline-empty");
 const messageInput = element("message-input");
+const configurationSkillChip = document.createElement("span");
+configurationSkillChip.className = "configuration-skill";
+configurationSkillChip.textContent = "GatherThread · /gatherthread-config";
+configurationSkillChip.hidden = true;
+messageInput.before(configurationSkillChip);
+messageInput.addEventListener("input", () => {
+  configurationSkillChip.hidden = !messageInput.value.startsWith(`${CONFIGURATION_SKILL}\n`);
+});
 const sendChatButton = element("send-chat-button");
 const sendAgentButton = element("send-agent-button");
 const agentCloudModelSelect = element("agent-cloud-model-select");
@@ -281,6 +292,35 @@ const createInvitationForm = element("create-invitation-form");
 const invitationList = element("invitation-list");
 const settingsDialog = element("settings-dialog");
 const settingsForm = element("settings-form");
+let importedInterfaceMode;
+let importedAgentDefaults;
+let soloNavigationGeneration = 0;
+let configuringTeam = false;
+const configurationDrafts = new Map();
+const soloDrafts = createSoloDrafts({ api,
+  onPendingChange: () => renderSessionList(),
+  onDiscard: id => {
+    configurationDrafts.delete(id);
+    state.sessions = state.sessions.filter(session => session.id !== id);
+    renderSessionList();
+  },
+  onError: () => announce(localizer.t("The empty conversation could not be removed. It is still available in the conversation list.")),
+});
+
+async function leaveEmptySolo() {
+  if (!soloDrafts.has(state.session?.id)) return true;
+  if (pendingMessageSend?.()) {
+    announce(localizer.t("Wait for the current message to finish sending before switching conversations."));
+    return false;
+  }
+  // Draft text belongs to this empty Solo even if the cleanup transport fails.
+  // Navigation never waits for cleanup; the server arbitrates any concurrent send.
+  const id = state.session.id;
+  messageInput.value = ""; messageActions.reset(); configurationSkillChip.hidden = true;
+  configurationDrafts.delete(id);
+  void soloDrafts.leave(id);
+  return true;
+}
 
 function renderCurrentAvatar() {
   const user = state.currentUser;
@@ -434,6 +474,7 @@ function refreshInterfacePresentation() {
 }
 for (const id of ["auth-interface-mode", "settings-interface-mode"]) {
   element(id).addEventListener("change", event => {
+    if (id === "settings-interface-mode") importedInterfaceMode = undefined;
     element("settings-interface-error").hidden = true;
     interfaceMode.setPreference(event.target.value);
     refreshInterfacePresentation();
@@ -543,6 +584,7 @@ const sharedAgentsUi = mountSharedAgents({ document, api, localizer,
 
 const teamsUi = mountAgentTeams({ document, api, hostButton: element("agent-teams-button"),
   onExit: () => agentManagementUi.close(),
+  onConfigureWithAi: startTeamConfiguration,
   refreshSources: () => Promise.allSettled([refreshDshRuntimes(), refreshHostedAgentStatus(), sharedAgentsUi.refresh()]),
   makeKey: createIdempotencyKey, confirm: message => window.confirm(message), onChange: () => renderComposerPermissions(),
   getContext: () => ({ scope: `${authenticationGeneration}:${selectedSessionGeneration}:${state.currentUser?.id}:${state.project?.id}:${state.session?.id}`,
@@ -556,6 +598,63 @@ const teamsUi = mountAgentTeams({ document, api, hostButton: element("agent-team
     writable: canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: state.sync.phase, kind: "human_chat" }).allowed,
     controlWritable: canAppend({ session: state.session, currentUser: state.currentUser, connectionPhase: "live", kind: "human_chat" }).allowed,
   }),
+});
+
+async function startTeamConfiguration(configuration = null) {
+  if (configuringTeam || !state.currentUser || !state.project || !["owner", "participant"].includes(state.project.role)) return false;
+  if (configuration && JSON.stringify(configuration).length > 6000) return false;
+  if (configuration) configurationSkillContent(configurationPrompt(state.settings.general.locale), configuration, {
+    kind: currentProjectHarness() === "cloud" ? "hosted_agent" : "agent_request",
+    locale: state.settings.general.locale, reserve: 256,
+  });
+  if (messageInput.value.trim() && !soloDrafts.has(state.session?.id)
+      && !window.confirm(localizer.t("Replace the unsent message with a new Team configuration prompt? Cancel to keep your message."))) return false;
+  const isCurrent = captureWorkspaceScope();
+  const projectId = state.project.id;
+  const auth = authenticationGeneration;
+  let created;
+  configuringTeam = true;
+  try {
+    created = await api.createSession(projectId, { name: localizer.t("Configure my Agent Team"), mode: "solo", visibility: "private",
+      idempotencyKey: createIdempotencyKey("configure-team") });
+    if (auth === authenticationGeneration) soloDrafts.remember(created);
+    if (!isCurrent()) return false;
+    const sessions = await api.listProjectSessions(projectId);
+    if (!isCurrent()) return false;
+    state.sessions = sessions;
+    if (configuration) configurationDrafts.set(created.id, structuredClone(configuration));
+    agentManagementUi.close();
+    // Seed the draft as soon as this selection is displayed. Runtime discovery
+    // and replay may finish later, after the user has started editing it.
+    await selectSession(created.id, { onSelected: () => {
+      messageInput.value = configurationPrompt(state.settings.general.locale);
+      messageInput.dispatchEvent(new Event("input", { bubbles: true }));
+      messageInput.focus(); messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+      announce(localizer.t("Describe your team, choose an Agent, then send when you are ready."));
+    } });
+    if (state.session?.id !== created.id) return false;
+    return true;
+  } catch (error) {
+    if (isCurrent()) announce(error.message ?? localizer.t("Unable to create the session."));
+    if (created && isCurrent()) await soloDrafts.leave(created.id);
+    return false;
+  } finally {
+    if (created && auth === authenticationGeneration && state.session?.id !== created.id) void soloDrafts.leave(created.id);
+    configuringTeam = false;
+  }
+}
+
+const preferencesConfiguration = mountPreferencesConfiguration({ document, button: element("settings-json-button"),
+  getSettings: () => readSettingsForm(), getInterfaceMode: () => importedInterfaceMode ?? interfaceMode.getPreference(),
+  t: text => localizer.t(text),
+  onStage: ({ settings, interfaceMode: preference }) => {
+    settingsPreview = settings;
+    importedAgentDefaults = { activeHarness: settings.agents.activeHarness, enabledHarnesses: [...settings.agents.enabledHarnesses] };
+    if (preference !== undefined) importedInterfaceMode = preference;
+    populateSettingsForm(settingsPreview);
+    if (importedInterfaceMode !== undefined) element("settings-interface-mode").value = importedInterfaceMode;
+    announce(localizer.t("Configuration is ready to review. Save settings to apply it."));
+  },
 });
 
 const teamRunNotice = mountTeamRunNotice({
@@ -1174,6 +1273,8 @@ projectSelect.addEventListener("change", () => void selectProject(projectSelect.
 createForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const isCurrent = captureWorkspaceScope();
+  const auth = authenticationGeneration;
+  let created;
   const projectId = state.project?.id;
   const errorNode = element("create-error");
   const submit = createForm.querySelector("button[type='submit']");
@@ -1182,11 +1283,12 @@ createForm.addEventListener("submit", async (event) => {
   submit.disabled = true;
   try {
     if (!projectId) throw new Error("Create a project first.");
-    const created = await api.createSession(projectId, {
+    created = await api.createSession(projectId, {
       name: data.get("name")?.toString() ?? "",
       mode: data.get("mode")?.toString() ?? "multi",
       idempotencyKey: createIdempotencyKey("create-session"),
     });
+    if (auth === authenticationGeneration) soloDrafts.remember(created);
     if (!isCurrent()) return;
     const sessions = await api.listProjectSessions(projectId);
     if (!isCurrent()) return;
@@ -1199,6 +1301,7 @@ createForm.addEventListener("submit", async (event) => {
     if (!isCurrent()) return;
     errorNode.textContent = error.message ?? "Unable to create the session.";
   } finally {
+    if (created && auth === authenticationGeneration && state.session?.id !== created.id) void soloDrafts.leave(created.id);
     submit.disabled = false;
   }
 });
@@ -1397,6 +1500,9 @@ element("settings-delete-account").addEventListener("click", async () => {
   }
 });
 settingsDialog.addEventListener("close", () => {
+  preferencesConfiguration.close();
+  importedInterfaceMode = undefined;
+  importedAgentDefaults = undefined;
   accountDevices.clear();
   personalCloudApi.clear();
   const returnFocus = settingsReturnFocus;
@@ -1563,6 +1669,9 @@ async function restoreBrowserSession() {
 }
 
 function resetWorkspaceToAuth() {
+  soloDrafts.clear(); configurationDrafts.clear(); soloNavigationGeneration++;
+  importedInterfaceMode = undefined; importedAgentDefaults = undefined;
+  preferencesConfiguration.close();
   agentManagementUi.close();
   sessionToolbar.reset();
   filesUi.clear();
@@ -1726,6 +1835,7 @@ async function enterWorkspace(preferredProjectId) {
 async function selectProject(projectId) {
   if (!state.currentUser) return;
   if (state.project?.id !== projectId && !await filesUi.confirmLeave()) { renderProjectSelect(); return; }
+  if (state.project?.id !== projectId && !await leaveEmptySolo()) { renderProjectSelect(); return; }
   projectNavigationGeneration += 1;
   sessionToolbar.reset();
   if (state.project?.id !== projectId) filesUi.clear();
@@ -1807,9 +1917,12 @@ async function selectProject(projectId) {
   }
 }
 
-async function selectSession(sessionId) {
+async function selectSession(sessionId, { onSelected } = {}) {
   if (!state.currentUser || !state.project) return;
+  if (soloDrafts.isPending(sessionId)) return;
   if (state.session?.id !== sessionId && !await filesUi.confirmLeave()) return;
+  if (state.session?.id !== sessionId && !await leaveEmptySolo()) return;
+  if (soloDrafts.isPending(sessionId)) return;
   sessionToolbar.reset();
   mobileWorkspace.close();
   onboarding.cancel();
@@ -1868,12 +1981,13 @@ async function selectSession(sessionId) {
     renderMembers();
     renderComposerPermissions();
     renderSessionDeliveryControls();
+    element("session-title").focus({ preventScroll: true });
+    onSelected?.();
     void messageActions.refresh();
     await refreshDshRuntimes({ sessionId, generation });
     if (generation !== selectedSessionGeneration) return;
     startDshRuntimePolling();
     downloadCodexButton.disabled = false;
-    element("session-title").focus({ preventScroll: true });
     void restoreSnapshotRequests(sessionId, generation);
     await sync.connect(sessionId);
   } catch (error) {
@@ -2106,6 +2220,7 @@ function renderSessionList() {
 
     button.type = "button";
     button.className = "session-button";
+    button.disabled = soloDrafts.isPending(session.id);
     if (session.id === state.session?.id) {
       button.classList.add("session-button-active");
       button.setAttribute("aria-current", "page");
@@ -2634,6 +2749,26 @@ function renderTimeline({ followNewEvents = false, preserveAnchor = false, focus
       article.append(body);
     }
     article.append(messageActions.actions(event));
+    if (event.type === "agent_response" && !event.deleted && !event.contentUnavailable && !failedResponse
+        && state.currentUser && ["owner", "participant"].includes(state.project?.role)) {
+      const isCurrent = captureWorkspaceScope();
+      for (const text of teamConfigurationsInReply(content)) {
+        const preview = document.createElement("button"); preview.type = "button";
+        preview.className = "button button-secondary configuration-import";
+        preview.textContent = localizer.t("Preview Team configuration");
+        preview.addEventListener("click", async () => {
+          if (!isCurrent() || preview.disabled) return;
+          preview.disabled = true;
+          try {
+            const imported = await teamsUi.importConfiguration(text);
+            if (!imported && isCurrent()) announce(localizer.t("Team configuration was not imported. Check the Team limit or finish the pending edit in Manage my Agent."));
+          }
+          catch { if (isCurrent()) announce(localizer.t("This configuration could not be imported.")); }
+          finally { preview.disabled = false; }
+        });
+        article.append(preview);
+      }
+    }
 
     if (failedResponse) {
       // A failure that no runtime finished has to look like one, and it has to
@@ -3509,12 +3644,18 @@ async function sendMessage(kind) {
   if (kind === "team_agent") sendError.teamProblemIntent = teamProblem;
   try {
     const leading = messageInput.value.length - messageInput.value.trimStart().length;
-    const input = { content, idempotencyKey: createIdempotencyKey(kind), replyTo: metadata.replyTo,
+    if (kind === "team_agent" && content.startsWith(`${CONFIGURATION_SKILL}\n`)) {
+      throw new Error(localizer.t("Choose an individual Agent to help configure your Team."));
+    }
+    const requestContent = kind === "human_chat" ? content : configurationSkillContent(content, configurationDrafts.get(sessionId),
+      { kind, locale: state.settings.general?.locale });
+    if (requestContent.length > 12000) throw new Error(localizer.t("This configuration is too large for one request. Use the JSON editor or start with a smaller Team."));
+    const input = { content: requestContent, idempotencyKey: createIdempotencyKey(kind), replyTo: metadata.replyTo,
       mentions: metadata.mentions.map((mention) => ({ ...mention, start: mention.start - leading, end: mention.end - leading })) };
     if (kind === "human_chat") await api.appendHumanChat(sessionId, input);
     else if (kind === "team_agent") {
       if (state.settings.composer.confirmAgentRequest && !window.confirm(teamsUi.t("Start this Team with its saved modules and limits?"))) return;
-      const receipt = await teamsUi.startTask(content, { replyTo: input.replyTo, mentions: input.mentions, onAccepted: () => {
+      const receipt = await teamsUi.startTask(input.content, { replyTo: input.replyTo, mentions: input.mentions, onAccepted: () => {
         if (isCurrent() && sendError.teamProblemIntent === teamProblem && sendError.textContent === teamProblem.text) {
           sendError.textContent = ""; delete sendError.teamProblemIntent;
         }
@@ -3531,7 +3672,7 @@ async function sendMessage(kind) {
         input: { share_id: choice.target.share_id, share_revision: choice.target.share_revision,
           execution_profile: { harness: choice.target.harness, provider: choice.target.provider, model: choice.target.model,
             ...(choice.target.reasoning_effort ? { reasoning_effort: choice.target.reasoning_effort } : {}) },
-          content, content_revision: contentRevision, solo_transfer_ack: state.session.mode === "solo", idempotency_key: input.idempotencyKey,
+          content: input.content, content_revision: contentRevision, solo_transfer_ack: state.session.mode === "solo", idempotency_key: input.idempotencyKey,
           ...(input.replyTo ? { reply_to_event_id: input.replyTo } : {}), ...(input.mentions.length ? { mentions: input.mentions } : {}) },
         draft, metadataFingerprint };
       pendingSharedAgentIntent = intent;
@@ -3569,10 +3710,13 @@ async function sendMessage(kind) {
         });
       await api.appendAgentRequest(sessionId, { ...input, contentRevision, executionProfile });
     }
+    soloDrafts.submitted(sessionId);
+    configurationDrafts.delete(sessionId);
     if (isCurrent() && !sharedAttempt?.accepted && messageInput.value === draft && JSON.stringify(messageActions.metadata()) === metadataFingerprint) {
       messageInput.value = "";
       messageActions.sent();
       messageInput.focus();
+      configurationSkillChip.hidden = true;
     }
   } catch (error) {
     if (kind === "shared_agent" && pendingSharedAgentIntent === sharedAttempt && error.status >= 400 && error.status < 500) pendingSharedAgentIntent = null;
@@ -4624,6 +4768,9 @@ function readSettingsForm(baseSettings = settingsPreview) {
       }
     }
   }
+  // JSON browser defaults are separate from this project's exact Agent choices.
+  // The project helpers normally also update defaults; preserve explicit imports.
+  if (importedAgentDefaults) next.agents = { ...next.agents, ...importedAgentDefaults };
   return next;
 }
 
@@ -4842,6 +4989,7 @@ async function loadCurrentDeviceSettings() {
 }
 
 function cancelSettingsDialog() {
+  importedInterfaceMode = undefined; importedAgentDefaults = undefined;
   accountDeletionGeneration += 1;
   accountDeletionPreview = null;
   codeStorageSettings.cancel();
@@ -4855,6 +5003,7 @@ function cancelSettingsDialog() {
 }
 
 function resetSettingsPreview() {
+  importedInterfaceMode = undefined; importedAgentDefaults = undefined;
   settingsPreview = normalizeSettings(DEFAULT_SETTINGS);
   populateSettingsForm(settingsPreview);
   applyVisualSettings(settingsPreview);
@@ -4966,6 +5115,7 @@ async function saveSettings(event) {
   const submit = event.submitter;
   if (submit) submit.disabled = true;
   const nextSettings = readSettingsForm(settingsPreview);
+  const nextInterfaceMode = importedInterfaceMode;
   // Browser permission UI may remain pending (notably in embedded browsers).
   // It must not block saving unrelated workspace preferences.
   if (notificationPermissionNeeded(nextSettings.notifications)) void ensureNotificationPermission();
@@ -4985,6 +5135,11 @@ async function saveSettings(event) {
     }
     settingsPreview = nextSettings;
     state.settings = settingsStore.set(settingsPreview);
+    if (nextInterfaceMode !== undefined) {
+      interfaceMode.setPreference(nextInterfaceMode);
+      importedInterfaceMode = undefined;
+      refreshInterfacePresentation();
+    }
     connectionNoticeState = advanceConnectionNotice(
       INITIAL_CONNECTION_NOTICE_STATE,
       state.sync,

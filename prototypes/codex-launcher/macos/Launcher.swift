@@ -411,6 +411,36 @@ private func connectorArguments(link: ConnectionLink, connector: String, workspa
     return arguments
 }
 
+private final class LauncherBrandLogo: NSImageView {
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshImage()
+    }
+    func refreshImage() {
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        image = NSImage(contentsOf: bundled(dark ? "gatherthread-lockup-dark.png" : "gatherthread-lockup.png"))
+    }
+}
+
+private final class LauncherFormStack: NSStackView {
+    override var isFlipped: Bool { true }
+}
+
+private final class LauncherBrandPanel: NSView {
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let start = dark ? NSColor(srgbRed: 0.08, green: 0.20, blue: 0.23, alpha: 1)
+                         : NSColor(srgbRed: 0.90, green: 0.97, blue: 0.97, alpha: 1)
+        let end = dark ? NSColor(srgbRed: 0.17, green: 0.12, blue: 0.25, alpha: 1)
+                       : NSColor(srgbRed: 0.97, green: 0.94, blue: 1, alpha: 1)
+        NSGradient(starting: start, ending: end)?.draw(in: NSBezierPath(roundedRect: bounds, xRadius: 14, yRadius: 14), angle: 0)
+    }
+}
+
 private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextFieldDelegate {
     private var window: NSWindow!
     private let project = NSTextField()
@@ -435,6 +465,9 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private let log = NSTextView()
     private var connector: Process?
     private var connectorOutputOwner: Process?
+    private var connectorInput: Pipe?
+    private var stoppingConnector: Process?
+    private var stopNotice: DispatchWorkItem?
     private var pendingLink: URL?
     private var activeLink: ConnectionLink?
     private var connectionOrigin = serverOrigin
@@ -469,7 +502,7 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
         outer.alignment = .leading
         outer.spacing = 8
         outer.translatesAutoresizingMaskIntoConstraints = false
-        let stack = NSStackView()
+        let stack = LauncherFormStack()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -489,10 +522,36 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
         formScroll.widthAnchor.constraint(equalTo: outer.widthAnchor).isActive = true
         formScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 250).isActive = true
         stack.widthAnchor.constraint(equalTo: formScroll.contentView.widthAnchor).isActive = true
+        let brand = LauncherBrandPanel()
+        let brandContents = NSStackView()
+        brandContents.orientation = .vertical
+        brandContents.alignment = .leading
+        brandContents.spacing = 8
+        brandContents.translatesAutoresizingMaskIntoConstraints = false
+        if let image = NSImage(contentsOf: bundled("gatherthread-lockup.png")) {
+            let logo = LauncherBrandLogo()
+            logo.refreshImage()
+            logo.imageScaling = .scaleProportionallyUpOrDown
+            logo.widthAnchor.constraint(equalToConstant: 280).isActive = true
+            logo.heightAnchor.constraint(equalToConstant: 280 * image.size.height / image.size.width).isActive = true
+            brandContents.addArrangedSubview(logo)
+        }
+        let tagline = NSTextField(labelWithString: "连接本机，协作随行。")
+        tagline.font = .systemFont(ofSize: 12, weight: .medium)
+        tagline.textColor = .secondaryLabelColor
+        brandContents.addArrangedSubview(tagline)
+        brand.addSubview(brandContents)
+        stack.addArrangedSubview(brand)
+        NSLayoutConstraint.activate([
+            brand.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            brandContents.leadingAnchor.constraint(equalTo: brand.leadingAnchor, constant: 16),
+            brandContents.trailingAnchor.constraint(lessThanOrEqualTo: brand.trailingAnchor, constant: -16),
+            brandContents.topAnchor.constraint(equalTo: brand.topAnchor, constant: 14),
+            brandContents.bottomAnchor.constraint(equalTo: brand.bottomAnchor, constant: -14),
+        ])
         heading.font = .boldSystemFont(ofSize: 21)
         stack.addArrangedSubview(heading)
         addNote("网页带入邮箱和项目，只需输入账号密码，授权此 Mac 独立连接。", to: stack)
-        addNote("安装：将 DMG 中的应用拖入‘应用程序’，从那里首次打开。\nInstall: drag the app from the DMG to Applications; open it there once.", to: stack)
         stack.addArrangedSubview(environmentLabel)
         stack.addArrangedSubview(NSButton(title: "打开 GatherThread 网页", target: self, action: #selector(openWebsite)))
         codex.stringValue = executableAgent()
@@ -567,6 +626,7 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
         outer.addArrangedSubview(scroll)
         scroll.widthAnchor.constraint(equalTo: outer.widthAnchor).isActive = true
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
+        addNote("安装：将 DMG 中的应用拖入‘应用程序’，从那里首次打开。\nInstall: drag the app from the DMG to Applications; open it there once.", to: stack)
         addNote("若 macOS 阻止打开：核对官方包后前往 系统设置 → 隐私与安全性 → 仍要打开。尚未通过 Apple 公证。\nIf blocked: verify the official package, then use System Settings → Privacy & Security → Open Anyway. Not Apple-notarized.", to: stack, emphasized: true)
         addNote("审查、信任并允许共序 Hooks，才能同步所选 Agent 的本机直接回合。\nReview, trust and allow the selected Agent's GatherThread Hooks before syncing native turns.", to: outer, emphasized: true)
         addNote("关闭窗口不会停止连接；从 Dock 恢复后可停止。\nClosing the window keeps the connection running; restore it from the Dock to stop.", to: outer)
@@ -963,22 +1023,33 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
         environment["PATH"] = node.deletingLastPathComponent().path + ":" + (environment["PATH"] ?? "")
         environment.removeValue(forKey: "GATHERTHREAD_TOKEN")
         environment["GATHERTHREAD_TOKEN"] = credential
+        environment["GATHERTHREAD_LAUNCHER_CONTROL"] = "stdin-v1"
         process.environment = environment
-        process.standardInput = FileHandle.nullDevice
+        let input = Pipe()
+        process.standardInput = input
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
         process.terminationHandler = { [weak self] finished in
             DispatchQueue.main.async {
                 guard self?.connector === finished else { return }
+                let stopped = self?.stoppingConnector === finished
+                self?.stopNotice?.cancel()
+                self?.stopNotice = nil
+                self?.stoppingConnector = nil
+                try? self?.connectorInput?.fileHandleForWriting.close()
+                self?.connectorInput = nil
                 self?.connector = nil
                 self?.setBusy(false)
-                self?.status.stringValue = "连接器已退出（代码 \(finished.terminationStatus)）。可检查日志后重试。"
+                self?.status.stringValue = stopped && finished.terminationStatus == 0
+                    ? "已断开。需要再次连接时，请从网页重新打开启动器。"
+                    : "连接器已退出（代码 \(finished.terminationStatus)）。请从网页重新连接；日志保留在下方。"
             }
         }
         do {
             try process.run()
             connector = process
+            connectorInput = input
             connectorOutputOwner = process
             setBusy(false)
             status.stringValue = "连接器正在启动；请在所选 Agent 中审查并启用已安装的 Hooks。"
@@ -1025,7 +1096,7 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private func receiveConnectorLine(_ line: String, from process: Process) {
         guard connectorOutputOwner === process else { return }
         appendLog(line + "\n")
-        if connector === process && process.isRunning && (line == "GatherThread connector ready." || line.hasPrefix("Connected session: ") || line.hasPrefix("Connected \"claude-code\" session: ")) {
+        if connector === process && stoppingConnector !== process && process.isRunning && (line == "GatherThread connector ready." || line.hasPrefix("Connected session: ") || line.hasPrefix("Connected \"claude-code\" session: ")) {
             status.stringValue = "已连接；保持启动器运行，即可在网页使用此 Agent。"
         }
     }
@@ -1063,6 +1134,38 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
         print("macOS Launcher: live connection receipt displayed before child exit")
     }
 
+    func verifyConnectorStop() throws {
+        window.orderOut(nil)
+        for ready in [false, true] {
+            let child = Process()
+            child.executableURL = URL(fileURLWithPath: "/bin/sh")
+            child.arguments = ["-c", (ready ? "/bin/sleep 2 & printf 'GatherThread connector ready.\\n'; " : "")
+                + "IFS= read -r command; test \"$command\" = 'gatherthread:stop'"]
+            launchConnector(child, node: URL(fileURLWithPath: "/usr/bin/true"), credential: "fixture-only-credential")
+            defer { if child.isRunning { kill(child.processIdentifier, SIGKILL) } }
+            stopConnection()
+            let requested = status.stringValue
+            receiveConnectorLine("GatherThread connector ready.", from: child)
+            guard status.stringValue == requested else { throw LinkError.invalid("A late ready receipt undid Stop") }
+            let deadline = Date().addingTimeInterval(1.5)
+            while Date() < deadline && connector != nil { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+            guard !child.isRunning, child.terminationStatus == 0, connector == nil, status.stringValue.contains("已断开") else {
+                throw LinkError.invalid("Graceful stop must settle before inherited output pipes close")
+            }
+        }
+        let hanging = Process()
+        hanging.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        hanging.arguments = ["10"]
+        launchConnector(hanging, node: URL(fileURLWithPath: "/usr/bin/true"), credential: "fixture-only-credential")
+        defer { if hanging.isRunning { kill(hanging.processIdentifier, SIGKILL) } }
+        stopConnection()
+        showPendingStop(for: hanging)
+        guard hanging.isRunning, connector === hanging, !startButton.isEnabled, status.stringValue.contains("仍在退出") else {
+            throw LinkError.invalid("An unconfirmed stop must keep the source occupied and explain the pending cleanup")
+        }
+        print("macOS Launcher stop: startup cancellation, pipe-held exit, late-ready fencing and pending cleanup passed")
+    }
+
     private func appendLog(_ value: String) {
         log.textStorage?.append(NSAttributedString(string: value))
         if let storage = log.textStorage, storage.length > 100_000 {
@@ -1080,7 +1183,30 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
             setBusy(false)
             status.stringValue = "授权已停止。请返回网页重新打开启动器，之前的结果不会启动连接。"
         }
-        if connector?.isRunning == true { connector?.terminate(); status.stringValue = "正在停止连接器…" }
+        if let child = connector, child.isRunning, stoppingConnector !== child {
+            stoppingConnector = child
+            status.stringValue = "正在断开，并确认本地 Agent 任务已停止…"
+            let input = connectorInput
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                do {
+                    guard let input else { throw LinkError.invalid("Missing local control pipe") }
+                    try input.fileHandleForWriting.write(contentsOf: Data("gatherthread:stop\n".utf8))
+                } catch {
+                    DispatchQueue.main.async {
+                        guard self?.connector === child, self?.stoppingConnector === child else { return }
+                        self?.status.stringValue = "停止通道尚未确认。连接器仍在退出前保持占用，请查看日志。"
+                    }
+                }
+            }
+            let notice = DispatchWorkItem { [weak self] in self?.showPendingStop(for: child) }
+            stopNotice = notice
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: notice)
+        }
+    }
+
+    private func showPendingStop(for child: Process) {
+        guard connector === child, stoppingConnector === child, child.isRunning else { return }
+        status.stringValue = "停止请求已发送，本地任务仍在退出。请保持启动器打开；确认退出后才可重新连接。"
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -1098,7 +1224,8 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
         authorizationClient?.cancel()
         authorizationClient = nil
         connectionAttempt = nil
-        if connector?.isRunning == true { connector?.terminate() }
+        // EOF on the private control pipe is also a graceful shutdown request.
+        try? connectorInput?.fileHandleForWriting.close()
     }
 
     func verifyPasswordForm() throws {
@@ -1121,6 +1248,7 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate,
               password.stringValue.isEmpty, password.isEnabled, startButton.isEnabled,
               connectionOrigin == testOrigin,
               content.bounds.contains(password.convert(password.bounds, to: content)),
+              formScroll.contentView.bounds.contains(password.convert(password.bounds, to: formScroll.contentView)),
               content.bounds.contains(startButton.convert(startButton.bounds, to: content)) else {
             throw LinkError.invalid("邮箱密码表单布局不完整或按钮不可见")
         }
@@ -1412,6 +1540,13 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--icon-self-
     app.delegate = delegate
     delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
     do { try delegate.verifyConnectorOutput() }
+    catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
+} else if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--connector-stop-self-test" {
+    let app = NSApplication.shared
+    let delegate = Launcher()
+    app.delegate = delegate
+    delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+    do { try delegate.verifyConnectorStop() }
     catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
 } else if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--form-self-test" {
     let app = NSApplication.shared

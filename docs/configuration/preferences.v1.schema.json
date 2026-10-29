@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "const": "https://gatherthread.cn/schemas/preferences.v1.schema.json"
+    },
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "kind": {
+      "type": "string",
+      "const": "gatherthread.preferences"
+    },
+    "interface_mode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "mobile",
+        "desktop"
+      ]
+    },
+    "settings": {
+      "type": "object",
+      "properties": {
+        "general": {
+          "type": "object",
+          "properties": {
+            "locale": {
+              "type": "string",
+              "enum": [
+                "en",
+                "zh-CN"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "appearance": {
+          "type": "object",
+          "properties": {
+            "theme": {
+              "type": "string",
+              "enum": [
+                "system",
+                "light",
+                "dark"
+              ]
+            },
+            "textScalePercent": {
+              "type": "integer",
+              "minimum": 90,
+              "maximum": 125
+            },
+            "density": {
+              "type": "string",
+              "enum": [
+                "comfortable",
+                "compact"
+              ]
+            },
+            "motion": {
+              "type": "string",
+              "enum": [
+                "system",
+                "reduce",
+                "full"
+              ]
+            },
+            "ambientCanvas": {
+              "type": "string",
+              "enum": [
+                "off",
+                "subtle",
+                "pronounced"
+              ]
+            },
+            "highContrast": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "layout": {
+          "type": "object",
+          "properties": {
+            "leftRailPixels": {
+              "type": "integer",
+              "minimum": 210,
+              "maximum": 420
+            },
+            "rightPanelPixels": {
+              "type": "integer",
+              "minimum": 260,
+              "maximum": 900
+            },
+            "composerPixels": {
+              "type": "integer",
+              "minimum": 210,
+              "maximum": 560
+            }
+          },
+          "additionalProperties": false
+        },
+        "sync": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "adaptive",
+                "fixed"
+              ]
+            },
+            "contextBudgetBytes": {
+              "type": "integer",
+              "minimum": 8192,
+              "maximum": 5242880
+            },
+            "visibleHistorySync": {
+              "type": "string",
+              "enum": [
+                "first-connect",
+                "never"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "composer": {
+          "type": "object",
+          "properties": {
+            "enterBehavior": {
+              "type": "string",
+              "enum": [
+                "newline",
+                "send_chat",
+                "request_agent"
+              ]
+            },
+            "confirmAgentRequest": {
+              "type": "boolean"
+            },
+            "autoScroll": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "historySummaries": {
+          "type": "object",
+          "properties": {
+            "instructions": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            }
+          },
+          "required": [
+            "instructions"
+          ],
+          "additionalProperties": false
+        },
+        "notifications": {
+          "type": "object",
+          "properties": {
+            "agentCompleted": {
+              "type": "boolean"
+            },
+            "connectionLost": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "agents": {
+          "type": "object",
+          "properties": {
+            "activeHarness": {
+              "type": "string",
+              "enum": [
+                "codex",
+                "deepseek-harness",
+                "claude-code",
+                "cloud"
+              ]
+            },
+            "enabledHarnesses": {
+              "minItems": 1,
+              "maxItems": 4,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "codex",
+                  "deepseek-harness",
+                  "claude-code",
+                  "cloud"
+                ]
+              }
+            },
+            "customCodexModels": {
+              "maxItems": 40,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "version",
+    "kind",
+    "settings"
+  ],
+  "additionalProperties": false
+}

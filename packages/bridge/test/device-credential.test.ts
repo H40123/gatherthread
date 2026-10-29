@@ -4,6 +4,14 @@ import { randomBytes } from "node:crypto";
 import { resolveDeviceCredential } from "../src/device-credential.js";
 const grant = () => `gtd_${randomBytes(32).toString("base64url")}`;
 const credential = () => `gta_${randomBytes(32).toString("base64url")}`;
+test("stopped authorization is never sent or retried", async () => {
+  const shutdown = new AbortController(), reason = new Error("Fixture cancelled"); shutdown.abort(reason);
+  let calls = 0;
+  await assert.rejects(resolveDeviceCredential(grant(), "https://fixture.invalid/v1", async () => {
+    calls++; throw new Error("must not send");
+  }, shutdown.signal), error => error === reason);
+  assert.equal(calls, 0);
+});
 test("one-use authorization exchanges only with the chosen server and never forwards a password or bearer", async () => {
   const authorization = grant(), token = credential(); let calls = 0;
   const transport = (async (url, options) => {

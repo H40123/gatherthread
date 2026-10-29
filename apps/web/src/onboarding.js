@@ -1,7 +1,7 @@
 import { positionSessionContextPanel } from "./session-context-panel.js";
-import { mountExampleGateway, exampleToolbar } from "./onboarding-example.js?v=20261029-motion-1";
+import { mountExampleGateway, exampleToolbar } from "./onboarding-example.js?v=20261030-config-1";
 import { driver } from "driver.js";
-import { GUIDE_COPY, guideSteps, guideText, onboardingKey, createOnboardingProgress } from "./onboarding-content.js?v=20261029-motion-1";
+import { GUIDE_COPY, guideSteps, guideText, onboardingKey, createOnboardingProgress } from "./onboarding-content.js?v=20261030-config-1";
 
 function browserStorage() { try { return globalThis.localStorage; } catch { return null; } }
 

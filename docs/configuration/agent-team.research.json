@@ -1,0 +1,55 @@
+{
+  "$schema": "https://gatherthread.cn/schemas/agent-team.v1.schema.json",
+  "version": 1,
+  "kind": "gatherthread.agent-team",
+  "draft": {
+    "name": "科研与验证",
+    "team_prompt": "只在已连接的模块之间分派任务，按实际证据报告结果。需要额外权限或无法完成时请明确说明，不要声称已完成未执行的操作。",
+    "entry_node_id": "research.lead",
+    "nodes": [
+      {
+        "id": "research.lead",
+        "label": "研究负责人",
+        "role": "明确研究问题、假设与所需证据。",
+        "prompt": "组织方法分析与独立核验，区分已有结论、假设和待解问题。",
+        "x": 48,
+        "y": 155,
+        "target": null
+      },
+      {
+        "id": "research.analyst",
+        "label": "分析员",
+        "role": "制定方法并完成可用的计算或数据分析。",
+        "prompt": "说明公式、单位和数据来源。使用可用工具，给出可复现步骤，不编造缺失数据。",
+        "x": 360,
+        "y": 45,
+        "target": null
+      },
+      {
+        "id": "research.checker",
+        "label": "核验员",
+        "role": "独立检查假设、数值结果与引用证据。",
+        "prompt": "检查极限情况、量纲与可复现性，指出证据不足的结论和不确定性。",
+        "x": 360,
+        "y": 265,
+        "target": null
+      }
+    ],
+    "edges": [
+      {
+        "id": "flow-1",
+        "source": "research.lead",
+        "target": "research.analyst",
+        "direction": "bidirectional"
+      },
+      {
+        "id": "flow-2",
+        "source": "research.lead",
+        "target": "research.checker",
+        "direction": "bidirectional"
+      }
+    ]
+  },
+  "max_calls": 12,
+  "max_duration_minutes": 30
+}

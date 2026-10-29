@@ -1,6 +1,6 @@
-import { codeRuntimeChoices } from "./code-sync.js?v=20261029-motion-1";
-import { createGithubCodeSyncController, githubLinks } from "./github-code-sync.js?v=20261029-motion-1";
-import { fillRepositoryFields, bindRepositoryFields } from "./github-setup.js?v=20261029-motion-1";
+import { codeRuntimeChoices } from "./code-sync.js?v=20261030-config-1";
+import { createGithubCodeSyncController, githubLinks } from "./github-code-sync.js?v=20261030-config-1";
+import { fillRepositoryFields, bindRepositoryFields } from "./github-setup.js?v=20261030-config-1";
 
 export function mountGithubCodeSync({ document: doc, api, localizer, confirm, mockEnabled = false }) {
   const el = (id) => doc.getElementById(id);
@@ -16,7 +16,8 @@ export function mountGithubCodeSync({ document: doc, api, localizer, confirm, mo
   };
   async function confirmed(message, action) {
     const before = route();
-    if (await confirm(t(message)) && before === route()) await action();
+    if (await confirm(t(message)) && before === route()) return action();
+    return false;
   }
 
   function render(state) {
@@ -96,8 +97,8 @@ export function mountGithubCodeSync({ document: doc, api, localizer, confirm, mo
     event.preventDefault();
     updateRepository();
     const input = { repository: el("github-code-repository").value.trim(), base_branch: el("github-code-base").value.trim(), enabled: controller.getState().github?.connection?.enabled ?? true };
-    await confirmed("Connect this GitHub repository? Check its visibility and collaborators on GitHub. This does not upload files or change GT Cloud storage.", () => controller.configure(input));
-    if (controller.getState().github?.connection?.repository === input.repository) { stage = "device"; render(controller.getState()); }
+    const saved = await confirmed("Connect this GitHub repository? Check its visibility and collaborators on GitHub. This does not upload files or change GT Cloud storage.", () => controller.configure(input));
+    if (saved) { stage = "device"; render(controller.getState()); }
   });
   const show = value => { stage = value; render(controller.getState()); };
   el("github-code-edit").addEventListener("click", () => show("repository"));
@@ -113,7 +114,11 @@ export function mountGithubCodeSync({ document: doc, api, localizer, confirm, mo
     () => controller.configure({ ...connection, enabled: !connection.enabled }));
   });
   el("github-code-runtime").addEventListener("change", (event) => void controller.selectRuntime(event.target.value));
-  el("github-code-refresh").addEventListener("click", async () => { await controller.refresh(); await controller.queue("github_code_sync_status"); });
+  el("github-code-refresh").addEventListener("click", async () => {
+    const before = route();
+    await controller.refresh();
+    if (before === route()) await controller.queue("github_code_sync_status");
+  });
   el("github-code-auth").addEventListener("click", () => confirmed("Open GitHub sign-in on the selected local device? Complete the browser confirmation there. No credential is sent to GatherThread.", () => controller.queue("github_auth_connect")));
   const messages = {
     upload: "Upload eligible files to your GitHub branch? Review secrets and repository access first. This push may trigger GitHub workflows.",

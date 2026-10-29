@@ -1,7 +1,25 @@
 import { SHARED_AGENT_ZH_CN } from "./shared-agent-i18n.js";
-import { WORKSPACE_FILES_ZH_CN } from "./workspace-files.js";
+import { WORKSPACE_FILES_ZH_CN } from "./workspace-files.js?v=20261030-config-1";
 
 const ZH_CN = Object.freeze({
+  "Replace the unsent message with a new Team configuration prompt? Cancel to keep your message.": "要将当前未发送的消息替换为新 Team 的配置提示吗？取消可保留原消息。",
+  "Team configuration was not imported. Check the Team limit or finish the pending edit in Manage my Agent.": "未导入 Team 配置，请在“管理我的 Agent”中检查 Team 数量上限或完成尚未确认的编辑。",
+  "JSON configuration": "JSON 配置",
+  "Choose an individual Agent to help configure your Team.": "请选择一个 Agent 来帮助配置 Team。",
+  "This configuration is too large for one request. Use the JSON editor or start with a smaller Team.": "这份配置超出单次请求长度，请使用 JSON 编辑器或先从较小的 Team 开始。",
+  "Import JSON": "导入 JSON",
+  "Download JSON": "下载 JSON",
+  "Configuration guide": "配置文档",
+  "Use in settings": "填入设置",
+  "Edit browser preferences here or import a JSON file. Review them in Settings, then Save. Agent Teams have their own JSON editor.": "在此编辑或导入浏览器偏好，回到设置检查后保存。Agent Team 页面有独立的 JSON 编辑器。",
+  "Configuration must be at most 128 KiB.": "配置文件不能超过 128 KiB。",
+  "Configuration is ready to review. Save settings to apply it.": "配置已填入，请检查设置后保存。",
+  "Configure my Agent Team": "配置我的 Agent Team",
+  "Describe your team, choose an Agent, then send when you are ready.": "补充团队需求，选择 Agent 后再发送。",
+  "Preview Team configuration": "预览 Team 配置",
+  "This configuration could not be imported.": "无法导入这份配置，请检查格式。",
+  "The empty conversation could not be removed. It is still available in the conversation list.": "空会话暂未清理，仍保留在会话列表中。",
+  "Wait for the current message to finish sending before switching conversations.": "请等当前消息发送完成后再切换会话。",
   "Manage my Agents": "管理我的 Agent",
   "Add my Agent": "添加我的 Agent",
   "Close Agent management": "关闭 Agent 管理",

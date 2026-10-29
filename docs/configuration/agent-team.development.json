@@ -1,0 +1,55 @@
+{
+  "$schema": "https://gatherthread.cn/schemas/agent-team.v1.schema.json",
+  "version": 1,
+  "kind": "gatherthread.agent-team",
+  "draft": {
+    "name": "开发与审查",
+    "team_prompt": "只在已连接的模块之间分派任务，按实际证据报告结果。需要额外权限或无法完成时请明确说明，不要声称已完成未执行的操作。",
+    "entry_node_id": "development.lead",
+    "nodes": [
+      {
+        "id": "development.lead",
+        "label": "协调员",
+        "role": "澄清目标、拆分工作并汇总交付。",
+        "prompt": "请开发员实现已确定的改动，再请审查员检查；最后说明已验证的结果与遗留问题。",
+        "x": 48,
+        "y": 155,
+        "target": null
+      },
+      {
+        "id": "development.builder",
+        "label": "开发员",
+        "role": "在约定范围内实现需求。",
+        "prompt": "先检查已有文件，再做聚焦改动并运行相关检查。报告实际修改的文件与测试结果。",
+        "x": 360,
+        "y": 45,
+        "target": null
+      },
+      {
+        "id": "development.reviewer",
+        "label": "审查员",
+        "role": "独立检查正确性和回归风险。",
+        "prompt": "对照需求检查改动，指出具体问题和复现检查，并向协调员反馈。",
+        "x": 360,
+        "y": 265,
+        "target": null
+      }
+    ],
+    "edges": [
+      {
+        "id": "flow-1",
+        "source": "development.lead",
+        "target": "development.builder",
+        "direction": "bidirectional"
+      },
+      {
+        "id": "flow-2",
+        "source": "development.lead",
+        "target": "development.reviewer",
+        "direction": "bidirectional"
+      }
+    ]
+  },
+  "max_calls": 12,
+  "max_duration_minutes": 30
+}

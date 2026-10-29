@@ -17,6 +17,53 @@ function node() {
     dispatchEvent(event) { return listeners.get(event.type)?.(event); },
     setAttribute() {}, replaceChildren(...children) { this.children = children; } };
 }
+
+for (const outcome of ["cancelled", "failed"]) test(`a ${outcome} GitHub save keeps the repository editor open`, async () => {
+  const nodes = new Map(), el = id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); };
+  const status = { connection: { repository: "team/project", base_branch: "main", enabled: true, revision: "v1" }, can_configure: true, can_write: true };
+  let writes = 0;
+  const sandbox = vm.createContext({ createGithubCodeSyncController, githubLinks, codeRuntimeChoices, fillRepositoryFields, bindRepositoryFields });
+  vm.runInContext(source, sandbox);
+  const controller = sandbox.mountGithubCodeSync({ document: { getElementById: el, createElement: node },
+    api: { getProjectGithub: async () => status, putProjectGithub: async () => { writes++; throw Error("offline"); } },
+    localizer: { t: value => value }, confirm: async () => outcome !== "cancelled" });
+  controller.setContext({ project: { id: "project", role: "owner" }, sessionId: "session", userId: "owner", sessionWritable: true, runtimes: [] });
+  controller.open(); await new Promise(resolve => setImmediate(resolve));
+  el("github-code-edit").dispatchEvent({ type: "click" });
+  await el("github-code-form").dispatchEvent({ type: "submit", preventDefault() {} });
+  assert.equal(writes, outcome === "cancelled" ? 0 : 1);
+  assert.equal(el("github-code-form").hidden, false, "a cancelled or failed save is not a completed setup step");
+  assert.equal(el("github-code-device").hidden, true);
+  controller.close();
+});
+
+test("a previous project's refresh cannot queue a GitHub control on the newly selected device", async () => {
+  const nodes = new Map(), el = id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); };
+  let finishOld, waitForOld = false; const old = new Promise(resolve => { finishOld = resolve; }); const jobs = [];
+  const status = { connection: { repository: "team/project", base_branch: "main", enabled: true, revision: "v1" },
+    can_configure: true, can_write: true, branch: "gatherthread/p/u" };
+  const sandbox = vm.createContext({ createGithubCodeSyncController, githubLinks, codeRuntimeChoices, fillRepositoryFields, bindRepositoryFields });
+  vm.runInContext(source, sandbox);
+  const controller = sandbox.mountGithubCodeSync({ document: { getElementById: el, createElement: node },
+    api: {
+      getProjectGithub: async projectId => projectId === "old-project" && waitForOld ? old : status,
+      listSnapshotRequests: async () => [],
+      createSnapshotRequest: async (sessionId, kind, runtimeId) => { jobs.push({ sessionId, runtimeId }); return { id: "job", kind, status: "completed" }; },
+      getSnapshotRequest: async () => ({ id: "job", status: "completed", kind: "github_code_sync_status", result: {
+        provider: "github", repository: "team/project", base_branch: "main", branch: status.branch, enabled: true,
+      } }),
+    }, localizer: { t: value => value }, confirm: async () => true });
+  const context = name => ({ project: { id: `${name}-project`, role: "owner" }, sessionId: `${name}-session`, userId: "owner", sessionWritable: true,
+    runtimes: [{ id: `${name}-runtime`, userId: "owner", harness: "codex", status: "online" }] });
+  controller.setContext(context("old")); controller.open(); await new Promise(resolve => setImmediate(resolve));
+  await controller.selectRuntime("old-runtime"); await new Promise(resolve => setImmediate(resolve));
+  waitForOld = true; const reading = el("github-code-refresh").dispatchEvent({ type: "click" });
+  controller.setContext(context("new")); await new Promise(resolve => setImmediate(resolve));
+  await controller.selectRuntime("new-runtime"); await new Promise(resolve => setImmediate(resolve));
+  finishOld(status); await reading;
+  assert.deepEqual(jobs, [{ sessionId: "old-session", runtimeId: "old-runtime" }, { sessionId: "new-session", runtimeId: "new-runtime" }]);
+  controller.close();
+});
 test("prefilling a blank computer form never overwrites an unsaved scoped draft", async () => {
   const nodes = new Map(), el = id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); };
   const sandbox = vm.createContext({ createGithubCodeSyncController, githubLinks, codeRuntimeChoices, fillRepositoryFields, bindRepositoryFields });

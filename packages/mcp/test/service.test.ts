@@ -50,6 +50,28 @@ class FakeApi implements CollaborationApi {
   }
 }
 
+test("configuration tools validate bounded drafts without reading or changing user state", async () => {
+  const api = new FakeApi();
+  api.listProjects = async () => { throw Error("Configuration tools must not read private state"); };
+  const service = new CollaborationMcpService({ api });
+  const call = async (name: string, args: unknown) => service.handle({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) as Promise<any>;
+  for (const kind of ["preferences", "agent-team"]) {
+    const schema = (await call("collaboration_get_configuration_schema", { kind })).result.structuredContent.result.schema;
+    assert.equal(schema.$schema, "https://json-schema.org/draft/2020-12/schema");
+    assert.equal(schema.type, "object");
+  }
+  const check = async (document: unknown) => (await call("collaboration_validate_configuration", { json: JSON.stringify(document) })).result.structuredContent.result;
+  assert.equal((await check({ version: 1, kind: "gatherthread.preferences", settings: { appearance: { theme: "dark" } } })).valid, true);
+  assert.equal((await check({ version: 1, kind: "gatherthread.preferences", settings: { agents: { projectProfiles: {} } } })).valid, false);
+  const draft = { version: 1, kind: "gatherthread.agent-team", draft: { name: "Fixture team", team_prompt: "Review", nodes: [{ id: "one", label: "Reviewer", role: "Review", x: 0, y: 0, target: null }], edges: [] }, max_calls: 12, max_duration_minutes: 30 };
+  assert.equal((await check(draft)).valid, true);
+  assert.equal((await check({ ...draft, enabled: true })).valid, false);
+  for (const json of ["{", " ".repeat(131073), '{"__proto__":{}}']) {
+    assert.ok((await call("collaboration_validate_configuration", { json })).error);
+  }
+  assert.deepEqual(api.appended, []);
+});
+
 test("user MCP exposes collaboration tools but no internal runtime controls", async () => {
   const service = new CollaborationMcpService({ api: new FakeApi() });
   const tools = await service.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -57,6 +79,8 @@ test("user MCP exposes collaboration tools but no internal runtime controls", as
   const listedTools = (tools as any).result.tools;
   const names = listedTools.map((item: any) => item.name);
   assert.deepEqual(names, [
+    "collaboration_get_configuration_schema",
+    "collaboration_validate_configuration",
     "collaboration_list_projects",
     "collaboration_list_project_sessions",
     "collaboration_list_sessions",
@@ -78,7 +102,7 @@ test("user MCP exposes collaboration tools but no internal runtime controls", as
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
-      openWorldHint: true,
+      openWorldHint: !["collaboration_get_configuration_schema", "collaboration_validate_configuration"].includes(name),
     });
   }
   for (const name of ["collaboration_append_chat", "collaboration_request_agent", "collaboration_set_local_auto_upload", "collaboration_upload_local_turns", "collaboration_import_codex_history"]) {

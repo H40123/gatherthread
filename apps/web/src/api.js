@@ -1,5 +1,6 @@
-import { avatarImage } from "./avatars.js?v=20261029-motion-1";
+import { avatarImage } from "./avatars.js?v=20261030-config-1";
 import { MockFileWorkspace } from "./file-workspace-mock.js";
+import { DiscardEmptySoloResultSchema } from "@gatherthread/protocol";
 import { FileBranchesResultSchema, FileTreeResultSchema, FileContentResultSchema,
   FileHistoryResultSchema, FileChangesResultSchema, FileMutationResultSchema, FileMutationInputSchema } from "@gatherthread/protocol";
 import { HostedGithubStatusSchema, HostedGithubAuthorizationSchema, HostedGithubConnectionSchema, HostedGithubDisconnectionSchema,
@@ -20,7 +21,7 @@ import {
   isExecutionRuntime,
   normalizeInvitation,
   normalizeSnapshotRequest,
-} from "./domain.js?v=20261029-motion-1";
+} from "./domain.js?v=20261030-config-1";
 
 const TITLE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
 
@@ -475,8 +476,8 @@ export class HttpCollaborationApi {
     return this.#sessionDetail(session, "owner");
   }
 
-  async getSession(sessionId) {
-    const { session, role } = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+  async getSession(sessionId, { deadlineMs } = {}) {
+    const { session, role } = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}`, { deadlineMs });
     return this.#sessionDetail(session, role);
   }
 
@@ -499,6 +500,15 @@ export class HttpCollaborationApi {
   async deleteSession(sessionId) {
     await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
     this.sessionHeads.delete(sessionId);
+  }
+
+  async discardEmptySolo(sessionId) {
+    const result = DiscardEmptySoloResultSchema.parse(await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/discard-empty`, {
+      method: "POST", body: "{}", deadlineMs: 8000,
+    }));
+    if (result.session_id !== sessionId) throw new ApiError("Session response mismatch.", { status: 502, code: "invalid_response" });
+    if (result.discarded) this.sessionHeads.delete(sessionId);
+    return result;
   }
 
   async listMembers(sessionId) {
@@ -936,7 +946,7 @@ export class HttpCollaborationApi {
       }), HOSTED_AGENT_RESPONSE_ERROR);
       return this.#event(receipt.request_event);
     }
-    const { historySummaryExecutionWire } = await import("./history-summaries.js?v=20261029-motion-1");
+    const { historySummaryExecutionWire } = await import("./history-summaries.js?v=20261030-config-1");
     const { event } = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/history-summaries`, {
       method: "POST",
       body: JSON.stringify({
@@ -1621,6 +1631,22 @@ export class MockCollaborationApi {
     this.#discardSessionCloudState(sessionId);
   }
 
+  async discardEmptySolo(sessionId) {
+    await this.#wait();
+    const session = this.#findSession(sessionId);
+    const project = this.projects.find(item => item.id === session.projectId);
+    if (session.ownerUserId !== this.currentUser.id || !project || project.role === "viewer") {
+      throw new ApiError("Session not found.", { status: 404, code: "not_found" });
+    }
+    if (session.mode !== "solo" || (this.events.get(sessionId) ?? []).length) {
+      return { session_id: sessionId, discarded: false };
+    }
+    this.sessions = this.sessions.filter(item => item.id !== sessionId);
+    project.sessionCount = Math.max(0, project.sessionCount - 1);
+    this.#discardSessionCloudState(sessionId);
+    return { session_id: sessionId, discarded: true };
+  }
+
   async listMembers(sessionId) {
     await this.#wait();
     const session = this.#findSession(sessionId);
@@ -2112,7 +2138,7 @@ export class MockCollaborationApi {
     const existing = this.idempotentEvents.get(`${sessionId}:${input.idempotencyKey}`);
     if (existing) return structuredClone(existing);
     const contentRevision = this.#findSession(sessionId).contentRevision ?? 0;
-    const { historyWireEvents, historySummaryExecutionWire } = await import("./history-summaries.js?v=20261029-motion-1");
+    const { historyWireEvents, historySummaryExecutionWire } = await import("./history-summaries.js?v=20261030-config-1");
     const { selectHistorySummarySources, historySummarySourceJson, buildHistorySummaryPrompt } = await import("./history-summary-policy.js");
     historySummaryExecutionWire(input.executionProfile);
     let sources;

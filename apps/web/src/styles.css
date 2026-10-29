@@ -3,6 +3,7 @@
 @import "./onboarding.css";
 @import "./shared-agent.css";
 @import "./agent-team-library.css";
+@import "./configuration.css";
 @import "./agent-management.css";
 @import "./agent-dialog-navigation.css";
 @import "./interface-mode.css";

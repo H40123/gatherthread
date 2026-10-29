@@ -100,6 +100,25 @@ password retry. Revoke an unused Agent device from the account's device settings
 Access Token。每台本地 Agent 使用独立设备授权，不会退出同一账号的其他设备。
 授权失败或超时后，请回网页重新打开启动器。插件安装和 Hooks 信任仍需单独确认。
 
+The main form keeps the account/password first; CLI, project, model and workspace
+fields are available under **More connection settings**. The form scrolls while
+connection actions and status stay visible. The brand header uses the approved
+[final-F logo](../../logo/README.md), copied unchanged from
+`logo/png/lockup-color-transparent-light-1200px.png`.
+
+**Stop connection** works during authorization, startup and an active connection.
+It requests connector cleanup through a private parent/child input pipe instead
+of forcibly terminating Node. The UI shows **disconnecting** until the process
+actually exits; a late ready message cannot change it back to connected. If
+cleanup is still unconfirmed after 30 seconds, the status explains that it is
+pending and keeps that connector owned rather than starting a duplicate. Closing
+the parent process also requests cleanup by closing the pipe. Child exit is
+observed independently of log EOF, and log lines, queued output and visible log
+history are bounded so an inherited pipe or noisy process cannot freeze the UI.
+Pending server requests and GitHub sign-in also stop with the connector. Exact
+native stop receipts keep their own short timeout so cancellation does not lose
+the server's cleanup acknowledgment.
+
 To uninstall, stop the connector and close the Launcher, then run
 `Uninstall.cmd` from the extracted bundle or installed directory. It removes
 the optional Launcher-owned Codex plugin and local marketplace if installed,
@@ -140,6 +159,8 @@ The checked-in application assets are derived from the approved GatherThread
 product logo, without additional image/runtime dependencies. Verification also
 requires the 512-pixel window icon and all seven ICO sizes (16–256 pixels), so
 an icon-free package can no longer pass the distribution gate.
+The branded header PNG and the bundled `gatherthread-config` skill are also
+required package resources.
 
 The package remains unsigned; the Windows SmartScreen prompt may appear.
 Source and mocked boundary tests do not establish native Windows icon rendering,

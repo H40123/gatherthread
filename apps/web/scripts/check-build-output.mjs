@@ -5,6 +5,18 @@ import { Script } from "node:vm";
 
 const dist = new URL("../dist/", import.meta.url);
 
+test("configuration browser modules resolve protocol imports and publish matching editor schemas", async () => {
+  for (const name of ["configuration", "configuration-assistant", "agent-team-library-view"]) {
+    const module = await readFile(new URL(`app/src/${name}.js`, dist), "utf8");
+    assert.doesNotMatch(module, /(?:from|import)\s*["']@gatherthread\//u, `${name} must run as a browser module`);
+  }
+  for (const name of ["preferences.v1.schema.json", "agent-team.v1.schema.json"]) {
+    const actual = await readFile(new URL(`schemas/${name}`, dist), "utf8");
+    const source = await readFile(new URL(`../../../docs/configuration/${name}`, import.meta.url), "utf8");
+    assert.equal(actual, source);
+  }
+});
+
 test("Web build publishes the product home above the existing application", async () => {
   const [home, application] = await Promise.all([
     readFile(new URL("index.html", dist), "utf8"),

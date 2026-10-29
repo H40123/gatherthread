@@ -14,7 +14,8 @@ const launcher = path.join(plugin, "scripts/mcp-launcher.mjs");
 const helper = path.join(plugin, "scripts/prepare-source-plugin.mjs");
 const bundleFiles = ["codex-connect.js", "codex-hook.js", "index.js", "mcp.js"];
 const pluginFiles = [".codex-plugin/plugin.json", ".mcp.json", "hooks/hooks.json",
-  "scripts/mcp-launcher.mjs", "scripts/hook-forwarder.mjs", "skills/gatherthread/SKILL.md"];
+  "scripts/mcp-launcher.mjs", "scripts/hook-forwarder.mjs", "skills/gatherthread/SKILL.md",
+  "skills/gatherthread-config/SKILL.md"];
 const temporaryRoots = [];
 async function temporaryDirectory(prefix) {
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), prefix)));
@@ -71,6 +72,8 @@ test("source preparation creates fresh ignored same-source MCP bindings without 
   assert.equal(market.name, "gatherthread-source");
   assert.deepEqual(market.plugins[0].source, { source: "local", path: "./plugins/gatherthread" });
   const stagedPlugin = path.join(first, "plugins/gatherthread");
+  assert.equal(await readFile(path.join(stagedPlugin, "skills/gatherthread-config/SKILL.md"), "utf8"),
+    await readFile(path.join(plugin, "skills/gatherthread-config/SKILL.md"), "utf8"));
   const config = JSON.parse(await readFile(path.join(stagedPlugin, ".mcp.json"), "utf8"));
   assert.equal(config.mcpServers.gatherthread.command, process.execPath);
   assert.deepEqual(config.mcpServers.gatherthread.args, ["${PLUGIN_ROOT}/scripts/mcp-launcher.mjs"]);

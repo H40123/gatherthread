@@ -10,6 +10,7 @@ import { access, mkdir, readdir, realpath, rm, stat, writeFile } from "node:fs/p
 import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
+import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { redactText } from "@gatherthread/adapters";
 import { LocalBridge } from "./bridge.js";
@@ -163,20 +164,72 @@ export async function runCodexConnectCli(
   argv: readonly string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
+  const shutdown = new AbortController();
+  const stop = () => shutdown.abort(new Error("Codex connector shutdown requested"));
+  const detachControl = bindLauncherControl(env, stop);
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  try { await connectCodex(argv, env, shutdown); }
+  catch (error) {
+    // Only this exact user-requested cancellation is a clean exit. In particular,
+    // a native cleanup failure after Stop must remain visible to the Launcher.
+    if (!shutdown.signal.aborted || error !== shutdown.signal.reason) throw error;
+  }
+  finally {
+    detachControl();
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
+  }
+}
+
+/** Local parent pipe only: Windows terminate() skips native cleanup entirely.
+ * No credentials or executable commands cross this one-way shutdown channel. */
+export function bindLauncherControl(env: NodeJS.ProcessEnv, stop: () => void, input: Readable = process.stdin): () => void {
+  if (env.GATHERTHREAD_LAUNCHER_CONTROL !== "stdin-v1") return () => {};
+  let pending = "", stopped = false;
+  const finish = () => { if (!stopped) { stopped = true; stop(); } };
+  const data = (chunk: Buffer | string) => {
+    if (stopped) return;
+    // Only a stop message exists. Unknown/oversized input fails closed, never
+    // invokes a shell and never gets echoed into logs.
+    pending += String(chunk).slice(0, 64);
+    if (pending.length >= 64 || pending.includes("\n")) finish();
+  };
+  input.on("data", data);
+  input.once("end", finish);
+  input.once("error", finish);
+  if (input.readableEnded || input.destroyed) finish();
+  return () => {
+    input.removeListener("data", data);
+    input.removeListener("end", finish);
+    input.removeListener("error", finish);
+    input.pause();
+    // Node's piped stdin is a referenced Socket on Windows and POSIX. Pausing
+    // reads alone can keep a fully stopped connector alive while its Launcher
+    // still owns the write end.
+    (input as Readable & { unref?: () => void }).unref?.();
+  };
+}
+
+async function connectCodex(argv: readonly string[], env: NodeJS.ProcessEnv, shutdown: AbortController): Promise<void> {
+  const signal = shutdown.signal;
   const parsed = parseCodexConnectArgs(argv);
   if (parsed === "help") {
     process.stdout.write(HELP);
     return;
   }
-  const authorization = env.GATHERTHREAD_TOKEN?.trim() || await readSecret("GatherThread one-time device authorization (from Connect Codex): ");
-  const token = await resolveDeviceCredential(authorization, parsed.apiUrl);
+  signal.throwIfAborted();
+  const authorization = env.GATHERTHREAD_TOKEN?.trim() || await readSecret("GatherThread one-time device authorization (from Connect Codex): ", signal);
+  const token = await resolveDeviceCredential(authorization, parsed.apiUrl, fetch, signal);
   if (!token || /[\r\n]/.test(token)) throw new Error("A valid GatherThread device access token is required");
 
   const api = new HttpCollaborationClient({
     baseUrl: parsed.apiUrl,
     bearerToken: token,
+    signal,
   });
   const actor = await api.getCurrentActor();
+  signal.throwIfAborted();
   if (parsed.projectId) {
     const existingWorkspaces = parsed.createWorkspace
       ? await findExistingProjectWorkspaces({ apiUrl: parsed.apiUrl, projectId: parsed.projectId })
@@ -185,6 +238,7 @@ export async function runCodexConnectCli(
         throw error;
       });
     for (const workspace of existingWorkspaces) {
+      signal.throwIfAborted();
       const stateRoot = codexProjectStateRoot(parsed.apiUrl, actor.deviceId, parsed.projectId, workspace);
       await recoverProjectNativeReceipts(stateRoot, api);
       await recoverSharedStoppedReceipts({ privateControlRoot: path.join(stateRoot, "shared-control"),
@@ -192,7 +246,9 @@ export async function runCodexConnectCli(
     }
   }
   const projects = (await api.listProjects()).filter((project) => project.state === "active");
-  const selected = await selectProject(projects, parsed.projectId);
+  signal.throwIfAborted();
+  const selected = await selectProject(projects, parsed.projectId, signal);
+  signal.throwIfAborted();
   const requestedWorkspacePath = parsed.createWorkspace
     ? await ensureProjectWorkspace({
       apiUrl: parsed.apiUrl,
@@ -200,11 +256,12 @@ export async function runCodexConnectCli(
       projectName: selected.name,
     })
     : parsed.workspacePath;
+  signal.throwIfAborted();
   let githubCodeSync: ProjectCodeSync | undefined;
   if (parsed.githubCodeSync) {
     try {
       const response = await fetch(`${parsed.apiUrl}/projects/${encodeURIComponent(selected.id)}/github`, {
-        headers: { authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(15_000),
+        headers: { authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
       });
       const reader = response.body?.getReader(); let size = 0; const chunks: Uint8Array[] = [];
       if (!response.ok || !reader) { await response.body?.cancel(); throw new Error("Cannot verify project GitHub settings."); }
@@ -213,18 +270,22 @@ export async function runCodexConnectCli(
       const state = GitHubProjectStatusSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")).data);
       if (!state.can_write || !state.connection?.enabled || state.connection.repository.toLowerCase() !== parsed.githubCodeSync.toLowerCase()
         || state.connection.base_branch !== parsed.githubBaseBranch) throw new Error("GitHub target must match the enabled project settings.");
-      await connectGitHubAccount();
+      signal.throwIfAborted();
+      await connectGitHubAccount(undefined, signal);
+      signal.throwIfAborted();
       githubCodeSync = createGitHubCodeSync({ apiUrl: parsed.apiUrl, token, projectId: selected.id, actorId: actor.id,
         workspacePath: requestedWorkspacePath, repository: parsed.githubCodeSync, baseBranch: parsed.githubBaseBranch,
         revision: state.connection.revision,
         onRecovery: (folder) => process.stdout.write(`Recovered GitHub files into a new local folder: ${folder}\n`),
       });
-    } catch {
+    } catch (error) {
+      if (signal.aborted && error === signal.reason) throw error;
       if (parsed.recoverGitHubCode) throw new Error("GitHub recovery is unavailable. Check the project target, local authorization and network.");
       process.stderr.write("GitHub file sync was not authorized: check the project repository/base branch and reconnect. Conversation sync remains available.\n");
     }
   }
   if (parsed.recoverCode || parsed.recoverGitHubCode) {
+    signal.throwIfAborted();
     const recovery = parsed.recoverGitHubCode ? githubCodeSync! : new ProjectCodeSync({
       apiUrl: parsed.apiUrl, token, projectId: selected.id, actorId: actor.id,
       workspacePath: requestedWorkspacePath,
@@ -237,8 +298,10 @@ export async function runCodexConnectCli(
   // Codex itself reports the real workspace cwd, so every integration surface
   // must use that same canonical root to find the connector from descendants.
   const workspacePath = await validateCodexWorkspace(requestedWorkspacePath);
+  signal.throwIfAborted();
   const stateRoot = codexProjectStateRoot(parsed.apiUrl, actor.deviceId, selected.id, workspacePath);
   await recoverProjectNativeReceipts(stateRoot, api);
+  signal.throwIfAborted();
   const mappingId = path.basename(stateRoot);
   if (parsed.resetCodexSession) await rm(stateRoot, { recursive: true, force: true });
   const codexCommand = await resolveCodexCommand(parsed.codexCommand, env);
@@ -251,10 +314,7 @@ export async function runCodexConnectCli(
     : parsed.pluginHooks ? "plugin" : "disabled";
   const hooksEnabled = hookMode !== "disabled";
 
-  const shutdown = new AbortController();
-  const stop = () => shutdown.abort(new Error("Codex connector shutdown requested"));
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  shutdown.signal.throwIfAborted();
   const localSync = new CodexLocalSyncRegistry(api);
   const userApiRelay = new LocalConnectorApiRelayServer({
     endpoint: resolveWorkspaceConnectorApiPath(workspacePath),
@@ -264,6 +324,7 @@ export async function runCodexConnectCli(
   });
   try {
     await userApiRelay.start();
+    signal.throwIfAborted();
     // Refuse a duplicate workspace connector before mutating any Hook source
     // registry or project configuration. A failed second launch must leave the
     // active connector's relay, capability, and trust selection untouched.
@@ -334,6 +395,7 @@ export async function runCodexConnectCli(
     });
     try {
       const preflight = await harness.preflight();
+      signal.throwIfAborted();
       process.stdout.write(`Codex App Server ready: ${oneLine(preflight.version)}; ${oneLine(preflight.authentication)}\n`);
       process.stdout.write(`Workspace: ${preflight.workspacePath}\n`);
       if (parsed.preflightOnly) {
@@ -343,8 +405,10 @@ export async function runCodexConnectCli(
       const sharedExecutorFactory = () => new CodexSharedAgentExecutor({ command: codexCommand,
         workspacePath, privateStateRoot: path.join(stateRoot, "shared-execution"), env });
       const sharedProbe = sharedExecutorFactory();
-      const sharingCapability = await sharedProbe.preflight();
-      await sharedProbe.close();
+      let sharingCapability;
+      try { sharingCapability = await sharedProbe.preflight(); }
+      finally { await sharedProbe.close(); }
+      signal.throwIfAborted();
       if (sharingCapability) harness.descriptor.sharingCapability = sharingCapability;
       const desktopReveal = await revealCodexDesktopProject({
         enabled: parsed.createWorkspace,
@@ -352,6 +416,7 @@ export async function runCodexConnectCli(
         workspacePath: preflight.workspacePath,
         env,
       });
+      signal.throwIfAborted();
       if (desktopReveal.status === "opened") {
         process.stdout.write(`Opened Codex Desktop project: ${formatCodexConnectFailure(new Error(preflight.workspacePath), token)}\n`);
       } else if (desktopReveal.status === "failed") {
@@ -399,8 +464,6 @@ export async function runCodexConnectCli(
     }
   } finally {
     await userApiRelay.close();
-    process.removeListener("SIGINT", stop);
-    process.removeListener("SIGTERM", stop);
   }
 }
 
@@ -710,7 +773,9 @@ export function parseCodexConnectArgs(argv: readonly string[]): CodexConnectOpti
 async function selectProject(
   projects: ProjectSummary[],
   requestedProjectId: string | undefined,
+  signal?: AbortSignal,
 ): Promise<ProjectSummary> {
+  signal?.throwIfAborted();
   if (requestedProjectId) {
     const selected = projects.find((project) => project.id === requestedProjectId);
     if (!selected) throw new Error("The requested project is unavailable for this user");
@@ -727,7 +792,7 @@ async function selectProject(
   });
   const readline = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const answer = await readline.question("Choose a project number: ");
+    const answer = await readline.question("Choose a project number: ", signal ? { signal } : {});
     const index = Number(answer) - 1;
     if (!Number.isSafeInteger(index) || index < 0 || index >= projects.length) {
       throw new Error("Project selection is invalid");
@@ -1098,6 +1163,7 @@ export async function runProjectConnector(options: {
   const projectHookSpoolEnabled = options.hookMode === "project";
   const managed = new Map<string, ManagedSession>();
   const sharedControllers = new Map<string, SharedAgentJobController>();
+  const quarantinedExecutors = new Map<string, SharedAgentExecutor>();
   const discoveries = new Map<string, Promise<ManagedSession>>();
   const activeLocalRuns = new Set<string>();
   const discoverySessionIds = new Set<string>();
@@ -1237,19 +1303,39 @@ export async function runProjectConnector(options: {
       }
       for (const current of managed.values()) {
         const runtime = current.bridge.runtime;
-        if (!runtime?.sharingCapability || sharedControllers.has(runtime.id) || (sharedPreflightRetryAt.get(runtime.id) ?? 0) > now) continue;
-        const executor = options.sharedExecutorFactory();
-        if (!await executor.preflight()) {
-          await executor.close?.();
-          await options.api.agentSharingApi().reportSourceAvailability(options.project.id, runtime.id, "unsupported", randomUUID());
-          sharedPreflightRetryAt.set(runtime.id, now + 30000); continue;
+        if (!runtime?.sharingCapability || sharedControllers.has(runtime.id) || quarantinedExecutors.has(runtime.id)
+          || (sharedPreflightRetryAt.get(runtime.id) ?? 0) > now) continue;
+        let executor: SharedAgentExecutor | undefined;
+        // A failed optional sharing probe must not disconnect every ordinary
+        // conversation. Retry only this exact runtime after its probe is closed.
+        sharedPreflightRetryAt.set(runtime.id, now + 30000);
+        try {
+          executor = options.sharedExecutorFactory();
+          if (!await executor.preflight() || options.signal.aborted) {
+            await executor.close?.();
+            executor = undefined;
+            if (!options.signal.aborted) await options.api.agentSharingApi()
+              .reportSourceAvailability(options.project.id, runtime.id, "unsupported", randomUUID());
+            continue;
+          }
+          const controller = new SharedAgentJobController({ projectId: options.project.id, sourceRuntimeId: runtime.id,
+            privateStateRoot: path.join(options.stateRoot, "shared-control", runtime.id),
+            ownerDeviceId: options.actorDeviceId, api: options.api.agentSharingApi(), executor, signal: options.signal,
+            onError: error => retryReporter.retrying(`${runtime.id}:sharing`, error) });
+          sharedControllers.set(runtime.id, controller); controller.start();
+          executor = undefined;
+          sharedPreflightRetryAt.delete(runtime.id);
+          retryReporter.recovered(`${runtime.id}:sharing preflight`);
+        } catch {
+          try { await executor?.close?.(); }
+          catch {
+            // Never create another executor when prior process cleanup cannot
+            // be confirmed. Ordinary session sync may safely stay connected.
+            if (executor) quarantinedExecutors.set(runtime.id, executor);
+          }
+          if (!options.signal.aborted) retryReporter.retrying(`${runtime.id}:sharing preflight`,
+            new Error("Shared Agent startup is unavailable; ordinary conversation sync remains connected"));
         }
-        sharedPreflightRetryAt.delete(runtime.id);
-        const controller = new SharedAgentJobController({ projectId: options.project.id, sourceRuntimeId: runtime.id,
-          privateStateRoot: path.join(options.stateRoot, "shared-control", runtime.id),
-          ownerDeviceId: options.actorDeviceId, api: options.api.agentSharingApi(), executor, signal: options.signal,
-          onError: error => retryReporter.retrying(`${runtime.id}:sharing`, error) });
-        sharedControllers.set(runtime.id, controller); controller.start();
       }
     }
     if (now >= nextRefreshAt) {
@@ -1325,6 +1411,7 @@ export async function runProjectConnector(options: {
         }
       }
     }
+    if (options.signal.aborted) break;
     if (!readyAnnounced && authoritativeAclLoaded && (!eligibleSessions.length || managed.size > 0)) {
       process.stdout.write("GatherThread connector ready.\n");
       readyAnnounced = true;
@@ -1335,7 +1422,7 @@ export async function runProjectConnector(options: {
         try {
           const codeBusy = async () => activeLocalRuns.size > 0 || Boolean(await options.harness.isWorkspaceBusy?.()) || await managedCodeRunsBusy(managed);
           const workspaceOperation = options.harness.withWorkspaceOperation?.bind(options.harness);
-          await processCodeSyncControlJobs({ api: options.api, managed, codeSync: options.codeSync, githubCodeSync: options.githubCodeSync, busy: codeBusy, ...(workspaceOperation ? { workspaceOperation } : {}) });
+          await processCodeSyncControlJobs({ api: options.api, managed, codeSync: options.codeSync, githubCodeSync: options.githubCodeSync, busy: codeBusy, signal: options.signal, ...(workspaceOperation ? { workspaceOperation } : {}) });
           for (const [provider, sync] of [["cloud code", options.codeSync], ["GitHub code", options.githubCodeSync]] as const) {
             try {
               if (sync && await sync.automaticUploadEnabled()) {
@@ -1382,12 +1469,18 @@ export async function runProjectConnector(options: {
     await waitForConnectorPoll(1_000, options.signal);
   }
   } finally {
-    await Promise.allSettled([...sharedControllers.values()].map(controller => controller.stop()));
+    const cleanup = await Promise.allSettled([
+      ...[...sharedControllers.values()].map(controller => controller.stop()),
+      ...[...quarantinedExecutors.values()].map(executor => executor.close?.()),
+    ]);
     heartbeatStop.abort();
     await heartbeat;
     options.localSync?.clear();
     await relay?.close();
     await options.nativeHookRelay?.close();
+    if (cleanup.some(result => result.status === "rejected")) {
+      throw new Error("Shared Agent cleanup was not confirmed; inspect the local connector before reconnecting");
+    }
   }
 }
 
@@ -1415,12 +1508,14 @@ export async function processCodeSyncControlJobs(input: {
   busy: boolean | (() => Promise<boolean>);
   workspaceOperation?: <T>(operation: () => Promise<T>) => Promise<T>;
   connectGitHub?: typeof connectGitHubAccount;
+  signal?: AbortSignal;
 }): Promise<void> {
   const { api } = input;
   if (!api.listSnapshotRequests || !api.claimSnapshotRequest || !api.completeSnapshotRequest || !api.failSnapshotRequest) return;
   const jobs = [...await api.listSnapshotRequests("pending", 40), ...await api.listSnapshotRequests("claimed", 40)]
     .filter((job, index, all) => (isCodeSyncRequestKind(job.kind) || isGitHubCodeSyncRequestKind(job.kind)) && all.findIndex((candidate) => candidate.id === job.id) === index);
   for (const job of jobs) {
+    input.signal?.throwIfAborted();
     const runtime = input.managed.get(job.sessionId)?.bridge.runtime;
     if (!runtime || !["codex", "claude-code"].includes(runtime.harness) || job.targetRuntimeId !== runtime.id) continue;
     let claimed;
@@ -1430,7 +1525,7 @@ export async function processCodeSyncControlJobs(input: {
     try {
       const github = isGitHubCodeSyncRequestKind(claimed.kind);
       if (claimed.kind === "github_auth_connect") {
-        await (input.connectGitHub ?? connectGitHubAccount)();
+        await (input.connectGitHub ?? connectGitHubAccount)(undefined, input.signal);
         result = { provider: "github", connected: true };
       } else {
       const sync = github ? input.githubCodeSync : input.codeSync;
@@ -1727,7 +1822,8 @@ function normalizeApiUrl(value: string): string {
   return url.toString().replace(/\/$/, "");
 }
 
-function readSecret(label: string): Promise<string> {
+function readSecret(label: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   if (!process.stdin.isTTY || !process.stdout.isTTY || !process.stdin.setRawMode) {
     throw new Error("Set GATHERTHREAD_TOKEN when no interactive terminal is available");
   }
@@ -1736,6 +1832,7 @@ function readSecret(label: string): Promise<string> {
   process.stdin.resume();
   return new Promise((resolve, reject) => {
     let value = "";
+    const onAbort = () => { cleanup(); reject(signal!.reason); };
     const onData = (chunk: Buffer | string) => {
       const text = chunk.toString();
       for (const character of text) {
@@ -1759,7 +1856,9 @@ function readSecret(label: string): Promise<string> {
       }
     };
     process.stdin.on("data", onData);
+    signal?.addEventListener("abort", onAbort, { once: true });
     function cleanup() {
+      signal?.removeEventListener("abort", onAbort);
       process.stdin.removeListener("data", onData);
       process.stdin.setRawMode(false);
       process.stdin.pause();

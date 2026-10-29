@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
+import { createAgentTeamConfiguration } from "@gatherthread/protocol";
 import { mountAgentTeams } from "../src/agent-team-library-view.js";
 
 class Element {
@@ -86,7 +87,7 @@ const team = (id = "team-a", overrides = {}) => ({ id, revision: 1,
   max_calls: 12, max_duration_minutes: 30, enabled: false, tested_revision: null, test_status: "not_tested", ...overrides });
 const flush = async () => { for (let index = 0; index < 70; index++) await Promise.resolve(); };
 
-function fixture({ initial = [], modules = [], initialRuns = [], overrides = {}, confirm = () => true, onExit = () => {} } = {}) {
+function fixture({ initial = [], modules = [], initialRuns = [], overrides = {}, confirm = () => true, onExit = () => {}, onConfigureWithAi = null } = {}) {
   const document = { documentElement: { lang: "en" }, activeElement: null,
     createElement(tag) { return new Element(this, tag); }, createElementNS(namespace, tag) { return new Element(this, tag, namespace); }, elementFromPoint() { return null; } };
   document.body = document.createElement("body");
@@ -137,7 +138,7 @@ function fixture({ initial = [], modules = [], initialRuns = [], overrides = {},
       return { deleted: true, replayed: false }; },
     ...overrides,
   };
-  const ui = mountAgentTeams({ document, api, hostButton, getContext: () => context, makeKey: prefix => `${prefix}-fixture-${++nextId}`, confirm, onExit });
+  const ui = mountAgentTeams({ document, api, hostButton, getContext: () => context, makeKey: prefix => `${prefix}-fixture-${++nextId}`, confirm, onExit, onConfigureWithAi });
   const byId = id => {
     const search = node => node.id === id ? node : node.children.map(search).find(Boolean);
     return search(document.body);
@@ -150,6 +151,219 @@ function fixture({ initial = [], modules = [], initialRuns = [], overrides = {},
 }
 
 async function open(f, index = 0) { await flush(); f.hostButton.click(); await flush(); f.document.body.querySelector(".team-library-list").children[index].children[0].click(); }
+
+const teamFile = (value = team()) => JSON.stringify(createAgentTeamConfiguration(value));
+
+test("importing a Team file creates only an unsaved draft and never restores execution authority", async () => {
+  const f = fixture(); await flush();
+  assert.equal(f.ui.importConfiguration(teamFile(team("source", { enabled: true, revision: 9, tested_revision: 9, test_status: "passed" }))), true);
+  assert.equal(f.el("agent-team-dialog").open, true);
+  assert.equal(f.el("team-name").value, "source");
+  assert.equal(f.el("team-save").disabled, false);
+  assert.equal(f.el("team-enable").disabled, true);
+  assert.deepEqual(f.calls, []);
+  f.el("team-save").click(); await flush();
+  const saved = f.calls.find(call => call[0] === "save");
+  assert.notEqual(saved[1], "source"); assert.equal(saved[2].expected_revision, null);
+  assert.equal(f.calls.some(call => ["execute", "control"].includes(call[0])), false);
+});
+
+test("invalid Team JSON and declined replacement leave current unsaved configuration intact", async () => {
+  const f = fixture({ initial: [team()], confirm: () => false }); await open(f);
+  f.el("team-name").value = "Keep my edits"; f.el("team-name").dispatch("input");
+  assert.throws(() => f.ui.importConfiguration('{"version":1,"enabled":true}'));
+  assert.equal(f.ui.importConfiguration(teamFile()), false);
+  assert.equal(f.el("team-name").value, "Keep my edits");
+  assert.deepEqual(f.calls, []);
+});
+
+test("Team import respects library capacity and current write permission", async () => {
+  const f = fixture({ initial: Array.from({ length: 5 }, (_, i) => team(`team-${i}`)) }); await flush();
+  assert.equal(f.ui.importConfiguration(teamFile()), false);
+  f.teams = []; await f.ui.refresh(); f.update({ writable: false });
+  assert.equal(f.ui.importConfiguration(teamFile()), false);
+  assert.deepEqual(f.calls, []);
+});
+
+test("a reply import at the Team limit opens its visible explanation without replacing a draft", async () => {
+  const f = fixture({ initial: Array.from({ length: 5 }, (_, i) => team(`team-${i}`)) }); await flush();
+  assert.equal(f.el("agent-team-dialog").open, false);
+  assert.equal(f.ui.importConfiguration(teamFile()), false);
+  assert.equal(f.el("agent-team-dialog").open, true);
+  const explanation = f.document.body.querySelector(".form-error");
+  assert.match(explanation.textContent, /Team limit reached/u);
+  assert.ok(explanation.getClientRects().length, "the refusal cannot remain inside a closed dialog");
+  assert.equal(f.document.body.querySelectorAll(".team-row-edit").length, 5);
+  assert.deepEqual(f.calls, []);
+});
+
+test("JSON editing updates the current exact revision without saving or testing implicitly", async () => {
+  const f = fixture({ initial: [team()] }); await open(f); f.el("team-config-json").click();
+  const config = JSON.parse(f.el("team-json-source").value);
+  config.draft.nodes[0].prompt = "Check every result"; config.max_calls = 8;
+  f.el("team-json-source").value = JSON.stringify(config); f.el("team-json-apply").click();
+  assert.deepEqual(f.calls, []); assert.equal(f.el("team-max-calls").value, "8");
+  assert.equal(f.ui.getConfigurationContext().draft.nodes[0].prompt, "Check every result");
+  assert.deepEqual(f.ui.getConfigurationContext().draft.nodes[0].target, target);
+  f.el("team-save").click(); await flush();
+  assert.equal(f.calls[0][2].expected_revision, 1);
+});
+
+test("a refreshed Team revision cannot be overwritten by JSON opened before that update", async () => {
+  const f = fixture({ initial: [team()] }); await open(f); f.el("team-config-json").click();
+  const old = JSON.parse(f.el("team-json-source").value); old.draft.name = "Old edit";
+  f.el("team-json-source").value = JSON.stringify(old);
+  f.teams = [team("team-a", { revision: 2, draft: { ...team().draft, name: "New remote name" } })];
+  await f.ui.refresh(); f.el("team-json-apply").click();
+  assert.match(f.el("team-json-error").textContent, /draft changed/u);
+  assert.equal(f.el("team-name").value, "New remote name"); assert.deepEqual(f.calls, []);
+});
+
+test("unapplied JSON edits require an explicit discard, including the close-all action", async () => {
+  let discard = false;
+  const f = fixture({ initial: [team()], confirm: () => discard }); await open(f); f.el("team-config-json").click();
+  f.el("team-json-source").value += " ";
+  f.el("team-secondary-back").click();
+  assert.equal(f.document.body.querySelector(".team-secondary-dialog").open, true);
+  f.el("team-secondary-close").click(); assert.equal(f.el("agent-team-dialog").open, true);
+  discard = true; f.el("team-secondary-back").click();
+  assert.equal(f.document.body.querySelector(".team-secondary-dialog").open, false);
+});
+
+test("a file read cannot restore private configuration after switching accounts", async () => {
+  let resolveText;
+  const f = fixture(); await flush(); f.hostButton.click(); await flush(); f.el("team-import").click();
+  const source = f.el("team-json-source"), file = f.el("team-json-file");
+  file.files = [{ size: 1000, text: () => new Promise(resolve => { resolveText = resolve; }) }]; file.dispatch("change");
+  f.update({ scope: "bob:project-b:session-b", userId: "bob", projectId: "project-b", sessionId: "session-b" });
+  resolveText(teamFile(team("Alice private instructions"))); await flush();
+  assert.doesNotMatch(source.value, /Alice private/u); assert.equal(f.ui.getConfigurationContext(), null);
+  assert.deepEqual(f.calls, []);
+});
+
+async function teamJsonEditor() {
+  const f = fixture(); await flush(); f.hostButton.click(); await flush(); f.el("team-import").click();
+  return { ...f, source: f.el("team-json-source"), feedback: f.el("team-json-error"), read(result, size = 1000) {
+    const file = f.el("team-json-file"); file.files = [{ size, text: () => result.promise }]; file.dispatch("change");
+  } };
+}
+
+for (const first of ["older", "newer"]) test(`Team JSON keeps the last selected file when ${first} read completes first`, async () => {
+  const f = await teamJsonEditor(), baseline = f.source.value, older = Promise.withResolvers(), newer = Promise.withResolvers();
+  f.read(older); f.read(newer);
+  if (first === "older") {
+    older.resolve(teamFile(team("Older"))); await flush();
+    assert.equal(f.source.value, baseline, "an obsolete read cannot replace the editor while the newer file is pending");
+    newer.resolve(teamFile(team("Newer"))); await flush();
+  } else {
+    newer.resolve(teamFile(team("Newer"))); await flush(); older.resolve(teamFile(team("Older"))); await flush();
+  }
+  assert.equal(JSON.parse(f.source.value).draft.name, "Newer"); assert.equal(f.feedback.textContent, ""); assert.deepEqual(f.calls, []);
+});
+
+for (const restored of [false, true]) test(`typing in Team JSON invalidates a pending file${restored ? " even after restoring its original text" : ""}`, async () => {
+  const f = await teamJsonEditor(), baseline = f.source.value, pending = Promise.withResolvers(); f.read(pending);
+  f.source.value = teamFile(team("Typed")); f.source.dispatch("input");
+  if (restored) { f.source.value = baseline; f.source.dispatch("input"); }
+  const edited = f.source.value; pending.resolve(teamFile(team("Imported"))); await flush();
+  assert.equal(f.source.value, edited); assert.equal(f.feedback.textContent, ""); assert.deepEqual(f.calls, []);
+});
+
+for (const replacement of ["file", "typing"]) test(`an obsolete Team file error cannot overwrite newer ${replacement}`, async () => {
+  const f = await teamJsonEditor(), older = Promise.withResolvers(); f.read(older);
+  if (replacement === "file") {
+    const newer = Promise.withResolvers(); f.read(newer); newer.resolve(teamFile(team("Newer"))); await flush();
+  } else { f.source.value = teamFile(team("Newer")); f.source.dispatch("input"); }
+  older.reject(new Error("outdated file failed")); await flush();
+  assert.equal(JSON.parse(f.source.value).draft.name, "Newer"); assert.equal(f.feedback.textContent, "");
+});
+
+for (const failure of [false, true]) test(`closing and reopening Team JSON fences a previous file ${failure ? "error" : "result"}`, async () => {
+  const f = await teamJsonEditor(), pending = Promise.withResolvers(); f.read(pending);
+  f.el("team-secondary-back").click(); f.el("team-import").click();
+  const reopened = f.el("team-json-source"), baseline = reopened.value;
+  assert.notEqual(reopened, f.source);
+  if (failure) pending.reject(new Error("closed file failed")); else pending.resolve(teamFile(team("Imported")));
+  await flush(); assert.equal(reopened.value, baseline); assert.equal(f.el("team-json-error").textContent, ""); assert.deepEqual(f.calls, []);
+});
+
+test("an oversized Team file supersedes a pending read while current errors remain visible and retryable", async () => {
+  const f = await teamJsonEditor(), baseline = f.source.value, older = Promise.withResolvers(); f.read(older);
+  f.read({ promise: Promise.resolve("unused") }, 128 * 1024 + 1);
+  const limitError = f.feedback.textContent; assert.match(limitError, /128 KiB/u);
+  older.resolve(teamFile(team("Older"))); await flush();
+  assert.equal(f.source.value, baseline); assert.equal(f.feedback.textContent, limitError);
+  f.read({ promise: Promise.resolve("invalid json") }); await flush(); assert.match(f.feedback.textContent, /Invalid configuration/u);
+  f.read({ promise: Promise.resolve(teamFile(team("Retry"))) }); await flush();
+  assert.equal(JSON.parse(f.source.value).draft.name, "Retry"); assert.equal(f.feedback.textContent, ""); assert.deepEqual(f.calls, []);
+});
+
+test("losing write permission disables an already-open JSON Apply button", async () => {
+  const f = fixture({ initial: [team()] }); await open(f); f.el("team-config-json").click();
+  f.update({ writable: false }); assert.equal(f.el("team-json-apply").disabled, true);
+  f.el("team-json-apply").click(); assert.deepEqual(f.calls, []);
+});
+
+test("preset selection and reset are editable drafts with no implicit Agent binding", async () => {
+  const f = fixture(); await flush(); f.hostButton.click(); await flush(); f.el("team-preset").click(); f.el("team-preset-development").click();
+  assert.equal(f.el("team-name").value, "Build and review"); assert.equal(f.el("team-preset-reset").hidden, false);
+  assert.ok(f.ui.getConfigurationContext().draft.nodes.every(node => node.target === null));
+  f.el("team-name").value = "Custom"; f.el("team-name").dispatch("input"); f.el("team-preset-reset").click();
+  assert.equal(f.el("team-name").value, "Build and review"); assert.deepEqual(f.calls, []);
+});
+
+test("AI setup only supplies the selected current configuration and closes after accepted navigation", async () => {
+  const received = [];
+  const f = fixture({ initial: [team()], onConfigureWithAi: async value => { received.push(value); return false; } });
+  await flush(); f.hostButton.click(); await flush(); f.el("team-configure-ai").click(); await flush();
+  assert.deepEqual(received, [null]); assert.equal(f.el("agent-team-dialog").open, true);
+  f.document.body.querySelector(".team-library-list").children[0].children[0].click();
+  f.el("team-editor-ai").click(); await flush();
+  assert.equal(received[1].draft.name, "team-a"); assert.equal(received[1].revision, undefined); assert.equal(received[1].enabled, undefined);
+  assert.deepEqual(f.calls, []); assert.equal(f.el("agent-team-dialog").open, true);
+  const accepted = fixture({ onConfigureWithAi: async () => true }); await flush(); accepted.hostButton.click(); await flush();
+  accepted.el("team-configure-ai").click(); await flush(); assert.equal(accepted.el("agent-team-dialog").open, false);
+});
+
+test("AI setup preserves a dirty draft when declined or when navigation fails", async () => {
+  let allow = false, attempts = 0;
+  const f = fixture({ initial: [team()], confirm: () => allow, onConfigureWithAi: async () => { attempts++; throw new Error("private diagnostic"); } });
+  await open(f); f.el("team-name").value = "Keep"; f.el("team-name").dispatch("input");
+  f.el("team-editor-ai").click(); await flush(); assert.equal(attempts, 0);
+  allow = true; f.el("team-editor-ai").click(); await flush();
+  assert.equal(attempts, 1); assert.equal(f.el("team-name").value, "Keep"); assert.equal(f.el("agent-team-dialog").open, true);
+  assert.match(f.document.body.querySelector(".form-error").textContent, /draft is kept/u);
+  assert.doesNotMatch(f.document.body.querySelector(".form-error").textContent, /private diagnostic/u);
+});
+
+test("a large unsaved Team remains editable instead of opening an unsendable or context-free AI chat", async () => {
+  let attempts = 0;
+  const original = team();
+  original.draft.nodes = Array.from({ length: 6 }, (_, i) => ({ ...structuredClone(module), id: `node-${i}`,
+    x: i * 180, y: 60, prompt: "a".repeat(1000) }));
+  original.draft.entry_node_id = "node-0";
+  const f = fixture({ initial: [original], onConfigureWithAi: async () => { attempts++; return true; } }); await open(f);
+  f.el("team-name").value = "Keep these unsaved edits"; f.el("team-name").dispatch("input");
+  const before = f.ui.getConfigurationContext();
+  assert.ok(JSON.stringify(before).length > 6000);
+  f.el("team-editor-ai").click(); await flush();
+  assert.equal(attempts, 0);
+  assert.equal(f.el("agent-team-dialog").open, true);
+  assert.deepEqual(f.ui.getConfigurationContext(), before);
+  assert.equal(f.el("team-save").disabled, false);
+  assert.match(f.document.body.querySelector(".form-error").textContent, /Edit or download its JSON/u);
+  assert.deepEqual(f.calls, []);
+});
+
+test("uncertain Save must be recovered before AI handoff or replacing the current Team by import", async () => {
+  let aiCalls = 0;
+  const f = fixture({ initial: [team()], onConfigureWithAi: async () => { aiCalls++; return true; }, overrides: {
+    saveAgentTeam: async () => { throw new TypeError("fetch failed"); },
+  } }); await open(f);
+  f.el("team-name").value = "Submitted"; f.el("team-name").dispatch("input"); f.el("team-save").click(); await flush();
+  assert.equal(f.el("team-editor-ai").disabled, true); f.el("team-editor-ai").click();
+  assert.equal(f.ui.importConfiguration(teamFile()), false); assert.equal(f.el("team-name").value, "Submitted"); assert.equal(aiCalls, 0);
+});
 
 test("pagehide fences queued Team reads and pageshow restores current-context polling", async () => {
   let reads = 0;
@@ -758,7 +972,7 @@ test("an Unfavorite acknowledgement keeps its original favorite identity after t
   });
 });
 
-test("opening another Team resets the previous pan and zoom and brings its entry module into view", async t => {
+test("opening another Team resets the previous pan and zoom and brings all its modules into view", async t => {
   for (const distantEntry of [false, true]) await t.test(distantEntry ? "distant explicit entry" : "first module near the origin", async () => {
     const other = team("team-b");
     if (distantEntry) {
@@ -769,14 +983,18 @@ test("opening another Team resets the previous pan and zoom and brings its entry
     viewport.scrollLeft = 900; viewport.scrollTop = 500; hud.children[2].click(); hud.children[2].click();
     assert.equal(hud.children[1].textContent, "120%");
     f.el("team-editor-back").click(); f.document.body.querySelector(".team-library-list").children[1].children[0].click();
-    assert.equal(hud.children[1].textContent, "100%", "each opened Team starts with a readable independent viewport");
+    const stage = f.document.body.querySelector(".team-canvas-stage");
+    const scale = Number(stage.style.transform.match(/scale\(([^)]+)\)/u)[1]);
+    assert.ok(scale > 0 && scale <= 1, "each opened Team fits its own graph rather than retaining the previous zoom");
     const entry = other.draft.nodes.find(node => node.id === other.draft.entry_node_id);
-    assert.ok(entry.x >= viewport.scrollLeft && entry.x + 228 <= viewport.scrollLeft + viewport.clientWidth, "the entry module is horizontally visible");
-    assert.ok(entry.y >= viewport.scrollTop && entry.y + 114 <= viewport.scrollTop + viewport.clientHeight, "the entry module is vertically visible");
+    for (const node of other.draft.nodes) {
+      assert.ok(node.x * scale >= viewport.scrollLeft && (node.x + 228) * scale <= viewport.scrollLeft + viewport.clientWidth, "every module is horizontally visible");
+      assert.ok(node.y * scale >= viewport.scrollTop && (node.y + 114) * scale <= viewport.scrollTop + viewport.clientHeight - 60, "every title and card is visible above the zoom controls");
+    }
     f.document.body.querySelector(`[data-node-id='${entry.id}']`).click(); hud.children[2].click();
-    const pan = [viewport.scrollLeft, viewport.scrollTop];
+    const pan = [viewport.scrollLeft, viewport.scrollTop], zoom = hud.children[1].textContent;
     editInput(f.el(`team-identity-${entry.id}`), "An ordinary inspector edit must preserve the working view");
-    assert.equal(hud.children[1].textContent, "110%"); assert.deepEqual([viewport.scrollLeft, viewport.scrollTop], pan);
+    assert.equal(hud.children[1].textContent, zoom); assert.deepEqual([viewport.scrollLeft, viewport.scrollTop], pan);
   });
 });
 
@@ -1262,15 +1480,15 @@ test("model and reasoning selectors remain bound to the accepted module after re
 });
 
 
-test("a late favorite deletion cannot replace a newer relationships dialog", async () => {
+test("a late favorite deletion cannot replace a newer JSON editor", async () => {
   let completeDelete;
   const f = fixture({ initial: [team()], modules: [{ id: "favorite-a", module: structuredClone(module) }], overrides: {
     deleteTeamItem: async () => new Promise(resolve => { completeDelete = () => { f.favorites = []; resolve({ deleted: true, replayed: false }); }; }),
   } });
   await open(f); f.el("team-add-favorite").click(); const secondary = f.document.body.querySelector(".team-secondary-dialog");
   secondary.querySelector(".team-library-list").children[0].children[1].click(); await flush();
-  f.el("team-secondary-back").click(); f.button("View configuration").click(); completeDelete(); await flush();
-  assert.equal(secondary.open, true); assert.equal(f.el("team-secondary-title").textContent, "Configuration relationships");
+  f.el("team-secondary-back").click(); f.el("team-config-json").click(); completeDelete(); await flush();
+  assert.equal(secondary.open, true); assert.equal(f.el("team-secondary-title").textContent, "Edit JSON");
 });
 
 test("polling removal of a focused Team at library capacity still restores a visible enabled control", async () => {
@@ -2093,6 +2311,8 @@ for (const boundary of ["access denied", "history changed"]) for (const foregrou
       state: { currentUser: { id: "alice" }, project: { id: "project-a" }, session: { id: "session-a", mode: "multi" },
         settings: { composer: { confirmAgentRequest: false } }, sync: { contentRevision: 0 } },
       messageInput: { ...node(), value: raw }, sendAgentButton: node(), sendChatButton: node(), sendError: node(),
+      configurationSkillContent: content => content, configurationDrafts: new Map(), CONFIGURATION_SKILL: "/gatherthread-config",
+      soloDrafts: { submitted() {} }, configurationSkillChip: { hidden: true },
       pendingMessageSend: null, currentProjectHarness: () => "team", agentRequestControl: { action: () => "request" },
       createIdempotencyKey: () => "composer-key", renderComposerPermissions() {}, localizer: { t: value => value }, window: { confirm: () => true },
       api: { appendAgentRequest() { assert.fail("A Team task cannot bypass its service"); } },

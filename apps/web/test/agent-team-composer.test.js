@@ -22,6 +22,8 @@ function fixture(start) {
   let metadata = { replyTo: "quoted-source", mentions: [{ user_id: "member-a", start: at, end: at + label.length }] }, sent = 0;
   const calls = [], nodes = new Map(), app = vm.createContext({
     authenticationGeneration: 1, selectedSessionGeneration: 1,
+    configurationSkillContent: content => content, configurationDrafts: new Map(), CONFIGURATION_SKILL: "/gatherthread-config",
+    soloDrafts: { submitted: noop }, configurationSkillChip: { hidden: true },
     state: { currentUser: { id: "alice" }, project: { id: "project-a" }, session: { id: "session-a", mode: "multi" },
       settings: { composer: { confirmAgentRequest: false } }, sync: { contentRevision: 3 } },
     messageInput: { ...node(), value: raw }, sendAgentButton: node(), sendChatButton: node(), sendError: node(),
@@ -154,6 +156,7 @@ test("both production Team controls derive emergency permission independently of
   const start = source.indexOf("const teamsUi = mountAgentTeams("), end = source.indexOf("\n});", start) + 4;
   const app = vm.createContext({
     mountAgentTeams: options => options,
+    startTeamConfiguration: noop,
     document: {}, api: {}, element: () => ({}), createIdempotencyKey: () => "unused", window: {},
     refreshDshRuntimes: noop, refreshHostedAgentStatus: noop, renderComposerPermissions: noop,
     authenticationGeneration: 1, selectedSessionGeneration: 1, canAppend,

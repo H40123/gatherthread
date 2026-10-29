@@ -177,6 +177,8 @@ function sendFixture({ mode = "solo", approve = true, apiOverride } = {}) {
   const context = vm.createContext({ state: { currentUser: { id: "bob" }, project: { id: "project-a" }, session: { id: "session-b", mode },
     settings: { composer: { confirmAgentRequest: false } }, sync: { contentRevision: 0, events: [] } },
     authenticationGeneration: 1, selectedSessionGeneration: 1, workspaceLoadGeneration: 0,
+    configurationSkillContent: content => content, configurationDrafts: new Map(), CONFIGURATION_SKILL: "/gatherthread-config",
+    soloDrafts: { submitted() {} }, configurationSkillChip: { hidden: true },
     currentProjectHarness: () => "shared", agentRequestControl: { action: () => "request", update() {} }, messageInput: message,
     sendChatButton: node(), sendAgentButton: node(), sendError: node(), pendingMessageSend: null, pendingSharedAgentIntent: null,
     localizer: { t: value => value }, createIdempotencyKey: kind => `${kind}-fixture-${++counter}`,

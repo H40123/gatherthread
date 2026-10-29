@@ -1118,38 +1118,57 @@ export class CodexAppServerClient {
     }
     this.#pending.clear();
     for (const listener of this.#failureListeners) listener(closingError);
-    this.#child = undefined;
+    // Keep ownership until exit is confirmed. A failed stop must not permit a
+    // second App Server to start while the first process is still alive.
+    this.#failure = closingError;
+    let closed = false;
     try {
       if (this.#isolatedProcessGroupId !== undefined) {
         await terminateOwnedProcessGroup(this.#isolatedProcessGroupId);
         this.#isolatedProcessGroupId = undefined;
       }
       if (child && child.exitCode === null && child.signalCode === null) {
-        await new Promise<void>((resolve) => {
+        await new Promise<void>((resolve, reject) => {
           let settled = false;
-          const finish = () => {
+          const finish = (error?: Error) => {
             if (settled) return;
             settled = true;
             clearTimeout(force);
-            resolve();
+            clearTimeout(deadline);
+            child.removeListener("exit", exited);
+            child.removeListener("close", exited);
+            error ? reject(error) : resolve();
           };
+          const exited = () => finish();
           const force = setTimeout(() => {
             child.kill("SIGKILL");
           }, 5_000);
-          force.unref();
-          child.once("close", finish);
+          const deadline = setTimeout(() => finish(new HarnessExecutionUnconfirmedError("Codex App Server exit was not confirmed")), 10_000);
+          // An inherited stdout pipe may remain open after the owned RPC
+          // process exits. Group cleanup above independently checks descendants.
+          child.once("exit", exited);
+          child.once("close", exited);
           child.kill("SIGTERM");
         });
       }
+      child?.stdin.destroy();
+      child?.stdout.destroy();
+      child?.stderr.destroy();
       // Shared file-tool callbacks must reach their actual subprocess exit;
       // killing the native RPC process alone is not a cleanup acknowledgment.
       await Promise.allSettled([...this.#dynamicCalls]);
+      closed = true;
     } finally {
       // A client is an operation-scoped App Server owner. Reset all process
       // lifecycle state so the next projection can start a fresh child after
       // Desktop has had an idle window to acquire the native task.
-      this.#startPromise = undefined;
-      this.#failure = undefined;
+      if (closed) {
+        if (this.#child === child) this.#child = undefined;
+        this.#startPromise = undefined;
+        this.#failure = undefined;
+      } else {
+        this.#failure = new HarnessExecutionUnconfirmedError("Codex App Server cleanup was not confirmed");
+      }
       this.#stdoutBuffer = Buffer.alloc(0);
       this.#stderr = "";
       this.#threadTokenUsage.clear();
@@ -1189,7 +1208,7 @@ export class CodexAppServerClient {
       this.#stderr = `${this.#stderr}${chunk.toString("utf8")}`.slice(-4_096);
     });
     child.once("error", () => this.#fail(new Error("Codex App Server could not be started")));
-    child.once("close", (code, signal) => {
+    child.once("exit", (code, signal) => {
       if (!this.#failure && this.#child === child) {
         this.#fail(new Error(
           `Codex App Server exited unexpectedly (${signal ?? code ?? "unknown"})${safeStderrSuffix(this.#stderr)}`,

@@ -6,6 +6,58 @@ import {
   type RuntimeRegistration,
 } from "../src/index.js";
 
+test("connector cancellation aborts ordinary I/O but preserves exact stop receipts and offline reports", async () => {
+  const shutdown = new AbortController(), entered = Promise.withResolvers<void>();
+  const requests: Array<{ url: string; signal: AbortSignal; body: unknown }> = [];
+  const client = new HttpCollaborationClient({ baseUrl: "https://fixture.invalid/v1", bearerToken: "fixture", signal: shutdown.signal,
+    fetch: async (url, init = {}) => {
+      const signal = init.signal!;
+      requests.push({ url: String(url), signal, body: init.body ? JSON.parse(String(init.body)) : undefined });
+      assert.equal(signal.aborted, false);
+      if (String(url).endsWith("/projects")) {
+        entered.resolve();
+        return new Promise<Response>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      }
+      if (String(url).endsWith("/execution/stopped")) return Response.json({ data: { active: false } });
+      if (String(url).endsWith("/availability")) return Response.json({ data: { shares: [] } });
+      // A real server error is still surfaced by the cleanup lane; cancellation
+      // must neither suppress the write nor fabricate an acknowledgment.
+      return Response.json({ error: { code: "fixture_unavailable", message: "Fixture" } }, { status: 503 });
+    } });
+  const read = client.listProjects();
+  await entered.promise;
+  const reason = new Error("Fixture stop"); shutdown.abort(reason);
+  await assert.rejects(read, error => error === reason);
+  await client.acknowledgeAgentExecutionStopped("session-1", "request-1", "runtime-1", 2);
+  const shared = client.agentSharingApi();
+  await assert.rejects(shared.abortAck("job-1", { claim_attempt: 2, idempotency_key: "fixture-stop-0001", executor_stopped: true }),
+    error => error instanceof CollaborationHttpError && error.status === 503);
+  await shared.reportAvailability("share-1", "offline", "fixture-offline-0001");
+  await shared.reportSourceAvailability("project-1", "runtime-1", "offline", "fixture-offline-0002");
+  const cleanupCount = requests.length;
+  for (const operation of [() => client.listProjects(), () => shared.listJobs("project-1"),
+    () => shared.claim("job-1", "fixture-claim-0001"), () => shared.reportAvailability("share-1", "ready", "fixture-ready-0001"),
+    () => shared.reportSourceAvailability("project-1", "runtime-1", "ready", "fixture-ready-0002")]) {
+    await assert.rejects(operation(), error => error === reason);
+  }
+  assert.equal(requests.length, cleanupCount, "no new reads, claims or ready reports may escape shutdown");
+  assert.deepEqual(requests[1]!.body, { runtime_id: "runtime-1", claim_attempt: 2 });
+  assert.ok(requests.slice(1).every(item => !item.signal.aborted));
+});
+
+test("shutdown cleanup transport retains its own deadline", { timeout: 1500 }, async () => {
+  const shutdown = new AbortController(); shutdown.abort();
+  const client = new HttpCollaborationClient({ baseUrl: "https://fixture.invalid/v1", bearerToken: "fixture", signal: shutdown.signal,
+    requestTimeoutMs: 25, fetch: async (_url, init = {}) => new Promise((_resolve, reject) => {
+      assert.equal(init.signal?.aborted, false);
+      init.signal!.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+    }) });
+  // AbortSignal.timeout is deliberately unref'ed; keep this local fixture alive.
+  const keepAlive = setTimeout(() => {}, 1000);
+  try { await assert.rejects(client.acknowledgeAgentExecutionStopped("session-1", "request-1", "runtime-1", 1), { name: "TimeoutError" }); }
+  finally { clearTimeout(keepAlive); }
+});
+
 test("HTTP canonical replay accepts Cloud provenance without inventing a local runtime identity", async () => {
   const provenance: Record<string, unknown> = { ...wireProvenance(), harness: "opencode", local_session_id: "server-contained",
     capture_fidelity: "canonical_history" };

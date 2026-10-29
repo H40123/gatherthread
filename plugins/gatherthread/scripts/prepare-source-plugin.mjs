@@ -9,7 +9,8 @@ const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const BUNDLE_FILES = ["codex-connect.js", "codex-hook.js", "index.js", "mcp.js"];
 // Never package untracked files, local credentials or arbitrary plugin trees.
 const PLUGIN_FILES = [".codex-plugin/plugin.json", ".mcp.json", "hooks/hooks.json",
-  "scripts/mcp-launcher.mjs", "scripts/hook-forwarder.mjs", "skills/gatherthread/SKILL.md"];
+  "scripts/mcp-launcher.mjs", "scripts/hook-forwarder.mjs", "skills/gatherthread/SKILL.md",
+  "skills/gatherthread-config/SKILL.md"];
 const BUILD_MESSAGE = "Build the current source first: npm run build:ts && npm run build:connector. The MCP must support captured content_revision.";
 
 async function realDirectory(directory, create = false) {
@@ -53,7 +54,8 @@ export async function prepareSourcePlugin(repositoryRoot = ROOT) {
   const sourcePlugin = path.join(root, "plugins/gatherthread"), sourceBundle = path.join(root, "packages/codex-connect/dist");
   for (const directory of [path.join(root, "plugins"), sourcePlugin, path.join(sourcePlugin, ".codex-plugin"),
     path.join(sourcePlugin, "scripts"), path.join(sourcePlugin, "hooks"), path.join(sourcePlugin, "skills"),
-    path.join(sourcePlugin, "skills/gatherthread"), path.join(root, "packages"), path.join(root, "packages/codex-connect"), sourceBundle]) {
+    path.join(sourcePlugin, "skills/gatherthread"), path.join(sourcePlugin, "skills/gatherthread-config"),
+    path.join(root, "packages"), path.join(root, "packages/codex-connect"), sourceBundle]) {
     await realDirectory(directory);
   }
   const manifest = JSON.parse(await regularBytes(path.join(sourcePlugin, ".codex-plugin/plugin.json"), 32_768));

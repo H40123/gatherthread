@@ -171,6 +171,65 @@ test("switching accounts clears private task previews and ignores an old PR resp
   assert.equal(ui.el("project-code-dialog").open, false);
 });
 
+test("a pending old-project read does not block the new project's setup", async () => {
+  const old = deferred(); const reads = [];
+  const ui = fixture({ getHostedGithubStatus: (projectId) => {
+    reads.push(projectId);
+    return projectId === "p1" ? old.promise : Promise.resolve({ enabled: true, connected: true, login: "new-owner" });
+  } });
+  const loading = ui.view.refresh();
+  ui.setContext({ userId: "u2", projectId: "p2", sessionId: "s2" });
+  await ui.view.openSetup();
+  assert.deepEqual(reads, ["p1", "p2"]);
+  assert.equal(ui.el("cloud-github-owner").value, "new-owner");
+  old.resolve({ enabled: true, connected: true, login: "old-owner" }); await loading;
+  assert.equal(ui.el("cloud-github-owner").value, "new-owner");
+});
+
+test("an old operation completion cannot unlock a newer setup operation", async () => {
+  const old = deferred(); const current = deferred(); const reads = [];
+  const ui = fixture({ getHostedGithubStatus: (projectId) => {
+    reads.push(projectId); return projectId === "p1" ? old.promise : current.promise;
+  } });
+  const oldLoading = ui.view.refresh();
+  ui.setContext({ userId: "u2", projectId: "p2", sessionId: "s2" });
+  const currentLoading = ui.view.refresh();
+  assert.deepEqual(reads, ["p1", "p2"], "the new context starts independently of the old response");
+  old.resolve({ enabled: false, connected: false }); await oldLoading;
+  const duplicate = ui.view.refresh(); await settle();
+  current.resolve({ enabled: true, connected: true, login: "new-owner" });
+  await Promise.all([currentLoading, duplicate]);
+  assert.deepEqual(reads, ["p1", "p2"], "the current operation still owns the in-flight lock");
+});
+
+test("an old setup completion does not show its error in a new account", async () => {
+  const old = deferred();
+  const ui = fixture({ getHostedGithubStatus: () => old.promise });
+  const loading = ui.view.openSetup("Old account setup failed");
+  ui.setContext({ userId: "u2", projectId: "p2", sessionId: "s2" });
+  old.resolve({ enabled: false, connected: false }); await loading;
+  assert.equal(ui.el("cloud-github-error").textContent, "");
+});
+
+test("a refresh error after repository save remains visible and can be retried", async () => {
+  let fail = false; let reads = 0;
+  const ui = fixture({
+    bindHostedGithub: async () => { fail = true; },
+    getHostedGithubStatus: async () => {
+      reads++;
+      if (fail) throw Error("Repository status unavailable");
+      return { enabled: true, connected: true, login: "owner" };
+    },
+  });
+  await ui.view.refresh();
+  ui.el("cloud-github-owner").value = "owner";
+  ui.el("cloud-github-name").value = "project";
+  ui.el("cloud-github-repository-form").dispatchEvent({ type: "submit", preventDefault() {} }); await settle();
+  assert.equal(ui.el("cloud-github-error").textContent, "Repository status unavailable");
+  fail = false; await ui.view.refresh();
+  assert.equal(reads, 3); assert.equal(ui.el("cloud-github-error").textContent, "");
+});
+
 test("a content deletion clears private task/PR previews and fences their old HTTP completion", async () => {
   const late = deferred(); let reads = 0;
   const ui = fixture({ getHostedGithubTask: async () => ++reads === 1 ? task() : late.promise });
