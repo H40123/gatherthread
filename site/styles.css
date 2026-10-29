@@ -96,6 +96,14 @@ html[data-theme="dark"] .lockup-for-light { display: none; }
   position: relative; border: 1px solid var(--control-edge); background: var(--control-solid);
   color: var(--ink); background-clip: padding-box;
   box-shadow: 0 3px 10px rgba(27, 58, 49, .025), inset 0 1px 0 var(--control-spec);
+  transition: filter 180ms cubic-bezier(.22,1,.36,1), background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.language:active, .menu:active, .github:active, .button:active, .theme-toggle:active, .story-tab:active { filter: brightness(.94); }
+.menu::before, .menu::after { transition: transform 220ms cubic-bezier(.22,1,.36,1), top 220ms cubic-bezier(.22,1,.36,1); }
+.story-tab { transition: color 180ms ease, background-color 180ms ease, filter 180ms ease; }
+@media (prefers-reduced-motion: reduce) {
+  .language:active, .menu:active, .github:active, .button:active, .theme-toggle:active, .story-tab:active { filter: brightness(.94); }
 }
 .language, .menu, .theme-toggle { min-height: 44px; min-width: 48px; border-radius: 24px; padding: 0 13px; font-size: 14px; font-weight: 600; }
 .theme-toggle { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; width: 44px; padding: 0; }

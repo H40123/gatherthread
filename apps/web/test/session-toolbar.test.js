@@ -83,6 +83,22 @@ test("actions close their menu without stealing focus already moved to the timel
   assert.equal(f.document.activeElement, f.outside);
 });
 
+test("pointer presses keep menu action focus until activation without intercepting disabled buttons", () => {
+  const f = fixture(); f.summaries.trigger.fire("click");
+  const down = f.select.fire("mousedown", { button: 0 });
+  assert.equal(down.prevented, true);
+  assert.equal(f.document.activeElement, f.select);
+  f.select.fire("focusin"); assert.equal(f.summaries.panel.hidden, false);
+  let activations = 0; f.select.addEventListener("click", () => activations++);
+  f.select.fire("click"); assert.equal(activations, 1);
+  assert.equal(f.summaries.panel.hidden, true);
+  f.summaries.trigger.fire("click"); f.select.disabled = true;
+  assert.notEqual(f.select.fire("mousedown", { button: 0 }).prevented, true);
+  assert.equal(f.document.activeElement, f.summaries.trigger);
+  f.select.disabled = false;
+  assert.notEqual(f.select.fire("mousedown", { button: 2 }).prevented, true);
+});
+
 test("portalled status controls retain their disclosure and own the first Escape", () => {
   const f = fixture(); f.toolbar.open("session-options-menu"); f.details.open = true;
   f.document.body.append(f.context); f.sync.focus(); f.sync.fire("focusin"); f.sync.fire("pointerdown"); f.sync.fire("click");

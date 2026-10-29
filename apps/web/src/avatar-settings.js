@@ -1,4 +1,4 @@
-import { AVATAR_CATALOG, renderAvatar } from "./avatars.js?v=20261024-launcher-sharing-1";
+import { AVATAR_CATALOG, renderAvatar } from "./avatars.js?v=20261029-motion-1";
 
 export function mountAvatarSettings({ document, api, localizer, getUser, getRevision = () => 0, onSaved }) {
   const el = (id) => document.getElementById(id);

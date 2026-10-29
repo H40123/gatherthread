@@ -43,11 +43,22 @@ export function mountSessionToolbar({ document: doc }) {
   }
   for (const group of groups) {
     listen(group.trigger, "click", () => {
+      // Safari does not focus buttons on pointer activation. Keep Escape and
+      // keyboard traversal inside the disclosure after opening it there too.
+      group.trigger.focus({ preventScroll: true });
       if (group.panel.hidden) open(group.root.id); else close(group);
     });
     listen(group.trigger, "keydown", event => {
       if (event.key !== "ArrowDown") return;
       event.preventDefault(); open(group.root.id, { focus: true });
+    });
+    listen(group.panel, "mousedown", event => {
+      const button = event.target.closest?.("button");
+      if (event.button !== 0 || !button || button.disabled) return;
+      // Safari otherwise focuses the containing main element, which dismisses
+      // the menu before mouseup can activate the action. Keep native clicks.
+      event.preventDefault();
+      button.focus({ preventScroll: true });
     });
     listen(group.panel, "click", event => {
       const button = event.target.closest?.("button");

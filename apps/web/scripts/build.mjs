@@ -38,6 +38,8 @@ const webBuild = await build({
     "history-summary-policy": resolve(root, "src/history-summary-policy.js"),
     "file-editor": resolve(root, "src/file-editor.js"),
     "file-pdf": resolve(root, "src/file-pdf.js"),
+    motion: resolve(root, "src/motion.js"),
+    "interaction-design": resolve(root, "src/interaction-design.css"),
     styles: resolve(root, "src/styles.css"),
   },
   outdir: resolve(applicationDist, "src"),
@@ -61,15 +63,20 @@ const webBuild = await build({
 const exampleScript = await build({ entryPoints: [resolve(root, "src/example-entry.js")], outfile: "example.js", write: false,
   alias: { "@gatherthread/protocol": resolve(repositoryRoot, "packages/protocol/src/index.ts") },
   bundle: true, format: "iife", platform: "browser", target: ["safari15", "chrome100", "firefox100"], minify: true });
-const exampleStyle = await build({ stdin: { contents: '@import "./styles.css"; @import "./page-recovery.css";',
+const exampleStyle = await build({ stdin: { contents: '@import "./styles.css"; @import "./interaction-design.css"; @import "./page-recovery.css";',
   resolveDir: resolve(root, "src"), loader: "css" }, outfile: "example.css", write: false,
   bundle: true, minify: true, loader: { ".ttf": "dataurl", ".woff": "dataurl", ".woff2": "dataurl" } });
 const policy = "default-src 'none'; script-src 'nonce-gatherthread-example-v1'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'";
+let exampleStylesInserted = false;
 let exampleHtml = index.replace('<head>', `<head><meta http-equiv="Content-Security-Policy" content="${policy}">`)
   .replace(/<script async src="\.\/src\/page-recovery\.js[^" ]*"><\/script>/u, '')
   .replace(/<link[^>]+rel="(?:icon|apple-touch-icon|manifest)"[^>]*>/gu, '')
   .replace(/<link[^>]+href="\.\/src\/page-recovery\.css[^" ]*"[^>]*>/u, '')
-  .replace(/<link[^>]+rel="stylesheet"[^>]*>/u, () => `<style>${exampleStyle.outputFiles[0].text}</style>`)
+  .replace(/<link[^>]+rel="stylesheet"[^>]*>/gu, () => {
+    if (exampleStylesInserted) return "";
+    exampleStylesInserted = true;
+    return `<style>${exampleStyle.outputFiles[0].text}</style>`;
+  })
   .replace(/<script type="module" src="\.\/src\/bootstrap\.js[^" ]*"><\/script>/u,
     () => `<script nonce="gatherthread-example-v1">${exampleScript.outputFiles[0].text.replace(/<\/script/giu, '<\\/script')}</script>`);
 for (const path of new Set([...exampleHtml.matchAll(/src="(\.\/(?:brand\/[^" ]+|favicon-32x32\.png))"/gu)].map((match) => match[1]))) {

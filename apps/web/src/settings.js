@@ -78,7 +78,7 @@ export const DEFAULT_SETTINGS = deepFreeze({
     density: "comfortable",
     motion: "system",
     ambientCanvas: "pronounced",
-    highContrast: true,
+    highContrast: false,
   },
   layout: {
     leftRailPixels: 300,
@@ -160,7 +160,7 @@ export function normalizeSettings(input) {
       density: oneOf(appearance.density, ["comfortable", "compact"], DEFAULT_SETTINGS.appearance.density),
       motion: oneOf(appearance.motion, ["system", "reduce", "full"], DEFAULT_SETTINGS.appearance.motion),
       ambientCanvas: oneOf(appearance.ambientCanvas, ["off", "subtle", "pronounced"], DEFAULT_SETTINGS.appearance.ambientCanvas),
-      highContrast: appearance.highContrast !== false,
+      highContrast: typeof appearance.highContrast === "boolean" ? appearance.highContrast : DEFAULT_SETTINGS.appearance.highContrast,
     },
     layout: {
       leftRailPixels: boundedInteger(layout.leftRailPixels, 210, 420, DEFAULT_SETTINGS.layout.leftRailPixels),

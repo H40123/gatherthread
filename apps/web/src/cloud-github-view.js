@@ -1,5 +1,5 @@
-import { fillRepositoryFields, bindRepositoryFields } from "./github-setup.js?v=20261024-launcher-sharing-1";
-import { rememberGithubReturn, consumeGithubReturn } from "./github-return-context.js?v=20261024-launcher-sharing-1";
+import { fillRepositoryFields, bindRepositoryFields } from "./github-setup.js?v=20261029-motion-1";
+import { rememberGithubReturn, consumeGithubReturn } from "./github-return-context.js?v=20261029-motion-1";
 /** Private cloud repository tasks. No provider or GitHub credentials enter this module. */
 export function mountCloudGithub({ api: getApi, context, t, setText = (node, source) => { node.textContent = t(source); }, agentEnabled = false, openSurface = () => {}, document: doc = document }) {
   const el = (id) => doc.getElementById(id);

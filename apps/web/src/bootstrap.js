@@ -55,7 +55,7 @@
     confirmReload();
   }, true);
   try {
-    await import("./main.js?v=20261024-launcher-sharing-1");
+    await import("./main.js?v=20261029-motion-1");
   } catch {
     root.dataset.bootState = "failed";
     if (recovery()?.report) recovery().report("startup");
