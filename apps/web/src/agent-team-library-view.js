@@ -1,3 +1,5 @@
+import { AGENT_TEAM_CONFIG_MAX_BYTES, createAgentTeamConfiguration, parseAgentTeamConfiguration } from "@gatherthread/protocol";
+import { AGENT_TEAM_PRESETS, createAgentTeamPreset } from "./agent-team-presets.js";
 import { TEAM_ZH_CN } from "./agent-team-i18n.js";
 import { describeTeamActionError, formatTeamRunIssue, isTeamActionUncertain, teamTimeoutContinuationAvailable } from "./agent-team-diagnostics.js";
 import { mountTeamCanvas } from "./agent-team-canvas.js";
@@ -20,7 +22,7 @@ const acceptedConfigurationKey = (draft, limits) => configurationKey({ ...draft,
 { max_calls: limits.max_calls, max_duration_minutes: limits.max_duration_minutes });
 
 export function mountAgentTeams({ document: doc, api, hostButton, getContext, onChange = () => {},
-  refreshSources = async () => {}, onExit = () => {},
+  refreshSources = async () => {}, onExit = () => {}, onConfigureWithAi = null,
   makeKey = prefix => `${prefix}-${crypto.randomUUID()}`, confirm = message => globalThis.confirm(message) }) {
   const t = text => doc.documentElement.lang.startsWith("zh") ? TEAM_ZH_CN[text] ?? text : text;
   const translations = [];
@@ -48,7 +50,11 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   libraryActions.append(count, refreshButton);
   const add = button("Add Agent Team", () => openEditor(null), "team-glass team-add-team"); add.id = "team-add";
   const overviewBack = makeAgentDialogButton({ document: doc, kind: "back", label: t("Back"), id: "team-library-back", onClick: () => closeDialog() });
-  overview.append(overviewBack, intro, libraryActions, list, add);
+  const createActions = el("div", "team-create-actions"), aiButton = button("Let AI configure it", () => void configureWithAi(false), "team-glass team-enable"),
+    presetButton = button("Choose a preset", () => showPresets(false)), importButton = button("Import JSON", () => showConfiguration(true));
+  aiButton.id = "team-configure-ai"; presetButton.id = "team-preset"; importButton.id = "team-import";
+  createActions.append(aiButton, presetButton, importButton);
+  overview.append(overviewBack, intro, createActions, libraryActions, list, add);
   const editor = el("section", "team-editor"); editor.hidden = true;
   const back = makeAgentDialogButton({ document: doc, kind: "back", label: t("Back"), id: "team-editor-back", onClick: () => backToTeams() });
   back.classList.add("team-back");
@@ -62,7 +68,13 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   for (const [node, id] of [[addBlank, "team-add-blank"], [addFavorite, "team-add-favorite"], [saveButton, "team-save"], [clearButton, "team-clear"]]) node.id = id;
   toolbar.append(addBlank, addFavorite, saveButton, clearButton);
   const graphHost = el("div", "team-canvas");
-  const configLink = button("View configuration", () => showRelationships(), "text-button team-config-link");
+  const configLink = button("Edit JSON", () => showConfiguration(false), "text-button");
+  configLink.id = "team-config-json";
+  const editorOptions = el("div", "team-editor-options"), editorPreset = button("Choose a preset", () => showPresets(true), "text-button"),
+    resetPreset = button("Reset preset", () => applyPreset(activePresetId, true, true), "text-button"),
+    editorAi = button("Let AI configure it", () => void configureWithAi(true), "text-button");
+  editorPreset.id = "team-editor-preset"; resetPreset.id = "team-preset-reset"; editorAi.id = "team-editor-ai";
+  editorOptions.append(configLink, editorPreset, resetPreset, editorAi);
   const lower = el("div", "team-editor-bottom"), configuration = el("div", "team-configuration"), inspector = el("section", "team-inspector");
   const limits = el("fieldset", "team-limits"), calls = input("max-calls"), minutes = input("max-minutes");
   for (const [node, max, property] of [[calls, 48, "max_calls"], [minutes, 120, "max_duration_minutes"]]) {
@@ -80,7 +92,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   const testNote = el("p", "team-test-note field-help");
   translations.push(() => { testNote.textContent = t("Tests check every module and data flow. Provider and shared-Agent allowances still apply.");
     summary.textContent = t("Team rules"); nameInput.placeholder = t("Team name"); });
-  editor.append(back, field("Team name", nameInput), toolbar, graphHost, configLink, lower, testNote);
+  editor.append(back, field("Team name", nameInput), toolbar, graphHost, editorOptions, lower, testNote);
   const records = el("details", "team-run-records"), recordTitle = el("summary", "", t("Run records")), runList = el("div", "team-runs"); records.append(recordTitle, runList);
   translations.push(() => { recordTitle.textContent = t("Run records"); });
   body.append(overview, editor, records);
@@ -100,10 +112,10 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   secondaryTitle.id = "team-secondary-title"; secondary.setAttribute("aria-labelledby", secondaryTitle.id);
   const secondaryHeader = el("header", "team-heading");
   const secondaryClose = makeAgentDialogButton({ document: doc, kind: "close", label: t("Close"), id: "team-secondary-close", onClick: () => closeDialog(true) });
-  const secondaryBack = makeAgentDialogButton({ document: doc, kind: "back", label: t("Back"), id: "team-secondary-back", onClick: () => secondary.close() });
+  const secondaryBack = makeAgentDialogButton({ document: doc, kind: "back", label: t("Back"), id: "team-secondary-back", onClick: () => closeSecondary() });
   const secondaryNavigation = el("div", "agent-dialog-navigation"); secondaryNavigation.append(secondaryBack);
   secondaryHeader.append(secondaryTitle, secondaryClose); secondary.append(secondaryHeader, secondaryNavigation, secondaryBody); doc.body.append(secondary);
-  secondary.addEventListener("cancel", event => { event.preventDefault(); secondary.close(); });
+  secondary.addEventListener("cancel", event => { event.preventDefault(); closeSecondary(); });
 
   let scope = "", generation = 0, epoch = 0, readBusy = false, refreshTimer, teams = [], favorites = [], runs = [], testRuns = [], runRefreshFailed = false, hadTaskActivity = false,
     editId = null, draft = null, budgets = null, baseRevision = null, baseline = null, dirty = false, draftVersion = 0, editorSession = 0, selectedKey = "", returnFocus, catalogSignature = "", writableState, secondaryMode = "", refreshFavoriteControl = null;
@@ -111,7 +123,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   const actionKinds = new WeakMap(), problemIntents = new WeakMap(), problemFences = new WeakMap(), obsoleteProblems = new WeakSet(), testReads = new Map();
   let runAuthority = 0, runAccessBlocked = false, observedContentRevision;
   let pageActive = true, leaveIntent = null, leaveSaving = null;
-  let displayedProblem = null, displayedProblemText = null;
+  let displayedProblem = null, displayedProblemText = null, activePresetId = null, configuringAi = false, jsonRevision = 0, jsonBaseline = null, jsonImportMode = false;
   const canvas = mountTeamCanvas({ document: doc, host: graphHost, t, makeId: makeKey, getDraft: () => draft,
     onChange: changed, onSelection: () => renderInspector() });
   const context = () => getContext() ?? {};
@@ -247,7 +259,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
     leaveIntent = null; leaveSaving = null; renderLeavePrompt();
     editId = null; dirty = false; draft = null; baseline = null; clearTimeout(refreshTimer); readBusy = false;
     if (secondary.open) secondary.close(); if (dialog.open) dialog.close();
-    refreshFavoriteControl = null; secondaryMode = ""; secondaryTitle.textContent = ""; secondaryBody.replaceChildren();
+    refreshFavoriteControl = null; secondaryMode = ""; activePresetId = null; configuringAi = false; jsonRevision++; secondaryTitle.textContent = ""; secondaryBody.replaceChildren();
     nameInput.value = ""; calls.value = ""; minutes.value = ""; rulesInput.value = ""; inspector.replaceChildren();
     overview.hidden = false; editor.hidden = true; title.textContent = t("My Agent teams"); error.textContent = ""; status.textContent = "";
     canvas.select(null); canvas.render(); render();
@@ -506,15 +518,17 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   }
   function openEditor(team) {
     if (team === null && teams.length >= 5) { showLocalError("Team limit reached (5). Delete one to add another."); return; }
-    if (dirty && !confirm(t("Discard unsaved changes?"))) return;
+    if (dirty && !confirm(t("Discard unsaved changes?"))) return false;
     leaveIntent = null; renderLeavePrompt();
     editorSession++; editId = team?.id ?? makeKey("team"); baseRevision = team?.revision ?? null;
     draft = team ? structuredClone(team.draft) : { name: t("New Agent Team"), team_prompt: "", nodes: [], edges: [] };
     budgets = { max_calls: team?.max_calls ?? 12, max_duration_minutes: team?.max_duration_minutes ?? 30 };
     baseline = team ? configurationKey(draft, budgets) : null;
+    activePresetId = AGENT_TEAM_PRESETS.find(preset => draft.nodes.length && draft.nodes.every(node => node.id.startsWith(`${preset.id}.`)))?.id ?? null;
     dirty = !team; draftVersion++; nameInput.value = draft.name; calls.value = String(budgets.max_calls); minutes.value = String(budgets.max_duration_minutes); rulesInput.value = draft.team_prompt;
     overview.hidden = true; editor.hidden = false; title.textContent = t("Edit my Agent team"); canvas.select(null); canvas.resetView(draft.entry_node_id); renderInspector(); renderButtons(); nameInput.focus();
     if (team?.test_status === "failed") void loadTestFailure(team);
+    return true;
   }
   async function loadTestFailure(team) {
     if (runAccessBlocked || !team?.test_run_id || !team.test_session_id || !api.getTeamRun || testRuns.some(run => run.id === team.test_run_id)
@@ -548,6 +562,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   function requestLeave(kind) {
     if (!dialog.open) return false;
     if (!current(generation)) { updateContext(); return false; }
+    if (!confirmDiscardJson()) return false;
     const intent = { kind, generation, id: editId };
     if (!dirty && !editorWrites().length) return finishLeave(intent);
     leaveIntent = intent;
@@ -710,15 +725,149 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
       inspector.append(endpointsGrid, directions, remove);
     }
   }
-  function showRelationships() {
-    secondaryMode = "relationships"; secondaryTitle.textContent = t("Configuration relationships"); secondaryBody.replaceChildren();
-    const relationships = el("ol", "team-relationships");
-    for (const edge of draft?.edges ?? []) {
-      const from = draft.nodes.find(node => node.id === edge.source), to = draft.nodes.find(node => node.id === edge.target);
-      relationships.append(el("li", "", `${from?.label ?? edge.source} ${edge.direction === "bidirectional" ? "↔" : "→"} ${to?.label ?? edge.target}`));
+  function confirmDiscardJson() {
+    const source = secondary.open && secondaryMode === "json" && doc.getElementById("team-json-source");
+    return !source || source.value === jsonBaseline || confirm(t("Discard unapplied JSON edits?"));
+  }
+  function closeSecondary() { if (confirmDiscardJson()) secondary.close(); }
+  function getConfigurationContext() {
+    if (!draft || editor.hidden || !context().writable) return null;
+    try { return createAgentTeamConfiguration({ draft, ...budgets }); } catch { return null; }
+  }
+  function replaceDraft(configuration) {
+    draft = structuredClone(configuration.draft);
+    budgets = { max_calls: configuration.max_calls, max_duration_minutes: configuration.max_duration_minutes };
+    nameInput.value = draft.name; calls.value = String(budgets.max_calls); minutes.value = String(budgets.max_duration_minutes);
+    rulesInput.value = draft.team_prompt; changed(); canvas.select(null); canvas.resetView(draft.entry_node_id); renderInspector();
+  }
+  function importConfiguration(text) {
+    // Parse before opening a sheet or replacing any local work.
+    const configuration = parseAgentTeamConfiguration(text);
+    return importParsedConfiguration(configuration);
+  }
+  function importParsedConfiguration(configuration, acceptedJson = false) {
+    updateContext();
+    if (!acceptedJson && !confirmDiscardJson()) return false;
+    if (hostButton.disabled || !context().writable) return false;
+    if (editorWrites().length) return showImportError("Check the previous action before replacing this draft.");
+    if (teams.length >= 5) return showImportError("Team limit reached (5). Delete one to add another.");
+    if (!openEditor(null)) return false;
+    activePresetId = null; replaceDraft(configuration);
+    if (!dialog.open) { returnFocus = doc.activeElement; dialog.showModal(); }
+    if (secondary.open) secondary.close();
+    nameInput.focus();
+    return true;
+  }
+  function showImportError(message) {
+    // Reply previews can import while the Team dialog is closed. Make their
+    // refusal actionable without replacing an editor or its uncertain write.
+    if (!dialog.open) {
+      returnFocus = doc.activeElement;
+      if (!draft) { overview.hidden = false; editor.hidden = true; title.textContent = t("My Agent teams"); }
+      dialog.showModal(); render();
+      (editor.hidden ? overviewBack : nameInput).focus();
     }
-    if (relationships.children.length) secondaryBody.append(relationships); else secondaryBody.append(el("p", "field-help", t("No data flows yet.")));
-    if (!secondary.open) secondary.showModal();
+    showLocalError(message);
+    return false;
+  }
+  async function configureWithAi(fromEditor) {
+    if (!onConfigureWithAi || configuringAi || !context().writable) return;
+    if (editorWrites().length) { showLocalError("Check the previous action before replacing this draft."); return; }
+    const configuration = fromEditor ? getConfigurationContext() : null;
+    if (fromEditor && !configuration) { showLocalError("Fix the configuration before asking AI to edit it."); return; }
+    if (configuration && JSON.stringify(configuration).length > 6000) {
+      showLocalError("This Team is too large for an AI setup chat. Edit or download its JSON instead. Your unsaved changes are kept.");
+      return;
+    }
+    if (dirty && !confirm(t("Continue in a new Solo chat? Your current configuration will be included as an unsaved draft."))) return;
+    const gen = generation, session = editorSession, version = draftVersion;
+    configuringAi = true; renderButtons();
+    try {
+      const accepted = await onConfigureWithAi(configuration);
+      if (accepted === true && current(gen) && session === editorSession && version === draftVersion && dialog.open) {
+        finishLeave({ kind: "management", generation: gen, id: editId });
+      }
+    } catch {
+      if (current(gen)) showLocalError("Unable to open the AI configuration chat. Your draft is kept.");
+    } finally { if (current(gen)) { configuringAi = false; renderButtons(); } }
+  }
+  function applyPreset(id, inEditor, reset = false) {
+    if (!context().writable || configuringAi || !id) return false;
+    if (editorWrites().length) { showLocalError("Check the previous action before replacing this draft."); return false; }
+    if (inEditor && draft && !confirm(t(reset
+      ? "Reset prompts and connections to this preset? Matching modules keep your selected Agents."
+      : "Replace this draft with the selected preset? Selected Agents will be cleared."))) return false;
+    const configuration = createAgentTeamPreset(id, doc.documentElement.lang, reset ? draft : null);
+    if (!inEditor && !openEditor(null)) return false;
+    activePresetId = id; replaceDraft(configuration);
+    if (secondary.open) secondary.close();
+    nameInput.focus();
+    return true;
+  }
+  function showPresets(inEditor) {
+    secondaryMode = inEditor ? "presets:editor" : "presets:library"; secondaryTitle.textContent = t("Choose a preset"); secondaryBody.replaceChildren();
+    const help = el("p", "field-help", t("Roles and data flows are ready. Choose an Agent and model for each module, then save and test."));
+    const cards = el("div", "team-preset-grid"), zh = doc.documentElement.lang.startsWith("zh");
+    for (const preset of AGENT_TEAM_PRESETS) {
+      const card = button("", () => applyPreset(preset.id, inEditor), "team-glass team-preset-card"); card.id = `team-preset-${preset.id}`;
+      card.append(el("strong", "", zh ? preset.zh : preset.en), el("span", "field-help", zh ? preset.zhDescription : preset.enDescription));
+      card.disabled = !context().writable; cards.append(card);
+    }
+    secondaryBody.append(help, cards); if (!secondary.open) secondary.showModal();
+  }
+  function showConfiguration(asImport) {
+    secondaryMode = "json"; jsonRevision++; jsonImportMode = asImport;
+    const gen = generation, session = editorSession, version = draftVersion, revision = jsonRevision;
+    const startingKey = asImport ? null : configurationKey(draft, budgets);
+    secondaryTitle.textContent = t(asImport ? "Import JSON" : "Edit JSON"); secondaryBody.replaceChildren();
+    const description = el("p", "field-help", t("Apply to an unsaved draft. Save, test and enable it separately. Never include passwords or API keys."));
+    description.dataset.teamI18n = "Apply to an unsaved draft. Save, test and enable it separately. Never include passwords or API keys.";
+    const textarea = el("textarea", "team-json-editor"); textarea.id = "team-json-source"; textarea.spellcheck = false;
+    textarea.setAttribute("aria-label", t("Team JSON configuration")); textarea.setAttribute("dir", "ltr");
+    const configuration = asImport ? createAgentTeamConfiguration({ draft: { name: t("New Agent Team"), team_prompt: "", nodes: [], edges: [] },
+      max_calls: 12, max_duration_minutes: 30 }) : { $schema: "https://gatherthread.cn/schemas/agent-team.v1.schema.json", version: 1, kind: "gatherthread.agent-team", draft, ...budgets };
+    textarea.value = JSON.stringify(configuration, null, 2); jsonBaseline = textarea.value;
+    const feedback = el("p", "form-error"); feedback.id = "team-json-error"; feedback.setAttribute("role", "alert");
+    const alive = () => current(gen) && secondary.open && secondaryMode === "json" && jsonRevision === revision && editorSession === session;
+    const jsonProblem = message => { feedback.dataset.teamI18n = message; feedback.textContent = t(message); };
+    const report = problem => jsonProblem(problem?.path === "file_size"
+      ? "Configuration files must be at most 128 KiB." : "Invalid configuration. Check the JSON syntax and schema fields.");
+    const actions = el("div", "team-json-actions"), upload = el("input"); upload.type = "file"; upload.accept = ".json,application/json"; upload.hidden = true; upload.id = "team-json-file";
+    const pick = button("Open JSON file", () => upload.click());
+    upload.addEventListener("change", async () => {
+      const file = upload.files?.[0]; if (!file || !alive()) return;
+      const original = textarea.value;
+      try {
+        if (file.size > AGENT_TEAM_CONFIG_MAX_BYTES) { report({ path: "file_size" }); return; }
+        const text = await file.text();
+        if (!alive() || textarea.value !== original) return;
+        const parsed = parseAgentTeamConfiguration(text);
+        textarea.value = JSON.stringify(parsed, null, 2); jsonProblem("");
+      } catch (problem) { if (alive()) report(problem); }
+      finally { upload.value = ""; }
+    });
+    const download = button("Download JSON", () => {
+      try {
+        const parsed = parseAgentTeamConfiguration(textarea.value), url = URL.createObjectURL(new Blob([JSON.stringify(parsed, null, 2) + "\n"], { type: "application/json" }));
+        const link = el("a"); link.href = url; link.download = "gatherthread-team.json"; doc.body.append(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000); jsonProblem("");
+      } catch (problem) { report(problem); }
+    });
+    const docs = el("a", "text-button", t("Configuration guide")); docs.href = "https://github.com/TH060419/gatherthread/blob/main/docs/AGENT_TEAM_CONFIGURATION.md";
+    docs.target = "_blank"; docs.rel = "noopener noreferrer"; docs.dataset.teamI18n = "Configuration guide";
+    const apply = button("Apply to draft", () => {
+      if (!alive() || !context().writable || configuringAi) return;
+      if (editorWrites().length || !asImport && (draftVersion !== version || configurationKey(draft, budgets) !== startingKey)) { jsonProblem("The draft changed. Reopen JSON to edit the latest version."); return; }
+      try {
+        const parsed = parseAgentTeamConfiguration(textarea.value);
+        if (asImport) { if (!importParsedConfiguration(parsed, true)) {
+          jsonProblem("Import was not applied. Keep this file open or return to the draft."); return;
+        } }
+        else { replaceDraft(parsed); secondary.close(); nameInput.focus(); }
+      } catch (problem) { report(problem); }
+    }, "team-glass team-enable"); apply.id = "team-json-apply"; apply.disabled = !context().writable;
+    actions.append(pick, download, docs); secondaryBody.append(description, actions, upload, field("Team JSON configuration", textarea), feedback, apply);
+    if (!secondary.open) secondary.showModal(); textarea.focus();
   }
   function showFavorites() {
     const previous = doc.activeElement, focusKey = previous?.dataset?.teamFavoriteControl;
@@ -747,7 +896,16 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
   function renderButtons() {
     const team = saved(), pending = pendingFor(editId), stopping = intents.get(`disable:${editId}`), enabling = pendingEnable(editId);
     const saving = pending.some(intent => intent.kind === "save");
-    const writable = context().writable;
+    const writable = context().writable && !configuringAi;
+    aiButton.hidden = editorAi.hidden = !onConfigureWithAi;
+    aiButton.disabled = editorAi.disabled = !writable || Boolean(editorWrites().length);
+    presetButton.disabled = importButton.disabled = !writable || teams.length >= 5;
+    editorPreset.disabled = resetPreset.disabled = !writable || Boolean(editorWrites().length);
+    resetPreset.hidden = !activePresetId;
+    configLink.disabled = !draft || configuringAi;
+    const jsonApply = secondaryMode === "json" && doc.getElementById("team-json-apply");
+    if (jsonApply) jsonApply.disabled = !writable;
+    if (secondaryMode.startsWith("presets:")) for (const card of secondaryBody.querySelectorAll(".team-preset-card")) card.disabled = !writable;
     for (const input of [nameInput, rulesInput, calls, minutes]) input.disabled = !writable;
     saveButton.textContent = t(saving ? "Saving…" : dirty ? "Save" : "Saved"); saveButton.disabled = !writable || !dirty || saving;
     addBlank.disabled = !writable || !draft || draft.nodes.length >= 16; clearButton.disabled = !writable || !draft?.nodes.length;
@@ -885,7 +1043,7 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
     const intent = intents.get("start-task"); if (intent) intent.previousEvents = previousEvents;
     return pending;
   }
-  return { updateContext, refresh, open: () => hostButton.click(),
+  return { updateContext, refresh, open: () => hostButton.click(), importConfiguration, getConfigurationContext,
     refreshLanguage() { translations.forEach(update => update());
       for (const navigation of [overviewBack, back, secondaryBack]) navigation.refreshLabel(t("Back"));
       for (const navigation of [close, secondaryClose]) navigation.refreshLabel(t("Close"));
@@ -894,7 +1052,8 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
       title.textContent = t(editor.hidden ? "My Agent teams" : "Edit my Agent team");
       rulesInput.setAttribute("aria-label", t("Team rules"));
       if (draft) { canvas.render(); renderInspector(); }
-      if (secondary.open) { if (secondaryMode === "favorites") showFavorites(); else if (secondaryMode === "relationships") showRelationships(); }
+      if (secondary.open && secondaryMode === "json") { secondaryTitle.textContent = t(jsonImportMode ? "Import JSON" : "Edit JSON"); doc.getElementById("team-json-source")?.setAttribute("aria-label", t("Team JSON configuration")); }
+      if (secondary.open) { if (secondaryMode === "favorites") showFavorites(); else if (secondaryMode.startsWith("presets:")) showPresets(secondaryMode === "presets:editor"); }
       render(); if (displayedProblem) showError(displayedProblem); else if (displayedProblemText) error.textContent = t(displayedProblemText); },
     t, choices: () => teams.filter(team => team.enabled && canEnable(team)).map(team => ({ key: `team:${team.id}`, label: team.draft.name, team })),
     selected: () => teams.find(team => `team:${team.id}` === selectedKey), select(key) { selectedKey = key; }, selectionKey: () => selectedKey,

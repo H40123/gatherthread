@@ -4,7 +4,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const revision = "20261029-motion-1";
+const revision = "20261030-config-1";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const sourceRoot = path.join(root, "src");
 
@@ -31,6 +31,7 @@ test("all affected dependency paths use one revision, including API, deletion, n
     "domain.js", "dsh.js", "github-code-sync-view.js", "github-return-context.js", "github-setup.js", "history-summaries.js",
     "history-summary-view.js", "i18n.js", "main.js", "message-actions.js", "message-deletion.js", "mobile-workspace.js", "onboarding-content.js",
     "personal-cloud-api.js", "realtime.js", "settings.js", "session-toolbar.js", "motion.js",
+    "agent-team-library-view.js", "workspace-files.js", "configuration.js", "configuration-assistant.js", "solo-drafts.js",
   ]);
   let expanded = true;
   while (expanded) {

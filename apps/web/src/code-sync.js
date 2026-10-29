@@ -1,4 +1,4 @@
-import { createIdempotencyKey, isExecutionRuntime } from "./domain.js?v=20261029-motion-1";
+import { createIdempotencyKey, isExecutionRuntime } from "./domain.js?v=20261030-config-1";
 
 export const CODE_JOB_KINDS = new Set([
   "code_sync_status", "code_upload", "code_download", "code_recover",

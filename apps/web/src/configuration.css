@@ -1,0 +1,10 @@
+.configuration-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 24px; }
+.configuration-dialog h2 { margin: 0 0 10px; }
+.configuration-dialog p { line-height: 1.5; }
+.configuration-dialog textarea { display: block; box-sizing: border-box; width: 100%; min-height: min(45dvh, 440px); resize: vertical; font: 13px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; padding: 14px; tab-size: 2; }
+.configuration-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.configuration-dialog .form-error { white-space: pre-wrap; overflow-wrap: anywhere; }
+.configuration-skill { display: inline-flex; align-items: center; gap: 6px; font-size: .85em; border: 1px solid var(--border); border-radius: 10px; padding: 5px 9px; margin-bottom: 6px; color: var(--accent); }
+.configuration-skill[hidden] { display: none; }
+.configuration-import { margin-top: 10px; }
+@media (max-width: 600px) { .configuration-dialog { padding: 16px; } .configuration-actions .button { flex: 1 1 40%; } }

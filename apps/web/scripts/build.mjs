@@ -30,9 +30,16 @@ await cp(resolve(productRoot, "assets"), resolve(dist, "assets"), { recursive: t
 await cp(resolve(root, "index.html"), resolve(applicationDist, "index.html"));
 await cp(resolve(root, "src"), resolve(applicationDist, "src"), { recursive: true });
 await cp(resolve(root, "brand"), resolve(applicationDist, "brand"), { recursive: true });
+await mkdir(resolve(dist, "schemas"), { recursive: true });
+for (const schema of ["preferences.v1.schema.json", "agent-team.v1.schema.json"]) {
+  await cp(resolve(repositoryRoot, "docs/configuration", schema), resolve(dist, "schemas", schema));
+}
 const webBuild = await build({
   entryPoints: {
     api: resolve(root, "src/api.js"),
+    configuration: resolve(root, "src/configuration.js"),
+    "agent-team-library-view": resolve(root, "src/agent-team-library-view.js"),
+    "configuration-assistant": resolve(root, "src/configuration-assistant.js"),
     markdown: resolve(root, "src/markdown.js"),
     onboarding: resolve(root, "src/onboarding.js"),
     "history-summary-policy": resolve(root, "src/history-summary-policy.js"),

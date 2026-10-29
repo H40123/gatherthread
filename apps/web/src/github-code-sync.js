@@ -1,4 +1,4 @@
-import { codeRuntimeChoices, codeErrorText } from "./code-sync.js?v=20261029-motion-1";
+import { codeRuntimeChoices, codeErrorText } from "./code-sync.js?v=20261030-config-1";
 
 export const GITHUB_CODE_JOB_KINDS = new Set([
   "github_auth_connect",

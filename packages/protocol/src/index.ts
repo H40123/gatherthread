@@ -13,6 +13,8 @@ export * from "./test-gate.js";
 export * from "./agent-sharing.js";
 export * from "./agent-team.js";
 export * from "./agent-team-library.js";
+export * from "./agent-team-config.js";
+export * from "./configuration.js";
 
 export const sessionModes = ["solo", "multi"] as const;
 export const membershipRoles = ["owner", "participant", "viewer"] as const;

@@ -97,7 +97,7 @@ test("unrelated Settings saves preserve Claude's pin; only the device change han
   element("settings-dsh-runtime").value = runtime.id;
   const context = vm.createContext({ state: { project: { id: projectId }, executionRuntimes: [{ ...runtime, execution_profiles: [
     { provider: "anthropic", model: runtime.model, reasoning_efforts: ["low"], default_reasoning_effort: "low" },
-  ] }], devices: [], settings: saved }, settingsPreview: saved, element,
+  ] }], devices: [], settings: saved }, settingsPreview: saved, element, importedAgentDefaults: undefined,
     DSH_HARNESS: "deepseek-harness", normalizeSettings, projectDshProfile: () => null, projectClaudeProfile,
     withProjectDshProfile: () => { throw new Error("Not a DSH preference"); }, withProjectClaudeProfile,
     withProjectCodexProfile, withProjectCloudProfile, withProjectEnabledHarnesses, withProjectAgentHarness,

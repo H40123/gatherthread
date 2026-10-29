@@ -1,10 +1,10 @@
-import { fillRepositoryFields, bindRepositoryFields } from "./github-setup.js?v=20261029-motion-1";
-import { rememberGithubReturn, consumeGithubReturn } from "./github-return-context.js?v=20261029-motion-1";
+import { fillRepositoryFields, bindRepositoryFields } from "./github-setup.js?v=20261030-config-1";
+import { rememberGithubReturn, consumeGithubReturn } from "./github-return-context.js?v=20261030-config-1";
 /** Private cloud repository tasks. No provider or GitHub credentials enter this module. */
 export function mountCloudGithub({ api: getApi, context, t, setText = (node, source) => { node.textContent = t(source); }, agentEnabled = false, openSurface = () => {}, document: doc = document }) {
   const el = (id) => doc.getElementById(id);
   const dialog = el("project-code-dialog");
-  let generation = 0, selected = null, taskRows = [], key = "", pending = false, bindingKey;
+  let generation = 0, selected = null, taskRows = [], key = "", pending = null, bindingKey;
   let stage = "account", connectionStatus = null;
   let authorizationCompletion;
   function returnStorage() { try { return window.sessionStorage; } catch { return null; } }
@@ -26,13 +26,18 @@ export function mountCloudGithub({ api: getApi, context, t, setText = (node, sou
   }
   async function action(fn) {
     if (pending) return;
-    pending = true; message("");
-    const gen = generation;
-    try { await fn(); } catch (error) { if (gen === generation) message(error.message); }
-    finally { pending = false; }
+    const operation = { generation }; pending = operation; message("");
+    try { await fn(); }
+    catch (error) { if (pending === operation && operation.generation === generation) message(error.message); }
+    finally { if (pending === operation) pending = null; }
   }
-  function clear() {
-    generation++; selected = null; taskRows = []; bindingKey = undefined; connectionStatus = null;
+  function clear({ preserveAction = false } = {}) {
+    generation++;
+    // Context changes release the old UI operation immediately. Its late completion
+    // must not unlock or report errors over a new account's in-flight action.
+    if (preserveAction && pending) pending.generation = generation;
+    else pending = null;
+    selected = null; taskRows = []; bindingKey = undefined; connectionStatus = null;
     showStage("account"); el("github-cloud-detail").hidden = true;
     el("cloud-github-parent").value = ""; el("cloud-github-selected").textContent = "";
     el("cloud-github-changes").replaceChildren(); el("cloud-github-task-list").replaceChildren();
@@ -168,7 +173,7 @@ export function mountCloudGithub({ api: getApi, context, t, setText = (node, sou
       const gen = generation;
       await getApi().bindHostedGithub(context().projectId, { repository: el("cloud-github-repository").value.trim(), base_branch: el("cloud-github-base").value.trim() });
       if (gen !== generation) return;
-      clear(); await refresh();
+      clear({ preserveAction: true }); await refresh();
     });
   });
   el("cloud-github-edit").addEventListener("click", () => showStage("repository"));
@@ -177,7 +182,7 @@ export function mountCloudGithub({ api: getApi, context, t, setText = (node, sou
   el("cloud-github-disconnect").addEventListener("click", () => void action(async () => {
     const gen = generation;
     await getApi().disconnectHostedGithub(); if (gen !== generation) return;
-    clear(); await refresh();
+    clear({ preserveAction: true }); await refresh();
   }));
   el("cloud-github-pr-form").addEventListener("submit", (event) => {
     event.preventDefault(); const task = selected; if (!task) return;
@@ -221,7 +226,7 @@ export function mountCloudGithub({ api: getApi, context, t, setText = (node, sou
   el("cloud-github-delete").addEventListener("click", () => void action(async () => {
     if (!selected) return; const gen = generation;
     await getApi().deleteHostedGithubTask(selected.id); if (gen !== generation) return;
-    clear(); await refresh();
+    clear({ preserveAction: true }); await refresh();
   }));
   const poll = setInterval(() => { if (dialog.open && !el("code-github-panel").hidden && !doc.hidden && taskRows.some((task) => task.state === "running")) void action(refresh); }, 5000);
   window.addEventListener("pagehide", () => clearInterval(poll), { once: true });
@@ -252,10 +257,10 @@ export function mountCloudGithub({ api: getApi, context, t, setText = (node, sou
       return task;
     },
     async openSetup(error = "") {
-      updateContext();
+      updateContext(); const gen = generation;
       openSurface();
       await action(refresh);
-      if (error) message(error);
+      if (error && gen === generation) message(error);
     },
     async completeAuthorization() {
       if (authorizationCompletion) return authorizationCompletion;

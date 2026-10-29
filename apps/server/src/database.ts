@@ -2436,6 +2436,25 @@ export class CollaborationDatabase {
     });
   }
 
+  discardEmptySolo(actor: Actor, sessionId: string): { session_id: string; discarded: boolean } {
+    return this.transaction(() => {
+      this.assertActiveDevice(actor);
+      const role = this.membershipRole(sessionId, actor.user_id);
+      if (role === null) throw notFound("Session");
+      const session = this.requireSession(sessionId);
+      if (role === "viewer" || session.owner_user_id !== actor.user_id) throw notFound("Session");
+      // Check and delete in the same write transaction: a concurrent accepted
+      // message, summary, run or erasure permanently protects this conversation.
+      const used = this.sqlite.prepare(`SELECT 1 FROM events WHERE session_id = ?
+        AND (sequence != 1 OR type != 'session_state_change' OR json_extract(payload_json, '$.action') IS NOT 'created') LIMIT 1`).get(sessionId);
+      if (session.mode !== "solo" || used) return { session_id: sessionId, discarded: false };
+      this.fenceSharedExecutionsInsideTransaction({ session_id: sessionId });
+      this.sqlite.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+      this.touchProject(session.project_id);
+      return { session_id: sessionId, discarded: true };
+    });
+  }
+
   createInvitation(actor: Actor, sessionId: string, input: {
     role: InvitationRole;
     ttl?: InvitationTtl | undefined;

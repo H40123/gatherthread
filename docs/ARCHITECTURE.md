@@ -207,6 +207,8 @@ recorded separately in the release and operator receipts.
 
 ## Saved Agent Teams (local implementation preview)
 
+Portable configuration is defined in `packages/protocol/src/configuration.ts` and `agent-team-config.ts`. Web editors stage imports for review; MCP exposes static schema and validation only. The `/gatherthread-config` assistant uses the existing explicit request path, with a new private Solo and no automatic send. Its lifecycle and the conditional empty-Solo endpoint are specified in [ADR-0064](adr/0064-portable-configuration-and-empty-solo.md).
+
 `agent-team-library.ts` owns account-private saved definitions, favorite module
 snapshots, revisioned test/enable state and idempotent metadata receipts. These
 records are independent of any project or session. `agent-team-store.ts` owns

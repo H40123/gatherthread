@@ -1,4 +1,4 @@
-import { createIdempotencyKey } from "./domain.js?v=20261029-motion-1";
+import { createIdempotencyKey } from "./domain.js?v=20261030-config-1";
 
 function bytesLabel(bytes) {
   const value = Number(bytes) || 0;

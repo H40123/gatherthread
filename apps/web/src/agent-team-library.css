@@ -23,6 +23,18 @@
 .agent-team-dialog .team-danger { color: var(--danger); }
 .agent-team-dialog .team-glass.team-danger { border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); background: color-mix(in srgb, var(--danger) 7%, var(--paper-raised)); }
 .agent-team-dialog .team-enable { color: var(--teal); background: var(--teal-wash); border-color: color-mix(in srgb, var(--teal) 42%, var(--line)); }
+.team-create-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.team-create-actions > button { flex: 1 1 150px; }
+.team-editor-options, .team-json-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }
+.team-editor-options { margin-top: -8px; }
+.agent-team-dialog .team-editor-options .text-button { min-height: 36px; font-size: .75rem; }
+.agent-team-dialog .team-json-editor { min-height: min(48vh, 440px); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8125rem; line-height: 1.6; tab-size: 2; }
+.team-json-actions { margin: 12px 0; }
+.team-json-actions > a { font-size: .8125rem; }
+.team-preset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px,100%),1fr)); gap: 10px; }
+.agent-team-dialog .team-preset-card { display: grid; gap: 8px; padding: 16px; text-align: start; }
+.team-preset-card strong { font-size: .875rem; }
+.team-preset-card .field-help { margin: 0; line-height: 1.5; font-weight: 400; color: var(--ink-soft); }
 .team-library-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .team-library-list { display: grid; gap: 8px; list-style: none; padding: 0; margin: 12px 0; }
 .team-library-row { display: flex; align-items: stretch; gap: 8px; padding: 5px; min-width: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--paper-muted); }
@@ -88,7 +100,6 @@
 .team-canvas-tools { display: flex; position: absolute; right: 12px; bottom: 12px; z-index: 4; gap: 4px; }
 .agent-team-dialog .team-canvas-tools .team-glass { min-height: 36px; min-width: 36px; padding: 5px 9px; font-size: .75rem; }
 .team-canvas-empty { position: absolute; top: 90px; left: 32px; max-width: 300px; color: var(--ink-soft); font-size: .8125rem; }
-.team-config-link { justify-self: start; margin-top: -8px; min-height: 28px; font-size: .75rem; }
 .team-editor-bottom { display: grid; grid-template-columns: minmax(0,3fr) minmax(150px,1fr); gap: 20px; align-items: stretch; }
 .team-configuration { display: grid; gap: 16px; }
 .team-inspector { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 16px; min-width: 0; }
@@ -117,7 +128,6 @@
 .team-run-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .agent-team-dialog .team-run-actions button { min-height: 36px; padding: 6px 10px; font-size: .75rem; }
 .team-secondary-dialog { width: min(620px,94vw) !important; }
-.team-relationships { padding-left: 22px; font-size: .875rem; line-height: 1.9; overflow-wrap: anywhere; }
 .agent-team-dialog :is(button,input,select,textarea,summary):focus-visible { outline: 3px solid var(--teal); outline-offset: 3px; }
 .team-composer-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
 .team-composer-fields select { width: 100%; }

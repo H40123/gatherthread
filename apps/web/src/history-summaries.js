@@ -1,4 +1,4 @@
-import { eventContent, isFailedAgentResponse } from "./domain.js?v=20261029-motion-1";
+import { eventContent, isFailedAgentResponse } from "./domain.js?v=20261030-config-1";
 import {
   activeHistorySummaries, createHistorySummarySourceResolver, historySummaryMarker, historySummaryText,
   historySummaryVersions as validatedHistorySummaryVersions, isHistorySummaryRequest, selectHistorySummarySources,

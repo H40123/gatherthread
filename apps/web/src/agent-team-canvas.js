@@ -14,6 +14,24 @@ export function mountTeamCanvas({ document: doc, host, getDraft, onChange, onSel
   const hud = el("div", "team-canvas-tools"), minus = button("−", "Zoom out"), plus = button("+", "Zoom in"), reset = button("100%", "Reset zoom");
   hud.append(minus, reset, plus); host.append(viewport, hud);
   let pinned = null, hovered = null, zoom = 1, drag = null, wire = null, handledPointerClick = null;
+  let fitPending = false, fitDraft = null, minimumZoom = .4;
+  const viewPadding = 24, controlsSpace = 60;
+  function initialView(draft) {
+    if (!draft?.nodes.length) return { zoom: 1, left: 0, top: 0 };
+    const width = viewport.clientWidth, height = viewport.clientHeight;
+    // Imports can be prepared while their dialog is still closed. Wait for
+    // its actual layout rather than fitting against a guessed desktop size.
+    if (width <= viewPadding * 2 || height <= viewPadding + controlsSpace) return null;
+    const left = Math.max(0, Math.min(...draft.nodes.map(node => node.x - 18)));
+    const top = Math.max(0, Math.min(...draft.nodes.map(node => node.y - 6)));
+    const right = Math.max(...draft.nodes.map(node => node.x + TEAM_NODE_WIDTH + 18));
+    const bottom = Math.max(...draft.nodes.map(node => node.y + TEAM_NODE_HEIGHT + 6));
+    const nextZoom = Math.min(1, (width - viewPadding * 2) / (right - left),
+      (height - viewPadding - controlsSpace) / (bottom - top));
+    return { zoom: nextZoom,
+      left: Math.max(0, (left + right) * nextZoom / 2 - width / 2),
+      top: Math.max(0, (top + bottom) * nextZoom / 2 - (height + viewPadding - controlsSpace) / 2) };
+  }
   const current = () => pinned ?? hovered;
   const pointerOwner = () => drag?.pointerId ?? wire?.pointerId;
   function gestureCurrent() {
@@ -99,6 +117,13 @@ export function mountTeamCanvas({ document: doc, host, getDraft, onChange, onSel
     viewport.setAttribute("aria-label", t("Team workflow canvas"));
     for (const [control, label] of [[minus, "Zoom out"], [reset, "Reset zoom"], [plus, "Zoom in"]]) control.setAttribute("aria-label", t(label));
     const draft = getDraft();
+    let fitted = null;
+    if (fitPending) {
+      if (fitDraft !== draft) fitPending = false;
+      else if ((fitted = initialView(draft))) {
+        fitPending = false; zoom = fitted.zoom; minimumZoom = Math.min(.4, zoom);
+      }
+    }
     if (!gestureCurrent()) clearGesture();
     const selection = current();
     if (selection && !(selection.kind === "node" ? draft?.nodes : draft?.edges)?.some(item => item.id === selection.id)) select(null);
@@ -107,7 +132,9 @@ export function mountTeamCanvas({ document: doc, host, getDraft, onChange, onSel
     const width = Math.max(1500, ...(draft?.nodes ?? []).map(node => node.x + TEAM_NODE_WIDTH + 120));
     const height = Math.max(800, ...(draft?.nodes ?? []).map(node => node.y + TEAM_NODE_HEIGHT + 120));
     stage.style.width = `${width}px`; stage.style.height = `${height}px`; stage.style.transform = `scale(${zoom})`;
-    spacer.style.width = `${width * zoom}px`; spacer.style.height = `${height * zoom}px`; reset.textContent = `${Math.round(zoom * 100)}%`;
+    // Keep a physical margin even when a widely spread imported graph needs
+    // a small scale, so scroll clamping cannot push its last card under HUD.
+    spacer.style.width = `${width * zoom + viewPadding}px`; spacer.style.height = `${height * zoom + controlsSpace}px`; reset.textContent = `${Math.round(zoom * 100)}%`;
     svg.setAttribute("width", String(width)); svg.setAttribute("height", String(height));
     for (const node of draft?.nodes ?? []) {
       const card = el("article", "team-graph-node"); card.dataset.nodeId = node.id;
@@ -154,6 +181,7 @@ export function mountTeamCanvas({ document: doc, host, getDraft, onChange, onSel
       }); nodes.append(card);
     }
     lines(); highlight(); restoreFocus(focus);
+    if (fitted) { viewport.scrollLeft = fitted.left; viewport.scrollTop = fitted.top; }
   }
   // A touch drag need not emit a compatibility click. Only the click ending
   // that gesture may be suppressed; a new pointerdown always starts afresh.
@@ -205,16 +233,17 @@ export function mountTeamCanvas({ document: doc, host, getDraft, onChange, onSel
     }
   }, true);
   viewport.addEventListener("click", event => { if (!event.target.closest(".team-graph-node, [data-edge-id]")) { wire = null; viewport.dataset.linking = "false"; select(null); } });
-  function setZoom(next) { if (pointerOwner() !== undefined) clearGesture(true); const previous = zoom; zoom = Math.min(1.8, Math.max(.4, next));
+  function setZoom(next) { fitPending = false; if (pointerOwner() !== undefined) clearGesture(true); const previous = zoom; zoom = Math.min(1.8, Math.max(minimumZoom, next));
     const x = (viewport.scrollLeft + viewport.clientWidth / 2) / previous, y = (viewport.scrollTop + viewport.clientHeight / 2) / previous;
     render(); viewport.scrollLeft = x * zoom - viewport.clientWidth / 2; viewport.scrollTop = y * zoom - viewport.clientHeight / 2;
   }
   minus.addEventListener("click", () => setZoom(zoom - .1)); plus.addEventListener("click", () => setZoom(zoom + .1)); reset.addEventListener("click", () => setZoom(1));
   viewport.addEventListener("wheel", event => { if (event.ctrlKey || event.metaKey) { event.preventDefault(); setZoom(zoom + (event.deltaY < 0 ? .08 : -.08)); } }, { passive: false });
-  return { render, select, selection: () => current(), pinned: () => pinned, resetView(id) {
-    zoom = 1; viewport.scrollLeft = 0; viewport.scrollTop = 0; render();
-    const draft = getDraft(), node = draft?.nodes.find(item => item.id === id) ?? draft?.nodes[0];
-    if (node) { viewport.scrollLeft = Math.max(0, node.x - 80); viewport.scrollTop = Math.max(0, node.y - 80); }
+  const ResizeObserver = doc.defaultView?.ResizeObserver;
+  if (ResizeObserver) new ResizeObserver(() => { if (fitPending) render(); }).observe(viewport);
+  return { render, select, selection: () => current(), pinned: () => pinned, resetView() {
+    clearGesture(); fitPending = true; fitDraft = getDraft();
+    zoom = 1; minimumZoom = .4; viewport.scrollLeft = 0; viewport.scrollTop = 0; render();
   }, insertionPosition() {
     // Overlap is intentional: the selected new card sits above existing modules.
     const width = viewport.clientWidth || TEAM_NODE_WIDTH + 80, height = viewport.clientHeight || TEAM_NODE_HEIGHT + 80;

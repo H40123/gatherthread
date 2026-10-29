@@ -25,6 +25,8 @@ try {
   const plugin = path.join(pluginPath, "plugins/gatherthread");
   const nativeManifest = JSON.parse(await readFile(path.join(plugin, ".claude-plugin/plugin.json"), "utf8"));
   assert.equal(nativeManifest.version, manifest.version);
+  assert.equal(await readFile(path.join(plugin, "skills/gatherthread-config/SKILL.md"), "utf8"),
+    await readFile(path.join(root, "plugins/gatherthread-claude/skills/gatherthread-config/SKILL.md"), "utf8"));
   const frames = [{ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }, { jsonrpc: "2.0", id: 2, method: "tools/list" }].map(JSON.stringify).join("\n") + "\n";
   const mcp = await run(process.execPath, [path.join(plugin, "scripts/mcp-launcher.mjs")], install, {
     input: frames, env: { ...process.env, GATHERTHREAD_TOKEN: "gta_synthetic_private", GATHERTHREAD_MCP_TOOL_PROFILE: "runtime", GATHERTHREAD_MCP_TRANSPORT: "server-env" } });

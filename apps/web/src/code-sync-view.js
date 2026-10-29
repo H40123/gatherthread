@@ -1,7 +1,7 @@
-import { codeErrorText, codeRuntimeChoices, createCodeSyncController } from "./code-sync.js?v=20261029-motion-1";
+import { codeErrorText, codeRuntimeChoices, createCodeSyncController } from "./code-sync.js?v=20261030-config-1";
 import { codeNoticeStorage, hasSeenCodeNotice, markCodeNoticeSeen } from "./code-notice.js";
-import { mountGithubCodeSync } from "./github-code-sync-view.js?v=20261029-motion-1";
-import { mountGithubMode } from "./github-setup.js?v=20261029-motion-1";
+import { mountGithubCodeSync } from "./github-code-sync-view.js?v=20261030-config-1";
+import { mountGithubMode } from "./github-setup.js?v=20261030-config-1";
 
 const ACTIVE_JOBS = new Set(["queued", "claimed", "importing", "compacting"]);
 const shortCommit = (value) => typeof value === "string" ? value.slice(0, 9) : "—";
@@ -291,8 +291,9 @@ export function mountCodeSync({ document: doc, api, localizer, getContext, onGit
   });
   el("code-runtime-select").addEventListener("change", (event) => void controller.selectRuntime(event.target.value));
   el("code-refresh-button").addEventListener("click", async () => {
+    const before = routeKey(controller.getState());
     await controller.refresh();
-    await controller.queue("code_sync_status");
+    if (before === routeKey(controller.getState())) await controller.queue("code_sync_status");
   });
   el("code-confirm-accept").addEventListener("click", () => finishConfirmation(true));
   el("code-confirm-cancel").addEventListener("click", () => finishConfirmation(false));

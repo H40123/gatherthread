@@ -35,6 +35,7 @@ test("GatherThread plugin manifest has valid local components and bilingual bran
   assert.equal(manifest.apps, undefined);
   await Promise.all([
     readFile(path.join(pluginRoot, "skills", "gatherthread", "SKILL.md"), "utf8"),
+    readFile(path.join(pluginRoot, "skills", "gatherthread-config", "SKILL.md"), "utf8"),
     readFile(path.join(pluginRoot, "hooks", "hooks.json"), "utf8"),
   ]);
 });

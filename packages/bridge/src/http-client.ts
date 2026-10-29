@@ -208,7 +208,8 @@ export class HttpCollaborationClient implements CollaborationApi {
 
   /** Dedicated owner-device transport. No borrower receives this credential. */
   agentSharingApi() {
-    const post = (path: string, body: unknown) => this.#request(path, { method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(8000) });
+    const post = (path: string, body: unknown, cleanup = false) => this.#request(path,
+      { method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(8000) }, cleanup);
     const jobPath = (id: string, action: string) => `/agent-share-jobs/${encodeURIComponent(id)}/${action}`;
     return {
       listShares: async (projectId: string) => AgentSharesResponseSchema.parse(await this.#request(`/projects/${encodeURIComponent(projectId)}/agent-shares`, { signal: AbortSignal.timeout(8000) })),
@@ -217,13 +218,13 @@ export class HttpCollaborationClient implements CollaborationApi {
       renewLease: async (id: string, input: AgentShareJobLeaseInput) => AgentShareJobLeaseResponseSchema.parse(await post(jobPath(id, "lease"), AgentShareJobLeaseInputSchema.parse(input))),
       progress: async (id: string, input: AgentShareJobProgressInput) => AgentShareJobEventResponseSchema.parse(await post(jobPath(id, "progress"), AgentShareJobProgressInputSchema.parse(input))),
       complete: async (id: string, input: CompleteAgentShareJobInput) => AgentShareJobEventResponseSchema.parse(await post(jobPath(id, "complete"), CompleteAgentShareJobInputSchema.parse(input))),
-      abortAck: async (id: string, input: AbortAgentShareJobInput) => AgentShareJobResponseSchema.parse(await post(jobPath(id, "abort-ack"), AbortAgentShareJobInputSchema.parse(input))),
+      abortAck: async (id: string, input: AbortAgentShareJobInput) => AgentShareJobResponseSchema.parse(await post(jobPath(id, "abort-ack"), AbortAgentShareJobInputSchema.parse(input), true)),
       reportAvailability: async (id: string, state: "ready" | "locked" | "offline" | "unsupported", key: string) =>
-        AgentShareAvailabilityResponseSchema.parse(await post(`/agent-shares/${encodeURIComponent(id)}/availability`, { state, idempotency_key: key })),
+        AgentShareAvailabilityResponseSchema.parse(await post(`/agent-shares/${encodeURIComponent(id)}/availability`, { state, idempotency_key: key }, state === "offline")),
       reportSourceAvailability: async (projectId: string, runtimeId: string, state: "ready" | "locked" | "offline" | "unsupported", key: string) =>
         AgentShareAvailabilityResponseSchema.parse(await post("/agent-sharing-sources/availability", {
           project_id: projectId, source_runtime_id: runtimeId, state, idempotency_key: key,
-        })),
+        }, state === "offline")),
     };
   }
 
@@ -318,8 +319,8 @@ export class HttpCollaborationClient implements CollaborationApi {
   async acknowledgeAgentExecutionStopped(sessionId: string, requestId: string, runtimeId: string, claimAttempt: number): Promise<void> {
     const input = AgentExecutionStateInputSchema.parse({ runtime_id: runtimeId, claim_attempt: claimAttempt });
     const body = await this.#request(`/sessions/${encodeURIComponent(sessionId)}/agent-requests/${encodeURIComponent(requestId)}/execution/stopped`, {
-      method: "POST", body: JSON.stringify(input),
-    });
+      method: "POST", body: JSON.stringify(input), signal: AbortSignal.timeout(8000),
+    }, true);
     const parsed = AgentExecutionStateSchema.safeParse(body);
     if (!parsed.success || parsed.data.active !== false) throw new Error("Invalid native execution stop acknowledgment");
   }
@@ -425,12 +426,17 @@ export class HttpCollaborationClient implements CollaborationApi {
     return fromWireSnapshotRequest(body.snapshot_request ?? body);
   }
 
-  async #request(path: string, init: RequestInit = {}): Promise<unknown> {
+  async #request(path: string, init: RequestInit = {}, cleanup = false): Promise<unknown> {
+    // Cancellation stops new work and in-flight reads immediately. Exact native
+    // stop receipts and offline reports must still reach the server after that
+    // cancellation; they use an independent, bounded cleanup transport. No claim,
+    // progress, completion, ready report or borrower action gets this exception.
     const signal = combineSignals(
       init.signal ?? undefined,
-      this.#signal,
+      cleanup ? undefined : this.#signal,
       AbortSignal.timeout(this.#requestTimeoutMs),
     );
+    signal.throwIfAborted();
     const response = await this.#fetch(`${this.#baseUrl}${path}`, {
       ...init,
       redirect: "error",

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mountTeamCanvas } from "../src/agent-team-canvas.js";
+import { AGENT_TEAM_PRESETS, createAgentTeamPreset } from "../src/agent-team-presets.js";
+import { TEAM_NODE_WIDTH, TEAM_NODE_HEIGHT } from "../src/agent-team-graph.js";
 
 class Element {
   constructor(document, tagName, namespaceURI) {
@@ -64,8 +66,9 @@ class Element {
   }
 }
 
-function fixture({ t = text => text } = {}) {
+function fixture({ t = text => text, ResizeObserver } = {}) {
   const document = { captured: new Map(), pointElement: null, activeElement: null,
+    defaultView: { ResizeObserver },
     createElement(tag) { return new Element(this, tag); },
     createElementNS(namespace, tag) { return new Element(this, tag, namespace); },
     elementFromPoint() { return this.pointElement; } };
@@ -84,6 +87,69 @@ function fixture({ t = text => text } = {}) {
   return { document, host, draft, canvas, selections, card, title, port, changes: () => changes,
     viewport: host.querySelector(".team-canvas-viewport"), hud: host.querySelector(".team-canvas-tools") };
 }
+
+function assertCardsInView(f) {
+  const scale = Number(f.host.querySelector(".team-canvas-stage").style.transform.match(/scale\(([^)]+)\)/u)[1]);
+  // Browsers clamp scrolling to the spacer's dimensions; model that here to
+  // catch a fit that only works with the unit fixture's unrestricted scroll.
+  const spacer = f.host.querySelector(".team-canvas-spacer");
+  const scrollX = Math.min(f.viewport.scrollLeft, Math.max(0, parseFloat(spacer.style.width) - f.viewport.clientWidth));
+  const scrollY = Math.min(f.viewport.scrollTop, Math.max(0, parseFloat(spacer.style.height) - f.viewport.clientHeight));
+  for (const node of f.draft.nodes) {
+    assert.ok(node.x * scale - scrollX >= 0, `${node.id} left edge`);
+    assert.ok(node.y * scale - scrollY >= 0, `${node.id} title`);
+    assert.ok((node.x + TEAM_NODE_WIDTH) * scale - scrollX <= f.viewport.clientWidth, `${node.id} right edge`);
+    assert.ok((node.y + TEAM_NODE_HEIGHT) * scale - scrollY <= f.viewport.clientHeight - 60, `${node.id} above zoom controls`);
+  }
+  return scale;
+}
+
+test("initial view includes every preset module instead of centering only its entry node", () => {
+  for (const preset of AGENT_TEAM_PRESETS) {
+    const f = fixture(); Object.assign(f.draft, createAgentTeamPreset(preset.id).draft);
+    f.viewport.clientWidth = 1068; f.viewport.clientHeight = 380;
+    const before = structuredClone(f.draft);
+    f.canvas.resetView(f.draft.entry_node_id);
+    assertCardsInView(f);
+    assert.deepEqual(f.draft, before, "fitting must not rewrite saved graph coordinates");
+    assert.equal(f.changes(), 0);
+  }
+});
+
+test("narrow and widely spread imported graphs fit while preserving subsequent keyboard and pointer edits", () => {
+  for (const spread of [false, true]) {
+    const f = fixture(); Object.assign(f.draft, createAgentTeamPreset("development").draft);
+    if (spread) {
+      f.draft.nodes[1].x = 10000; f.draft.nodes[1].y = 0;
+      f.draft.nodes[2].x = 10000; f.draft.nodes[2].y = 10000;
+    }
+    f.viewport.clientWidth = 288; f.viewport.clientHeight = 300;
+    f.canvas.resetView(); const scale = assertCardsInView(f);
+    const node = f.draft.nodes[0], originalX = node.x;
+    f.title(node.id).dispatch("keydown", { key: "ArrowRight" });
+    assert.equal(node.x, originalX + 10);
+    f.title(node.id).dispatch("pointerdown", { clientX: 50, clientY: 50 });
+    f.viewport.dispatch("pointermove", { clientX: 50 + 20 * scale, clientY: 50 });
+    f.viewport.dispatch("pointerup", { clientX: 50 + 20 * scale, clientY: 50 });
+    assert.equal(node.x, originalX + 30);
+    assert.equal(f.changes(), 2);
+  }
+});
+
+test("a hidden import fits after layout becomes available without resetting later manual zoom or scrolling", () => {
+  let resized;
+  const f = fixture({ ResizeObserver: class { constructor(callback) { resized = callback; } observe() {} } });
+  Object.assign(f.draft, createAgentTeamPreset("development").draft);
+  f.viewport.clientWidth = 0; f.viewport.clientHeight = 0;
+  f.canvas.resetView();
+  f.viewport.clientWidth = 288; f.viewport.clientHeight = 300; resized();
+  assertCardsInView(f);
+  f.hud.children[2].dispatch("click");
+  const manualZoom = f.hud.children[1].textContent;
+  f.viewport.scrollLeft = 55; f.viewport.scrollTop = 75; resized(); f.canvas.render();
+  assert.equal(f.hud.children[1].textContent, manualZoom);
+  assert.equal(f.viewport.scrollLeft, 55); assert.equal(f.viewport.scrollTop, 75);
+});
 
 test("hover highlights restore on leave, pinned selection ignores hover, and blank canvas clears the pin", () => {
   const f = fixture();

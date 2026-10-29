@@ -75,6 +75,8 @@ session restoration and back/forward cache restoration, not module import alone.
 
 ### Session member visibility
 
+`POST /v1/sessions/:session/discard-empty` accepts strict `{}` and returns `{data:{session_id,discarded}}`. It requires an active device and the non-viewer session creator. In one SQLite transaction it discards only a Solo whose sole canonical event is its creation. Multi or used sessions return `discarded:false`; missing sessions return 404. A client may reconcile a lost receipt with an authenticated read, never an unconditional delete.
+
 `CreateSessionInputSchema` retains optional `visibility: "project" | "private"` as the initial audience for compatibility; both modes support the same subsequent per-member controls. Omission preserves project visibility, and existing private rows are not broadened. `PATCH` rejects direct base-audience assignment; mode changes preserve the existing readers. The Web creation form now contains only name and mode. Session list metadata adds optional `visibility_revision` for older consumers.
 
 `GET /v1/sessions/:id/members` includes all current project members for the conversation creator. When that creator has a non-viewer project role, each member additionally has `session_visible: boolean` and `visibility_revision: nonnegative integer`. Other readers receive ordinary visible-session members without management metadata. Web shows per-member switches only when this authoritative metadata exists, not solely because the current UI thinks it owns a session. The creator's own switch is omitted. Desktop Members and mobile Manage member reuse the same controls.
@@ -337,6 +339,8 @@ Representative refusals are `code_not_enabled` (409), `code_stale_head` (409), `
 GitHub file-write receipts are small metadata, not source snapshots. A per-user/project security cap of 10,000 receipts rejects new operations with `file_receipt_limit` (429) before any GitHub write. Existing accepted keys remain retryable at the cap; receipts are not expired in a way that could repeat a move/delete. They are removed with account/project deletion. This is not a GitHub account storage quota.
 
 ## MCP and local relay boundaries
+
+Portable configuration uses `kind` and `version:1` with strict protocol validators and a 128 KiB JSON limit. Preferences are partial patches; Team files contain editable drafts and budgets, never saved revisions, test results or enable state. `collaboration_get_configuration_schema` accepts `kind:preferences|agent-team` and returns static JSON Schema. `collaboration_validate_configuration` accepts a JSON string and returns validity/field issues. Both are read-only user tools, perform no network/file reads and cannot change settings or authorize execution. See [configuration guide](CONFIGURATION.md) and [ADR-0064](adr/0064-portable-configuration-and-empty-solo.md).
 
 Claude adds an optional validated `claude-code` local relay namespace; omitting it retains the legacy Codex endpoint. Its plugin MCP discovers only the selected workspace/harness, not an arbitrary matching global registration. This changes no bearer, ACL, canonical event or claim authority. Claude's native Hook envelope is distinct from Codex's `turn_id`/model contract and must never be interpreted as a Codex Hook. [ADR-0060](adr/0060-claude-code-plugin-and-local-connector.md) owns these integration decisions.
 

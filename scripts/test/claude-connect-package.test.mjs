@@ -77,6 +77,8 @@ test("matching local Claude plugin refuses bundle tampering and output replaceme
   const destination = path.join(temporary, "marketplace");
   assert.equal(await prepareSourcePlugin(root, { destination }), destination);
   const prepared = path.join(destination, "plugins/gatherthread");
+  assert.equal(await readFile(path.join(prepared, "skills/gatherthread-config/SKILL.md"), "utf8"),
+    await readFile(path.join(plugin, "skills/gatherthread-config/SKILL.md"), "utf8"));
   assert.deepEqual(resolveMcpLauncherInvocation(prepared), { command: process.execPath,
     args: [path.join(prepared, "connector/claude-connect.js"), "mcp"] });
   await assert.rejects(prepareSourcePlugin(root, { destination }), /EEXIST/u);

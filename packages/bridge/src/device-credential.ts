@@ -1,6 +1,7 @@
 // Connector-only exchange: the browser gets a ten-minute one-use grant, never
 // the resulting long-lived device credential. No retry after ambiguous delivery.
-export async function resolveDeviceCredential(input: string, apiUrl: string, transport: typeof fetch = fetch): Promise<string> {
+export async function resolveDeviceCredential(input: string, apiUrl: string, transport: typeof fetch = fetch, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   if (!input || /[\r\n]/u.test(input)) throw new Error("A device authorization is required");
   // Existing private connector credentials remain usable; they are not user login.
   if (!input.startsWith("gtd_")) {
@@ -10,7 +11,7 @@ export async function resolveDeviceCredential(input: string, apiUrl: string, tra
   if (!/^gtd_[A-Za-z0-9_-]{43}$/u.test(input)) throw new Error("Invalid device authorization");
   try {
     const response = await transport(`${apiUrl.replace(/\/$/u, "")}/device-authorizations/claim`, {
-      method: "POST", redirect: "error", signal: AbortSignal.timeout(15_000),
+      method: "POST", redirect: "error", signal: AbortSignal.any([AbortSignal.timeout(15_000), ...(signal ? [signal] : [])]),
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ authorization_token: input, device_name: "Codex connector" }),
     });
@@ -25,5 +26,8 @@ export async function resolveDeviceCredential(input: string, apiUrl: string, tra
     const data = JSON.parse(Buffer.concat(chunks).toString("utf8")).data;
     if (!/^gta_[A-Za-z0-9_-]{43}$/u.test(data?.token ?? "")) throw new Error();
     return data.token as string;
-  } catch { throw new Error("Device authorization failed. Create a new one in the signed-in Web app."); }
+  } catch (error) {
+    if (signal?.aborted && error === signal.reason) throw error;
+    throw new Error("Device authorization failed. Create a new one in the signed-in Web app.");
+  }
 }

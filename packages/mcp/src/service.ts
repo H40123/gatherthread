@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { PreferencesJsonSchema, PreferencesConfigurationSchema, readConfigurationJson,
+  AGENT_TEAM_CONFIG_JSON_SCHEMA, AgentTeamConfigSchema } from "@gatherthread/protocol";
 import { redactText, redactValue } from "@gatherthread/adapters";
 import { parseHistoryContext, validateContextReadInput } from "@gatherthread/bridge";
 import { AgentSharesResponseSchema, SharedAgentRequestInputSchema, SharedAgentRequestAcceptedSchema,
@@ -54,6 +56,12 @@ const MUTATING_TOOL_ANNOTATIONS = {
 } as const;
 
 const USER_TOOL_DEFINITIONS = [
+  tool("collaboration_get_configuration_schema", "Read the versioned JSON schema for GatherThread preferences or Agent Team drafts. This does not read saved/private settings or change anything.", {
+    kind: enumSchema(["preferences", "agent-team"]),
+  }, ["kind"], { ...READ_ONLY_TOOL_ANNOTATIONS, openWorldHint: false }),
+  tool("collaboration_validate_configuration", "Validate a proposed JSON file before returning it to the user. Does not save, authorize, enable or execute anything. Return a json fenced block for the user's preview/import action.", {
+    json: { ...stringSchema("Complete versioned JSON configuration document, at most 128 KiB"), maxLength: 131072 },
+  }, ["json"], { ...READ_ONLY_TOOL_ANNOTATIONS, openWorldHint: false }),
   tool("collaboration_list_projects", "List collaboration projects visible to the authenticated user", {}),
   tool("collaboration_list_project_sessions", "List sessions in one visible collaboration project", {
     project_id: stringSchema("Project identifier"),
@@ -234,6 +242,21 @@ export class CollaborationMcpService {
   async #callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
     let result: unknown;
     switch (name) {
+      case "collaboration_get_configuration_schema": {
+        const kind = requiredString(args, "kind");
+        if (!["preferences", "agent-team"].includes(kind)) throw new Error("Unsupported configuration kind");
+        result = { schema: kind === "preferences" ? PreferencesJsonSchema : AGENT_TEAM_CONFIG_JSON_SCHEMA,
+          workflow: "Return JSON for user preview/import. Team drafts require Agent selection, save, test and explicit enable. No execution or authorization is imported." };
+        break;
+      }
+      case "collaboration_validate_configuration": {
+        const json = readConfigurationJson(requiredString(args, "json"));
+        const kind = (json && typeof json === "object" && "kind" in json) ? json.kind : undefined;
+        const parsed = (kind === "gatherthread.preferences" ? PreferencesConfigurationSchema : AgentTeamConfigSchema).safeParse(json);
+        result = parsed.success ? { valid: true, kind } : { valid: false,
+          issues: parsed.error.issues.slice(0, 8).map(issue => ({ path: issue.path.join("."), message: issue.message })) };
+        break;
+      }
       case "collaboration_list_projects":
         result = await this.#requireProjectApi("listProjects")();
         break;

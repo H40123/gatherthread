@@ -1,3 +1,4 @@
+import { DiscardEmptySoloInputSchema, DiscardEmptySoloResultSchema } from "@gatherthread/protocol";
 import { HostedGithub, type HostedGithubOptions } from "./hosted-github.js";
 import { AgentSharing } from "./agent-sharing.js";
 import { FileWorkspace } from "./file-workspace.js";
@@ -1458,6 +1459,14 @@ export async function startCollaborationServer(
         const body = await readAuthenticatedJson();
         const input = parseTitleMutationInput(() => UpdateSessionInputSchema.parse(body));
         sendJson(response, 200, { data: service.updateSession(actor, sessionId, input) });
+        return;
+      }
+
+      if (sessionId && parts[3] === "discard-empty" && parts.length === 4 && request.method === "POST") {
+        DiscardEmptySoloInputSchema.parse(await readAuthenticatedJson(2048));
+        const result = service.discardEmptySolo(actor, sessionId);
+        if (result.discarded) closeRealtimeWithoutMembership();
+        sendJson(response, 200, { data: DiscardEmptySoloResultSchema.parse(result) });
         return;
       }
 

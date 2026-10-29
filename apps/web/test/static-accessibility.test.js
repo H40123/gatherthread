@@ -479,7 +479,7 @@ test("runtime presence refreshes while a session is open and stops with the page
   const main = await readFile(mainPath, "utf8");
   assert.match(main, /function startMemberRefresh\(sessionId\)[\s\S]*?setInterval\(\(\) => void refreshMembers\(sessionId\), 5_000\)/);
   assert.match(main, /async function refreshMembers\(sessionId\)[\s\S]*?api\.listMembers\(sessionId\)[\s\S]*?renderTimeline\(\)/);
-  assert.match(main, /async function selectSession\(sessionId\)[\s\S]*?startMemberRefresh\(sessionId\)/);
+  assert.match(main, /async function selectSession\(sessionId(?:,[^)]*)?\)[\s\S]*?startMemberRefresh\(sessionId\)/);
   assert.match(main, /window\.addEventListener\("pagehide",[\s\S]*?stopMemberRefresh\(\)/);
   assert.match(main, /function resetWorkspaceToAuth\(\)[\s\S]*?stopMemberRefresh\(\)/);
   assert.match(main, /error\?\.status === 403 \|\| error\?\.status === 404[\s\S]*?sync\.disconnect\(\)[\s\S]*?await enterWorkspace\(\)/);

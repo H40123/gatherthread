@@ -1,4 +1,4 @@
-import { MockCollaborationApi } from './api.js?v=20261029-motion-1';
+import { MockCollaborationApi } from './api.js?v=20261030-config-1';
 import { exampleProjectFiles, EXAMPLE_REVIEWED_COMMIT } from './example-project.js';
 
 // This API is reachable only from the dedicated example document. Its mutations

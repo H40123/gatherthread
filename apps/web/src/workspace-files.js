@@ -797,42 +797,47 @@ export function mountFileWorkspace({
       if (["Copy", "Cut"].includes(name)) {
         if (!entry) { setNotice(t("Select a file or folder first.")); return; }
         if (!writable()) return;
-        clipboard = { type: name === "Copy" ? "copy" : "move", path: entry.path, directory: Boolean(entry.directory), provider, branchId, scope, commit: tree.commit };
+        clipboard = { type: name === "Copy" ? "copy" : "move", path: entry.path, directory: Boolean(entry.directory), provider, branchId, scope,
+          selection: { baseCommit: tree.commit, connectionRevision: tree.connection_revision } };
         setNotice(t(name === "Copy" ? "Copied" : "Cut selected")); return;
       }
       if (name === "Download") { if (entry && !entry.directory) { await downloadPath(entry.path); } return; }
       if (!writable()) { setNotice(t("Only your current branch can be edited."), "error"); return; }
+      // Dialogs and file reads can outlive the tree the user acted on. Preserve
+      // that acknowledged revision rather than rebasing onto a later refresh.
+      const selection = { baseCommit: tree.commit, connectionRevision: tree.connection_revision };
       const parent = entry?.directory ? entry.path : fileParent(entry?.path ?? "");
-      if (name === "Import files") { importFiles(parent); return; }
+      if (name === "Import files") { importFiles(parent, selection); return; }
       if (["New file", "New folder"].includes(name)) {
         const value = await prompt(t(name === "New file" ? "File path" : "Folder path"), parent ? `${parent}/` : ""); if (!value || epoch !== generation) return;
         const destination = validateFileDestination(value, tree.entries);
         const path = normalizeFilePath(name === "New folder" ? `${destination}/.gitkeep` : destination);
-        const completed = await mutate([{ type: "write", path, content_base64: "", executable: false }], `${name}: ${destination}`, () => { expanded.add(fileParent(path)); selectedPath = destination; });
+        const completed = await mutate([{ type: "write", path, content_base64: "", executable: false }], `${name}: ${destination}`, () => { expanded.add(fileParent(path)); selectedPath = destination; }, selection);
         if (completed && name === "New file" && epoch === generation) await openFile(path); return;
       }
       if (name === "Paste") {
         if (!clipboard || clipboard.scope !== scope || clipboard.provider !== provider || clipboard.branchId !== branchId) { setNotice(t("Nothing to paste")); return; }
-        const defaultPath = `${parent ? `${parent}/` : ""}${fileBasename(clipboard.path)}`;
+        const copied = clipboard;
+        const defaultPath = `${parent ? `${parent}/` : ""}${fileBasename(copied.path)}`;
         const value = await prompt(t("Destination path"), defaultPath); if (!value || epoch !== generation) return;
-        const destination = validateFileDestination(value, tree.entries, { source: clipboard.path, isDirectory: clipboard.directory });
-        if (clipboard.type === "move" && !await confirmAffected(clipboard.path)) return;
+        const destination = validateFileDestination(value, tree.entries, { source: copied.path, isDirectory: copied.directory });
+        if (copied.type === "move" && !await confirmAffected(copied.path)) return;
         if (epoch !== generation) return;
-        const source = clipboard.path; const type = clipboard.type;
+        const source = copied.path; const type = copied.type;
         await mutate([{ type, path: source, destination }], `${type === "copy" ? "Copy" : "Move"} ${source}`, () => {
-          if (type === "move") { dropAffected(source); clipboard = null; } selectedPath = destination;
-        }); return;
+          if (type === "move") { dropAffected(source); if (clipboard === copied) clipboard = null; } selectedPath = destination;
+        }, copied.selection); return;
       }
       if (!entry) { setNotice(t("Select a file or folder first.")); return; }
       if (["Rename", "Move"].includes(name)) {
         const value = await prompt(t(name === "Rename" ? "Rename path" : "Destination path"), entry.path); if (!value || value === entry.path || epoch !== generation) return;
         const destination = validateFileDestination(value, tree.entries, { source: entry.path, isDirectory: entry.directory });
         if (!await confirmAffected(entry.path) || epoch !== generation) return;
-        await mutate([{ type: "move", path: entry.path, destination }], `Move ${entry.path}`, () => { dropAffected(entry.path); selectedPath = destination; }); return;
+        await mutate([{ type: "move", path: entry.path, destination }], `Move ${entry.path}`, () => { dropAffected(entry.path); selectedPath = destination; }, selection); return;
       }
       if (name === "Delete") {
         if (!await confirm(t("Delete the selected file or folder?")) || epoch !== generation || !await confirmAffected(entry.path) || epoch !== generation) return;
-        await mutate([{ type: "delete", path: entry.path }], `Delete ${entry.path}`, () => { dropAffected(entry.path); selectedPath = ""; });
+        await mutate([{ type: "delete", path: entry.path }], `Delete ${entry.path}`, () => { dropAffected(entry.path); selectedPath = ""; }, selection);
       }
     } catch (error) { if (epoch === generation) setNotice(errorMessage(error, "Could not save changes."), "error"); }
   }
@@ -843,7 +848,7 @@ export function mountFileWorkspace({
   function dropAffected(path) {
     removeTabs([...tabs.values()].filter((tab) => !tab.commit && pathContains(path, tab.path)).map((tab) => tab.id));
   }
-  function importFiles(parent) {
+  function importFiles(parent, selection) {
     const epoch = generation;
     const picker = el("input"); picker.type = "file"; picker.multiple = true; picker.hidden = true; root.append(picker);
     picker.addEventListener("cancel", () => picker.remove(), { once: true });
@@ -857,7 +862,7 @@ export function mountFileWorkspace({
           const bytes = new Uint8Array(await file.arrayBuffer()); if (epoch !== generation) return;
           destinations.push({ path }); operations.push({ type: "write", path, content_base64: bytesToBase64(bytes), executable: false });
         }
-        if (operations.length && epoch === generation) await mutate(operations, "Import files");
+        if (operations.length && epoch === generation) await mutate(operations, "Import files", undefined, selection);
       } catch (error) { if (epoch === generation) setNotice(errorMessage(error, "Could not save changes."), "error"); }
     }, { once: true }); picker.click();
   }

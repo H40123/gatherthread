@@ -24,7 +24,7 @@ class Node {
   click() { return this.dispatch("click"); }
 }
 
-function setup({ seenNotice = true, onGithubOpen } = {}) {
+function setup({ seenNotice = true, onGithubOpen, apiOverrides = {} } = {}) {
   const nodes = new Map();
   const el = (id) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id); };
   const doc = { getElementById: el, createElement: () => new Node(), activeElement: new Node() };
@@ -40,6 +40,7 @@ function setup({ seenNotice = true, onGithubOpen } = {}) {
       files: [{ path: "app.js", content_base64: btoa(branch === "main" ? "before" : "after"), executable: false }],
     } }),
     mutateProjectCode: async (...args) => { mutations.push(args); return { status }; },
+    ...apiOverrides,
   };
   let context = { project: { id: "p1", name: "Project", role: "owner" }, userId: "u1", sessionId: "s1", runtimes: [] };
   const storageValues = new Map(seenNotice ? [["gatherthread.code-notice.v2:d1", "seen"]] : []);
@@ -54,6 +55,27 @@ function setup({ seenNotice = true, onGithubOpen } = {}) {
     },
   };
 }
+
+test("a previous project's refresh cannot queue a GT Cloud control on the newly selected device", async () => {
+  let finishOld, waitForOld = false; const old = new Promise(resolve => { finishOld = resolve; }); const jobs = [];
+  const status = { repository: { enabled: true, main_commit: "a".repeat(40) }, own_branch_id: "own", branches: [] };
+  const app = setup({ apiOverrides: {
+    getProjectCode: async projectId => projectId === "old-project" && waitForOld ? old : status,
+    listSnapshotRequests: async () => [],
+    createSnapshotRequest: async (sessionId, kind, runtimeId) => { jobs.push({ sessionId, runtimeId }); return { id: "job", kind, status: "completed" }; },
+    getSnapshotRequest: async () => ({ id: "job", status: "completed", result: { enabled: true } }),
+  } });
+  const context = name => ({ project: { id: `${name}-project`, role: "owner" }, sessionId: `${name}-session`, userId: "owner", sessionWritable: true,
+    runtimes: [{ id: `${name}-runtime`, userId: "owner", harness: "codex", status: "online" }] });
+  app.changeContext(context("old")); app.el("project-code-button").dispatch("click"); await tick();
+  app.el("code-runtime-select").value = "old-runtime"; app.el("code-runtime-select").dispatch("change"); await tick();
+  waitForOld = true; const reading = app.el("code-refresh-button").dispatch("click");
+  app.changeContext(context("new")); await tick();
+  app.el("code-runtime-select").value = "new-runtime"; app.el("code-runtime-select").dispatch("change"); await tick();
+  finishOld(status); await reading;
+  assert.deepEqual(jobs, [{ sessionId: "old-session", runtimeId: "old-runtime" }, { sessionId: "new-session", runtimeId: "new-runtime" }]);
+  app.el("project-code-dialog").close();
+});
 
 test("the Git notice blocks first workspace entry per device until acknowledged", async () => {
   const app = setup({ seenNotice: false });

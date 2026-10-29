@@ -45,6 +45,7 @@ DMG_ICON_LOCATIONS = {"Applications": (180, 210), APP_NAME: (540, 210)}
 REQUIRED_BUNDLE_FILES = (
     "Contents/Info.plist", "Contents/MacOS/GatherThreadLauncher",
     "Contents/Resources/GatherThread.icns", "Contents/Resources/runtime/node",
+    "Contents/Resources/gatherthread-lockup.png", "Contents/Resources/gatherthread-lockup-dark.png",
     "Contents/Resources/runtime/Node-LICENSE.txt",
     "Contents/Resources/connector/codex-connect.js", "Contents/Resources/connector/codex-hook.js",
     "Contents/Resources/connector/index.js", "Contents/Resources/connector/mcp.js",
@@ -56,6 +57,7 @@ REQUIRED_BUNDLE_FILES = (
     "Contents/Resources/plugins/gatherthread/scripts/hook-forwarder.mjs",
     "Contents/Resources/plugins/gatherthread/scripts/mcp-launcher.mjs",
     "Contents/Resources/plugins/gatherthread/skills/gatherthread/SKILL.md",
+    "Contents/Resources/plugins/gatherthread/skills/gatherthread-config/SKILL.md",
     *("Contents/Resources/" + relative for relative in CLAUDE_BUNDLE.CLAUDE_RESOURCE_FILES),
 )
 
@@ -523,6 +525,8 @@ def main() -> None:
         if plistlib.load(handle).get("LSMinimumSystemVersion") != MINIMUM_MACOS_VERSION:
             raise SystemExit("macOS system minimum must match the compilation target")
     copy(LAUNCHER / "assets/GatherThread.icns", RESOURCES / "GatherThread.icns")
+    for name in ("gatherthread-lockup.png", "gatherthread-lockup-dark.png"):
+        copy(LAUNCHER / "assets" / name, RESOURCES / name)
     validate_bundle_icon(APP)
     environment = os.environ.copy()
     environment["SWIFT_MODULE_CACHE_PATH"] = str(BUILD / "swift-cache")

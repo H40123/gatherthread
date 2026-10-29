@@ -36,6 +36,34 @@ import {
  * effort list fails this contract instead of silently travelling with it. */
 const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
+for (const mode of ["stop", "unexpected"] as const) test(`App Server ${mode} observes process exit when a descendant keeps stdout open`, { timeout: 8000 }, async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), "gt-native-inherited-pipe-"));
+  const fixture = path.join(directory, "native.mjs"), descendantFile = path.join(directory, "descendant.pid");
+  await writeFile(fixture, `
+import { spawn } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 6000)'], { stdio: ['ignore', 1, 2] });
+writeFileSync(${JSON.stringify(descendantFile)}, String(child.pid));
+createInterface({ input: process.stdin }).on('line', raw => {
+ const message = JSON.parse(raw);
+ if (message.method === 'initialize') process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + '\\n');
+ if (message.method === 'fixture/pending') setTimeout(() => process.exit(12), 10);
+});
+`);
+  const client = new CodexAppServerClient({ command: process.execPath, commandArgs: [fixture], cwd: directory, requestTimeoutMs: 5000 });
+  t.after(async () => {
+    const pid = Number(await readFile(descendantFile, "utf8").catch(() => "0"));
+    if (Number.isSafeInteger(pid) && pid > 0) try { process.kill(pid, "SIGKILL"); } catch { /* fixture already exited */ }
+    await client.dispose();
+  });
+  await client.start();
+  const started = Date.now();
+  if (mode === "stop") await client.close();
+  else await assert.rejects(client.request("fixture/pending", {}), /exited unexpectedly/);
+  assert.ok(Date.now() - started < 1500, "inherited output pipe must not delay exit handling");
+});
+
 test("a failed deletion replacement remains local-only after rebuilding retained Codex Hook authorization", async () => {
   const workspacePath = await realpath(await mkdtemp(path.join(tmpdir(), "gt-deleted-desktop-failure-")));
   const statePath = path.join(workspacePath, "binding-session.json"), hookRegistryPath = path.join(workspacePath, "registry.json");

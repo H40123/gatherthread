@@ -36,7 +36,7 @@ test("owner secret is rendered only from create response and cleared on session 
   assert.match(main, /element\("created-invite-secret"\)\.textContent = createdInvitationShareText/);
   assert.match(main, /navigator\.clipboard\.writeText\(createdInvitationShareText\)/);
   assert.match(main, /if \(localeChanged\) updateCreatedInvitationShareText\(normalized\.general\.locale\)/);
-  assert.match(main, /async function selectSession\(sessionId\)[\s\S]*?clearCreatedInvitationSecret\(\)/);
+  assert.match(main, /async function selectSession\(sessionId(?:,[^)]*)?\)[\s\S]*?clearCreatedInvitationSecret\(\)/);
   assert.match(main, /logout-button[\s\S]*?clearCreatedInvitationSecret\(\)/);
   assert.doesNotMatch(main, /state\.invitations[^\n]*inviteToken/);
 });

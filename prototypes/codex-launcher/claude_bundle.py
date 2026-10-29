@@ -11,7 +11,7 @@ from pathlib import Path
 CLAUDE_PLUGIN_FILES = (
     ".claude-plugin/plugin.json", ".claude-plugin/icon.png", ".mcp.json", "hooks/hooks.json",
     "scripts/hook-forwarder.mjs", "scripts/mcp-launcher.mjs",
-    "skills/gatherthread/SKILL.md", ".source-connector.json",
+    "skills/gatherthread/SKILL.md", "skills/gatherthread-config/SKILL.md", ".source-connector.json",
     "connector/claude-connect.js", "connector/index.js", "connector/mcp.js", "connector/package.json",
     "connector/LICENSE", "connector/NOTICE",
     *("commands/" + name + ".md" for name in ("connect", "projects", "history", "chat", "request", "status", "sync", "files")),

@@ -7,7 +7,7 @@ import { createInterface } from "node:readline/promises";
 import { redactText } from "@gatherthread/adapters";
 import { GitHubBranchSchema, GitHubProjectStatusSchema, GitHubRepositorySchema } from "@gatherthread/protocol";
 import { ClaudeCodeProjectHarness } from "./claude-code-project-harness.js";
-import { ProjectLocalSyncRegistry, runProjectConnector } from "./codex-connect.js";
+import { bindLauncherControl, ProjectLocalSyncRegistry, runProjectConnector } from "./codex-connect.js";
 import { ProjectCodeSync } from "./code-sync.js";
 import { createGitHubCodeSync } from "./github-code-sync.js";
 import { connectGitHubAccount } from "./github-auth.js";
@@ -93,22 +93,38 @@ export function parseClaudeConnectArgs(argv: readonly string[]): ClaudeConnectOp
 }
 
 export async function runClaudeConnectCli(argv: readonly string[] = process.argv.slice(2), env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const shutdown = new AbortController(), stop = () => shutdown.abort(new Error("Claude connector stopped"));
+  const detachControl = bindLauncherControl(env, stop);
+  process.once("SIGINT", stop); process.once("SIGTERM", stop);
+  try { await connectClaude(argv, env, shutdown); }
+  catch (error) { if (!shutdown.signal.aborted || error !== shutdown.signal.reason) throw error; }
+  finally {
+    detachControl();
+    process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop);
+  }
+}
+
+async function connectClaude(argv: readonly string[], env: NodeJS.ProcessEnv, shutdown: AbortController): Promise<void> {
+  const signal = shutdown.signal;
   const options = parseClaudeConnectArgs(argv);
   if (options === "help") { process.stdout.write(HELP); return; }
-  const authorization = env.GATHERTHREAD_TOKEN?.trim() || await readSecret();
-  const token = await resolveDeviceCredential(authorization, options.apiUrl);
+  signal.throwIfAborted();
+  const authorization = env.GATHERTHREAD_TOKEN?.trim() || await readSecret(signal);
+  const token = await resolveDeviceCredential(authorization, options.apiUrl, fetch, signal);
   try {
-    const api = new HttpCollaborationClient({ baseUrl: options.apiUrl, bearerToken: token });
+    const api = new HttpCollaborationClient({ baseUrl: options.apiUrl, bearerToken: token, signal });
     const actor = await api.getCurrentActor();
-    const project = await selectProject((await api.listProjects()).filter(item => item.state === "active"), options.projectId);
+    signal.throwIfAborted();
+    const project = await selectProject((await api.listProjects()).filter(item => item.state === "active"), options.projectId, signal);
+    signal.throwIfAborted();
     const workspacePath = await realpath(options.createWorkspace ? await ensureProjectWorkspace({ apiUrl: options.apiUrl,
       projectId: project.id, projectName: project.name }) : options.workspacePath);
     if (!(await lstat(workspacePath)).isDirectory()) throw new Error("Workspace must be an existing directory");
+    signal.throwIfAborted();
     const mapping = createHash("sha256").update([options.apiUrl, actor.deviceId, project.id, workspacePath].join("\0")).digest("hex").slice(0, 24);
     const stateRoot = path.join(homedir(), ".gatherthread", "claude-code", mapping);
     await privateDirectory(stateRoot);
-    const shutdown = new AbortController(), stop = () => shutdown.abort(new Error("Claude connector stopped"));
-    process.once("SIGINT", stop); process.once("SIGTERM", stop);
+    shutdown.signal.throwIfAborted();
     const harness = new ClaudeCodeProjectHarness({ workspacePath, stateRoot, model: options.model, command: options.claudeCommand,
       permissionMode: options.permissionMode, ...(options.effort ? { reasoningEffort: options.effort } : {}),
       shareToolEvents: options.shareToolEvents, signal: shutdown.signal, env });
@@ -126,17 +142,21 @@ export async function runClaudeConnectCli(argv: readonly string[] = process.argv
       { api, actorUserId: actor.id, actorDeviceId: actor.deviceId, project }) }) : undefined;
     try {
       await relay.start();
+      signal.throwIfAborted();
       const preflight = await harness.preflight();
+      signal.throwIfAborted();
       process.stdout.write(`Claude Code ready: ${oneLine(preflight.version)}; ${oneLine(preflight.authentication)}\nWorkspace: ${preflight.workspacePath}\n`);
       if (options.preflightOnly) { process.stdout.write("Preflight complete; no session runtime was registered, no Agent request was claimed and no model was called.\n"); return; }
       codeSync = options.codeSync ? new ProjectCodeSync({ apiUrl: options.apiUrl, token, projectId: project.id, actorId: actor.id, workspacePath }) : undefined;
       if (options.githubCodeSync) {
         const response = await fetch(`${options.apiUrl}/projects/${encodeURIComponent(project.id)}/github`, {
-          headers: { authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(15000) });
+          headers: { authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]) });
         const state = GitHubProjectStatusSchema.parse(await boundedJson(response));
         if (!state.can_write || !state.connection?.enabled || state.connection.repository.toLowerCase() !== options.githubCodeSync.toLowerCase()
           || state.connection.base_branch !== options.githubBaseBranch) throw new Error("GitHub authorization must match the current project repository and base branch");
-        await connectGitHubAccount();
+        signal.throwIfAborted();
+        await connectGitHubAccount(undefined, signal);
+        signal.throwIfAborted();
         githubCodeSync = createGitHubCodeSync({ apiUrl: options.apiUrl, token, projectId: project.id, actorId: actor.id, workspacePath,
           repository: options.githubCodeSync, baseBranch: options.githubBaseBranch, revision: state.connection.revision });
       }
@@ -146,9 +166,11 @@ export async function runClaudeConnectCli(argv: readonly string[] = process.argv
         signal: shutdown.signal, token, hookSocketPath: "", hookSpoolPath: "", hookRegistryPath: "", hookWorkspacePath: workspacePath,
         hookMode: "disabled", localSync, ...(nativeHookRelay ? { nativeHookRelay } : {}),
         ...(codeSync ? { codeSync } : {}), ...(githubCodeSync ? { githubCodeSync } : {}) });
-    } finally { await nativeHookRelay?.close(); await relay.close(); await harness.close();
-      process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); }
-  } catch (error) { throw new Error(redactText((error instanceof Error ? error.message : "Claude connection failed").replaceAll(token, "[REDACTED]").replaceAll(authorization, "[REDACTED]"))); }
+    } finally { await nativeHookRelay?.close(); await relay.close(); await harness.close(); }
+  } catch (error) {
+    if (signal.aborted && error === signal.reason) throw error;
+    throw new Error(redactText((error instanceof Error ? error.message : "Claude connection failed").replaceAll(token, "[REDACTED]").replaceAll(authorization, "[REDACTED]")));
+  }
 }
 
 export async function runClaudeConnectMain(argv: readonly string[] = process.argv.slice(2), env: NodeJS.ProcessEnv = process.env): Promise<void> {
@@ -265,16 +287,18 @@ async function privateDirectory(directory: string, privateRoot = path.join(homed
     if (verified.dev !== stat.dev || verified.ino !== stat.ino || verified.isSymbolicLink()) throw new Error("Claude connector state directory changed during verification");
   }
 }
-async function selectProject(projects: ProjectSummary[], id?: string): Promise<ProjectSummary> {
+async function selectProject(projects: ProjectSummary[], id?: string, signal?: AbortSignal): Promise<ProjectSummary> {
+  signal?.throwIfAborted();
   if (id) { const selected = projects.find(item => item.id === id); if (!selected) throw new Error("Requested project is unavailable"); return selected; }
   if (projects.length === 1) return projects[0]!;
   if (!projects.length || !process.stdin.isTTY || !process.stdout.isTTY) throw new Error("Pass --project for an accessible project");
   projects.forEach((project, index) => process.stdout.write(`${index + 1}. ${oneLine(project.name)} [${project.role}]\n`));
   const input = createInterface({ input: process.stdin, output: process.stdout });
-  try { const choice = Number(await input.question("Choose a project number: ")) - 1;
+  try { const choice = Number(await input.question("Choose a project number: ", signal ? { signal } : {})) - 1;
     if (!Number.isInteger(choice) || !projects[choice]) throw new Error("Invalid project selection"); return projects[choice]!; } finally { input.close(); }
 }
-function readSecret(): Promise<string> {
+function readSecret(signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   if (!process.stdin.isTTY || !process.stdout.isTTY || !process.stdin.setRawMode) throw new Error("Use the Launcher or a hidden interactive device-authorization prompt");
   const previousRaw = process.stdin.isRaw === true;
   process.stdout.write("GatherThread one-use device authorization (hidden): "); process.stdin.setRawMode(true); process.stdin.resume();
@@ -282,16 +306,18 @@ function readSecret(): Promise<string> {
     const cleanup = () => { if (finished) return; finished = true; process.stdin.removeListener("data", data);
       process.stdin.removeListener("end", ended); process.stdin.removeListener("error", ended);
       process.removeListener("SIGINT", cancelled); process.removeListener("SIGTERM", cancelled);
+      signal?.removeEventListener("abort", cancelled);
       try { process.stdin.setRawMode(previousRaw); } catch { /* A closed TTY cannot be restored; no secret is echoed. */ }
       process.stdin.pause(); };
     const ended = () => { cleanup(); reject(new Error("Authorization input closed")); };
-    const cancelled = () => { cleanup(); reject(new Error("Authorization cancelled")); };
+    const cancelled = () => { cleanup(); reject(signal?.aborted ? signal.reason : new Error("Authorization cancelled")); };
     const data = (chunk: Buffer | string) => { for (const character of chunk.toString()) {
       if (character === "\u0003") { cleanup(); reject(new Error("Authorization cancelled")); return; }
       if (character === "\r" || character === "\n") { cleanup(); process.stdout.write("\n"); resolve(value); return; }
       if (character === "\u007f" || character === "\b") value = value.slice(0, -1);
       else if (value.length < 1024) value += character; else { cleanup(); reject(new Error("Authorization is too long")); return; }
     } }; process.stdin.on("data", data); process.stdin.once("end", ended); process.stdin.once("error", ended);
+    signal?.addEventListener("abort", cancelled, { once: true });
     process.once("SIGINT", cancelled); process.once("SIGTERM", cancelled); });
 }
 async function boundedJson(response: Response): Promise<unknown> {

@@ -1,4 +1,4 @@
-import { GUIDE_LABELS, createOnboardingProgress, guideText, onboardingKey } from './onboarding-content.js?v=20261029-motion-1';
+import { GUIDE_LABELS, createOnboardingProgress, guideText, onboardingKey } from './onboarding-content.js?v=20261030-config-1';
 import { mountExampleProject } from './example-project-view.js';
 
 // A sandboxed, opaque-origin document runs its own in-memory application.

@@ -83,9 +83,23 @@ targets that minimum rather than the build machine's OS version.
 The status changes to **已连接** after the connector confirms project/session
 readiness, including an empty project. Short live log lines appear immediately;
 messages from a replaced connector cannot overwrite the current connection.
+The top-aligned form opens with the account/password visible; advanced fields
+remain folded and scroll independently of the connection buttons. Its branded
+header selects the unchanged light/dark [final-F lockups](../../../logo/README.md)
+from `logo/png/lockup-color-transparent-{light,dark}-1200px.png` for the current
+system appearance. Both PNGs are required package resources.
+
+**Stop connection** cancels authorization or sends a private shutdown request to
+the connector. It waits for the actual process exit and native cleanup rather
+than treating a signal, a closed log stream or a late ready message as success.
+After 30 seconds without confirmed cleanup, the app explains the pending state
+and continues to own the connector; it does not start a replacement. Quitting
+closes the private pipe, which also requests graceful cleanup.
 For an offline native regression check after compilation, run the executable
-with `--connector-output-self-test`. It uses a fictional local child process,
-without account authorization or a model call.
+with `--connector-output-self-test`, `--connector-stop-self-test`, or
+`--form-self-test`. These use fictional local children and inputs, without account
+authorization or a model call. The stop test covers startup cancellation, a
+descendant holding stdout, late ready output and unconfirmed cleanup.
 
 New `v=2` links are restricted to those two exact official HTTPS origins. An email
 account in the test environment is separate from the production account. A URL opens the form

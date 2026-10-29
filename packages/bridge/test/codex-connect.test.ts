@@ -9,8 +9,10 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { PassThrough } from "node:stream";
 import {
   ConnectorRetryReporter,
+  bindLauncherControl,
   createPersonalSoloForLocalPrompt,
   parseCodexConnectArgs,
   processLocalSyncControlJobs,
@@ -46,6 +48,104 @@ import {
 } from "../src/index.js";
 
 const execFileAsync = promisify(execFile);
+
+test("Launcher stop pipe is opt-in, bounded, one-shot and observes parent exit", async () => {
+  const terminal = new PassThrough(); let calls = 0;
+  const detachTerminal = bindLauncherControl({}, () => calls++, terminal);
+  terminal.end("ordinary CLI input\n");
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(calls, 0); detachTerminal();
+  for (const chunks of [["gatherthread:", "stop\n"], ["x".repeat(2000)], []]) {
+    const input = new PassThrough(); let stopped = 0;
+    const detach = bindLauncherControl({ GATHERTHREAD_LAUNCHER_CONTROL: "stdin-v1" }, () => stopped++, input);
+    for (const chunk of chunks) input.write(chunk);
+    input.end(); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(stopped, 1);
+    detach(); assert.equal(input.listenerCount("data"), 0); assert.equal(input.listenerCount("end"), 0);
+  }
+});
+
+test("Launcher stop pipe releases the connector event loop without waiting for parent EOF", { timeout: 5000 }, async t => {
+  const moduleUrl = new URL("../src/codex-connect.js", import.meta.url).href;
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", `
+    import { bindLauncherControl } from ${JSON.stringify(moduleUrl)};
+    const detach = bindLauncherControl({GATHERTHREAD_LAUNCHER_CONTROL: 'stdin-v1'}, () => {
+      detach(); process.stdout.write('stopped\\n');
+    });
+    process.stdout.write('ready\\n');
+  `], { stdio: ["pipe", "pipe", "pipe"] });
+  t.signal.addEventListener("abort", () => child.kill(), { once: true });
+  try {
+    const exited = new Promise<number | null>((resolve, reject) => {
+      child.once("exit", resolve); child.once("error", reject);
+    });
+    let output = "";
+    child.stdout.on("data", chunk => {
+      output += chunk.toString();
+      if (output === "ready\n") child.stdin.write("gatherthread:stop\n");
+    });
+    assert.equal(await exited, 0);
+    assert.match(output, /stopped/);
+  } finally { child.stdin.destroy(); if (child.exitCode === null) child.kill(); }
+});
+
+for (const failure of ["probe", "report"] as const) test(`sharing ${failure} failure leaves ordinary connector sync alive`, { timeout: 5000 }, async () => {
+  const stateRoot = await mkdtemp(path.join(tmpdir(), "gt-sharing-startup-recovery-"));
+  const order: string[] = [], stop = new AbortController();
+  let probes = 0, closes = 0, readsAfterFailure = 0;
+  const base = projectApi([], order);
+  const api = { ...base, listProjectSessions: async () => [session("owner", "multi")],
+    readEvents: async (id: string, sequence: number) => {
+      if (probes) { readsAfterFailure++; stop.abort(); }
+      return base.readEvents(id, sequence);
+    },
+    agentSharingApi: () => ({ reportSourceAvailability: async (_project: string, _runtime: string, state: string) => {
+      if (state === "unsupported") throw new Error("Fixture temporary network failure");
+    } }),
+  } as unknown as HttpCollaborationClient;
+  const harness = projectHarness({ order, project() {}, activate() {} });
+  harness.descriptor.sharingCapability = { version: 1, isolated: true, project_only: true, cancellation: true, liveness_watchdog: true };
+  const timer = setTimeout(() => stop.abort(), 3500);
+  try {
+    await runProjectConnector({ api, actorUserId: "user-1", actorDeviceId: "device-1",
+      project: { id: "project-1", name: "Fixture", role: "owner", state: "active", sessionCount: 1 },
+      stateRoot, harness, signal: stop.signal, token: "fixture", hookMode: "disabled", hookWorkspacePath: stateRoot,
+      hookSocketPath: "", hookSpoolPath: "", hookRegistryPath: "",
+      sharedExecutorFactory: () => ({ async preflight() { probes++; if (failure === "probe") throw new Error("Fixture probe failure"); return undefined; },
+        async execute() { throw new Error("No model or executor may start"); }, async close() { closes++; } }) });
+  } finally { clearTimeout(timer); }
+  assert.equal(probes, 1); assert.equal(closes, 1);
+  assert.ok(readsAfterFailure > 0, "ordinary replay must continue after the sharing fault");
+});
+
+test("failed sharing startup cleanup retains the executor instead of creating duplicates", { timeout: 7000 }, async t => {
+  const stateRoot = await mkdtemp(path.join(tmpdir(), "gt-sharing-quarantine-"));
+  const order: string[] = [], stop = new AbortController();
+  let now = Date.now(), probes = 0, closes = 0, readsAfterFailure = 0;
+  t.mock.method(Date, "now", () => now);
+  const base = projectApi([], order);
+  const api = { ...base, listProjectSessions: async () => [session("owner", "multi")],
+    readEvents: async (id: string, sequence: number) => {
+      now += 60000;
+      if (probes && ++readsAfterFailure === 2) stop.abort();
+      return base.readEvents(id, sequence);
+    }, agentSharingApi: () => ({ reportSourceAvailability: async () => undefined }),
+  } as unknown as HttpCollaborationClient;
+  const harness = projectHarness({ order, project() {}, activate() {} });
+  harness.descriptor.sharingCapability = { version: 1, isolated: true, project_only: true, cancellation: true, liveness_watchdog: true };
+  const timer = setTimeout(() => stop.abort(), 5500);
+  try {
+    await runProjectConnector({ api, actorUserId: "user-1", actorDeviceId: "device-1",
+      project: { id: "project-1", name: "Fixture", role: "owner", state: "active", sessionCount: 1 },
+      stateRoot, harness, signal: stop.signal, token: "fixture", hookMode: "disabled", hookWorkspacePath: stateRoot,
+      hookSocketPath: "", hookSpoolPath: "", hookRegistryPath: "",
+      sharedExecutorFactory: () => ({ async preflight() { probes++; throw new Error("Fixture interrupted probe"); },
+        async execute() { throw new Error("No model may start"); },
+        async close() { if (++closes === 1) throw new Error("Fixture cleanup not yet confirmed"); } }) });
+  } finally { clearTimeout(timer); }
+  assert.equal(probes, 1); assert.equal(closes, 2);
+  assert.equal(readsAfterFailure, 2, "ordinary sync stays alive while the original executor remains owned");
+});
 const socketTemporaryBase = process.platform === "darwin" ? "/private/tmp" : tmpdir();
 
 test("project heartbeats remain independent while execution exceeds the 30-second presence TTL", async () => {

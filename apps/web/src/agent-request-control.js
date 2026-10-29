@@ -1,4 +1,4 @@
-import { canAppend, retryAgentRequestInput } from "./domain.js?v=20261029-motion-1";
+import { canAppend, retryAgentRequestInput } from "./domain.js?v=20261030-config-1";
 
 export const isCloudTrialRequest = (request) => request?.payload?.execution_profile?.harness === "opencode"
   && !request.payload.github_task_id;

@@ -170,6 +170,10 @@ export class CollaborationService {
     return this.database.deleteSession(actor, sessionId);
   }
 
+  discardEmptySolo(actor: Actor, sessionId: string) {
+    return this.database.discardEmptySolo(actor, sessionId);
+  }
+
   listSessions(actor: Actor) {
     this.database.assertActiveDevice(actor);
     return this.database.listSessions(actor.user_id);

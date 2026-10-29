@@ -7,7 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 export const PLUGIN_FILES = [".claude-plugin/plugin.json", ".claude-plugin/icon.png", ".mcp.json", "hooks/hooks.json", "scripts/mcp-launcher.mjs",
-  "scripts/hook-forwarder.mjs", "skills/gatherthread/SKILL.md", ...["connect", "projects", "sessions", "history", "chat", "request", "status", "sync", "files"].map(name => `commands/${name}.md`)];
+  "scripts/hook-forwarder.mjs", "skills/gatherthread/SKILL.md", "skills/gatherthread-config/SKILL.md",
+  ...["connect", "projects", "sessions", "history", "chat", "request", "status", "sync", "files"].map(name => `commands/${name}.md`)];
 const BUNDLES = ["claude-connect.js", "index.js", "mcp.js"];
 const MESSAGE = "Build the matching Claude connector first with npm run build:claude; use a new absolute output directory.";
 async function bytes(file) {

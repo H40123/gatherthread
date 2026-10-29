@@ -27,7 +27,7 @@ test("entering a read-only session restores server jobs and resumes active polli
   assert.match(main, /generation !== selectedSessionGeneration/);
   assert.match(main, /state\.snapshotRequests = \[[\s\S]*?\.\.\.requests/);
   assert.match(main, /startSnapshotPolling\(\)/);
-  assert.match(main, /async function selectSession\(sessionId\)[\s\S]*?restoreSnapshotRequests\(sessionId, generation\)/);
+  assert.match(main, /async function selectSession\(sessionId(?:,[^)]*)?\)[\s\S]*?restoreSnapshotRequests\(sessionId, generation\)/);
 });
 
 test("project selection checks its generation after every asynchronous boundary", async () => {

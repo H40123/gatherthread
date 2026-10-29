@@ -49,6 +49,8 @@ The Solo creator is the only visible member allowed to write or submit agent req
 
 Existing private Solos keep their initial creator-only audience unless their creator explicitly grants an individual project member access. Mode conversion preserves these member decisions and the initial audience; it does not broaden visibility.
 
+A Solo newly created in the current browser is discarded on switching away if the server confirms it still has no accepted event beyond creation. Submitted conversations and Multi are retained. Cleanup failure leaves the session available; cleanup never removes native tasks or files. The configuration assistant creates a private Solo with an unsent prompt.
+
 ### Multi
 
 Visible project owners and participants can append human chat and agent requests. A human chat event is shared and included in future context hydration but does not trigger a local agent. An agent request is assigned to the initiating user's registered local runtime. The resulting response is appended to the same canonical history. Visible project viewers remain read only.
@@ -347,6 +349,8 @@ fictional browser fixtures.
 See [ADR-0056](adr/0056-project-scoped-native-agent-sharing.md).
 
 ## My Agent Teams (local implementation preview)
+
+The editor supports five editable workflow presets, versioned JSON import/export and “Let AI configure it.” Presets leave Agent targets unbound; users choose available Agents before the normal Save, Test and Enable flow. AI configuration opens a private Solo and never sends automatically. Valid returned JSON exposes an explicit preview action. Browser preferences have a separate JSON editor under Settings → General. See [Configuration](CONFIGURATION.md) for fields, examples and the import boundary, and [Team configuration](AGENT_TEAM_CONFIGURATION.md) for presets.
 
 The new Team library and editor are an implementation preview, separate from the
 released workspace and connection guides. Each account can save at most **five

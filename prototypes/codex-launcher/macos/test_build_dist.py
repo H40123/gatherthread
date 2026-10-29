@@ -90,6 +90,8 @@ class DmgPackagingTests(unittest.TestCase):
         resources = contents / "Resources"
         resources.mkdir()
         shutil.copy2(HERE.parent / "assets/GatherThread.icns", resources / "GatherThread.icns")
+        for name in ("gatherthread-lockup.png", "gatherthread-lockup-dark.png"):
+            shutil.copy2(HERE.parent / "assets" / name, resources / name)
         for relative in (
             "MacOS/GatherThreadLauncher", "Resources/runtime/node",
             "Resources/connector/codex-connect.js", "Resources/connector/codex-hook.js",
@@ -100,6 +102,7 @@ class DmgPackagingTests(unittest.TestCase):
             "Resources/plugins/gatherthread/scripts/hook-forwarder.mjs",
             "Resources/plugins/gatherthread/scripts/mcp-launcher.mjs",
             "Resources/plugins/gatherthread/skills/gatherthread/SKILL.md",
+            "Resources/plugins/gatherthread/skills/gatherthread-config/SKILL.md",
         ):
             path = contents / relative
             path.parent.mkdir(parents=True, exist_ok=True)

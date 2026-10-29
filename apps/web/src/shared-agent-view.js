@@ -1,5 +1,5 @@
-import { renderAvatar } from "./avatars.js?v=20261029-motion-1";
-import { SHARED_AGENT_ZH_CN } from "./shared-agent-i18n.js?v=20261029-motion-1";
+import { renderAvatar } from "./avatars.js?v=20261030-config-1";
+import { SHARED_AGENT_ZH_CN } from "./shared-agent-i18n.js?v=20261030-config-1";
 import { makeAgentDialogButton } from "./agent-dialog-navigation.js";
 
 export const DEFAULT_SHARE_LIMITS = Object.freeze({ per_member_daily_calls: 20, per_member_daily_seconds: 3600,

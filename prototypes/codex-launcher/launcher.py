@@ -40,6 +40,9 @@ AUTHORIZATION_DEADLINE_SECONDS = 15
 AUTHORIZATION_FAILURE = "账号授权未完成。请检查密码，并从网页重新打开启动器；不要自动重试。 / Authorization failed. Check the password and reopen the Launcher from the website."
 AUTHORIZATION_CANCELLED = "已取消本次授权。需要连接时，请从网页重新打开启动器。 / Authorization cancelled. Reopen the Launcher from the website to connect."
 WINDOWS_APP_ID = "GatherThread.CodexLauncher"
+CONNECTOR_STOP_TIMEOUT_SECONDS = 30
+CONNECTOR_LOG_LINE_LIMIT = 16_384
+CONNECTOR_LOG_QUEUE_LIMIT = 512
 
 
 def safe_origin(value: str) -> str:
@@ -630,6 +633,8 @@ class Launcher(tk.Tk):
         self.events: queue.Queue[tuple[str, str | tuple[int, str, str, bool]]] = queue.Queue()
         self.connector: subprocess.Popen[str] | None = None
         self.connector_lock = threading.Lock()
+        self.stopping_connector: subprocess.Popen[str] | None = None
+        self.stop_deadline: float | None = None
         self.busy = False
         self.project = tk.StringVar()
         self.workspace = tk.StringVar()
@@ -667,28 +672,58 @@ class Launcher(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._background)
 
     def _build(self) -> None:
-        root = ttk.Frame(self, padding=18)
-        root.pack(fill="both", expand=True)
+        outer = ttk.Frame(self, padding=18)
+        outer.pack(fill="both", expand=True)
+        form = ttk.Frame(outer)
+        form.pack(fill="both", expand=True)
+        canvas = tk.Canvas(form, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(form, orient="vertical", command=canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        root = ttk.Frame(canvas)
+        form_window = canvas.create_window((0, 0), window=root, anchor="nw")
+        root.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(form_window, width=event.width))
+
+        def scroll_form(event):
+            selected = event.widget
+            while selected is not None:
+                if selected is root:
+                    canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+                    return "break"
+                selected = getattr(selected, "master", None)
+        self.bind_all("<MouseWheel>", scroll_form, add="+")
+        banner = tk.Frame(root, bg="#edf7f6", padx=20, pady=14)
+        banner.pack(fill="x", pady=(0, 16))
+        try:
+            self.brand_image = tk.PhotoImage(file=str(runtime_dir() / "assets/gatherthread-lockup.png")).subsample(4)
+            tk.Label(banner, image=self.brand_image, bg="#edf7f6").pack(anchor="w")
+        except tk.TclError:
+            tk.Label(banner, text="本地 Agent 启动器", bg="#edf7f6", fg="#102b2a", font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        tk.Label(banner, text="连接本机，协作随行。", bg="#edf7f6", fg="#327570", font=("Segoe UI", 11)).pack(anchor="w", pady=(6, 0))
         ttk.Label(root, textvariable=self.target_label, font=("Segoe UI", 18, "bold")).pack(anchor="w")
         ttk.Label(root, text="网页负责项目和会话；此窗口负责启动并保持本机连接器运行。", wraplength=690).pack(anchor="w", pady=(4, 14))
         ttk.Label(root, textvariable=self.origin).pack(anchor="w", pady=(0, 3))
         self.environment_label = ttk.Label(root, text="正式环境 / Production")
         self.environment_label.pack(anchor="w", pady=(0, 9))
-        ttk.Label(root, text="项目 ID（网页打开时自动填入；格式：project-***）").pack(anchor="w")
-        ttk.Entry(root, textvariable=self.project).pack(fill="x", pady=(2, 9))
-        ttk.Label(root, textvariable=self.cli_label).pack(anchor="w")
-        ttk.Entry(root, textvariable=self.codex).pack(fill="x", pady=(2, 9))
-        ttk.Label(root, text="本地工作目录（可选；留空使用默认项目目录）").pack(anchor="w")
-        workspace_row = ttk.Frame(root)
+        details = ttk.Frame(root)
+        details.pack(fill="x")
+        ttk.Label(details, text="项目 ID（网页打开时自动填入；格式：project-***）").pack(anchor="w")
+        ttk.Entry(details, textvariable=self.project).pack(fill="x", pady=(2, 9))
+        ttk.Label(details, textvariable=self.cli_label).pack(anchor="w")
+        ttk.Entry(details, textvariable=self.codex).pack(fill="x", pady=(2, 9))
+        ttk.Label(details, text="本地工作目录（可选；留空使用默认项目目录）").pack(anchor="w")
+        workspace_row = ttk.Frame(details)
         workspace_row.pack(fill="x", pady=(2, 9))
         ttk.Entry(workspace_row, textvariable=self.workspace).pack(side="left", fill="x", expand=True)
         ttk.Button(workspace_row, text="浏览…", command=self._choose_workspace).pack(side="left", padx=(8, 0))
         ttk.Button(workspace_row, text="默认目录", command=lambda: self.workspace.set("")).pack(side="left", padx=(8, 0))
-        self.code_sync_row = ttk.Frame(root)
+        self.code_sync_row = ttk.Frame(details)
         self.code_sync_checkbox = ttk.Checkbutton(self.code_sync_row, variable=self.code_sync,
             text="允许此设备同步项目文件（GT Cloud；上传仍需在项目中开启）")
         self.code_sync_checkbox.pack(anchor="w")
-        settings = ttk.Frame(root)
+        settings = ttk.Frame(details)
         self.model_settings = settings
         settings.pack(fill="x", pady=(2, 9))
         self.codex_only_settings = []
@@ -720,19 +755,33 @@ class Launcher(tk.Tk):
         self.web_form = ttk.Frame(self.authorization_area)
         ttk.Label(self.web_form, text="先在网页登录，再从项目的 Agent 连接入口打开此窗口。", wraplength=690).pack(anchor="w")
         ttk.Button(self.web_form, text="打开 GatherThread 网页 / Open website", command=lambda: webbrowser.open(self.origin.get() + "/app/")).pack(anchor="w", pady=(5, 0))
+        self.authorization_area.pack_configure(before=details)
+        details_toggle = ttk.Button(root, text="更多连接设置")
+        details_toggle.pack(before=details, anchor="w", pady=(0, 9))
+        details.pack_forget()
+
+        def toggle_details():
+            if details.winfo_manager():
+                details.pack_forget()
+                details_toggle.configure(text="更多连接设置")
+            else:
+                details.pack(after=details_toggle, fill="x")
+                details_toggle.configure(text="收起连接设置")
+        details_toggle.configure(command=toggle_details)
         ttk.Label(root, text="随包插件为选中的 Agent 提供共序 MCP 与 Hooks。安装前请审查并信任；只连接所选 Agent，不会改用其他 Agent。", wraplength=690).pack(anchor="w")
-        buttons = ttk.Frame(root)
+        buttons = ttk.Frame(outer)
         buttons.pack(fill="x", pady=(12, 9))
         self.install_button = ttk.Button(buttons, text="可选：安装随包插件", command=self._install)
         self.install_button.pack(side="left")
         self.connect_button = ttk.Button(buttons, text="启动连接", command=self._connect)
         self.connect_button.pack(side="left", padx=8)
-        ttk.Button(buttons, text="停止连接", command=self._stop).pack(side="left")
+        self.stop_button = ttk.Button(buttons, text="停止连接", command=self._stop)
+        self.stop_button.pack(side="left")
         ttk.Button(buttons, text="退居后台", command=self._background).pack(side="right")
-        ttk.Label(root, textvariable=self.status, wraplength=690).pack(anchor="w", pady=(4, 8))
-        self.log = tk.Text(root, height=7, state="disabled", wrap="word")
-        self.log.pack(fill="both", expand=True)
-        ttk.Label(root, text="关闭窗口会最小化到任务栏；恢复窗口后可停止连接。", wraplength=690).pack(anchor="w", pady=(7, 0))
+        ttk.Label(outer, textvariable=self.status, wraplength=690).pack(anchor="w", pady=(4, 8))
+        self.log = tk.Text(outer, height=5, state="disabled", wrap="word")
+        self.log.pack(fill="x")
+        ttk.Label(outer, text="关闭窗口会最小化到任务栏；恢复窗口后可停止连接。", wraplength=690).pack(anchor="w", pady=(7, 0))
 
     def _clear_secrets(self, *_args) -> None:
         self.password.set("")
@@ -866,13 +915,14 @@ class Launcher(tk.Tk):
     def _set_busy(self, value: bool) -> None:
         self.busy = value
         pending = getattr(self, "claude_discovery_pending", False)
-        self.install_button.configure(state="disabled" if value or pending else "normal")
-        self.connect_button.configure(state="disabled" if value or pending or not self.link_version or self.authorization_used else "normal")
-        self.password_entry.configure(state="disabled" if value else "normal")
+        running = self.connector is not None and self.connector.poll() is None
+        self.install_button.configure(state="disabled" if value or pending or running else "normal")
+        self.connect_button.configure(state="disabled" if value or pending or running or not self.link_version or self.authorization_used else "normal")
+        self.password_entry.configure(state="disabled" if value or running else "normal")
         self.code_sync_checkbox.configure(state="disabled" if value or self.connector and self.connector.poll() is None else "normal")
 
     def _install(self) -> None:
-        if self.busy or getattr(self, "claude_discovery_pending", False):
+        if self.busy or getattr(self, "claude_discovery_pending", False) or (self.connector and self.connector.poll() is None):
             return
         try:
             _, codex = self._paths()
@@ -974,11 +1024,14 @@ class Launcher(tk.Tk):
                 with self.connector_lock:
                     if cancelled.is_set():
                         raise AuthorizationCancelled()
-                    self.connector = subprocess.Popen(args, env=self._env(credential), stdin=subprocess.DEVNULL,
+                    environment = self._env(credential)
+                    environment["GATHERTHREAD_LAUNCHER_CONTROL"] = "stdin-v1"
+                    self.connector = subprocess.Popen(args, env=environment, stdin=subprocess.PIPE,
                                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                                       text=True, encoding="utf-8", errors="replace", shell=False, creationflags=self._flags())
-                self.events.put(("status", "连接器正在启动。安装或更新插件后请重启所选 Agent 会话，并审查 Hooks。"))
+                self.events.put(("connector_started", (self.connector, cancelled)))
                 threading.Thread(target=self._read_connector, args=(self.connector, credential), daemon=True).start()
+                threading.Thread(target=self._wait_connector, args=(self.connector,), daemon=True).start()
             except AuthorizationCancelled:
                 self.events.put(("status", AUTHORIZATION_CANCELLED))
             except (OSError, ValueError):
@@ -991,22 +1044,59 @@ class Launcher(tk.Tk):
 
     def _read_connector(self, process: subprocess.Popen[str], token: str) -> None:
         assert process.stdout is not None
-        for line in process.stdout:
-            output = line.replace(token, "[REDACTED]") if token else line
-            output = re.sub(r"\b(?:gta_|gtd_)[A-Za-z0-9_-]+", "[REDACTED]", output)
-            self.events.put(("connector_log", (process, output.rstrip())))
+        discarding = False
+        try:
+            while True:
+                line = process.stdout.readline(CONNECTOR_LOG_LINE_LIMIT + 1)
+                if not line:
+                    break
+                oversized = discarding or len(line) > CONNECTOR_LOG_LINE_LIMIT
+                discarding = oversized and not line.endswith("\n")
+                if discarding:
+                    continue
+                output = "[过长输出已省略]" if oversized else line
+                output = output.replace(token, "[REDACTED]") if token else output
+                output = re.sub(r"\b(?:gta_|gtd_)[A-Za-z0-9_-]+", "[REDACTED]", output)
+                # Child output cannot starve the UI or grow memory indefinitely.
+                if self.events.qsize() < CONNECTOR_LOG_QUEUE_LIMIT:
+                    self.events.put(("connector_log", (process, output.rstrip())))
+        finally:
+            process.stdout.close()
+
+    def _wait_connector(self, process: subprocess.Popen[str]) -> None:
+        # Do not wait for stdout EOF: an inherited pipe may outlive its parent.
         code = process.wait()
+        if process.stdin:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
         self.events.put(("connector_exit", (process, code)))
+
+    def _request_connector_stop(self, process: subprocess.Popen[str]) -> None:
+        try:
+            if process.stdin is None:
+                raise OSError("Missing private Launcher control pipe")
+            process.stdin.write("gatherthread:stop\n")
+            process.stdin.flush()
+        except (OSError, ValueError):
+            self.events.put(("connector_stop_pending", (process, "停止通道尚未确认。连接器仍在退出前保持占用，请查看日志。")))
 
     def _stop(self) -> None:
         self.connection_cancelled.set()
         self._clear_secrets()
-        with self.connector_lock:
-            if self.connector and self.connector.poll() is None:
-                self.connector.terminate()
-                self.status.set("正在停止连接器…")
-            elif self.busy:
-                self.status.set(AUTHORIZATION_CANCELLED)
+        # Never take the launch lock on the UI thread: Popen may be waiting for
+        # the OS. A late child sees the cancellation in connector_started.
+        process = self.connector
+        if process and process.poll() is None:
+            if getattr(self, "stopping_connector", None) is process:
+                return
+            self.stopping_connector = process
+            self.stop_deadline = time.monotonic() + CONNECTOR_STOP_TIMEOUT_SECONDS
+            self.status.set("正在断开，并确认本地 Agent 任务已停止…")
+            threading.Thread(target=self._request_connector_stop, args=(process,), daemon=True).start()
+        elif self.busy:
+            self.status.set(AUTHORIZATION_CANCELLED)
 
     def _background(self) -> None:
         self._clear_secrets()
@@ -1017,24 +1107,39 @@ class Launcher(tk.Tk):
 
     def _poll(self) -> None:
         try:
-            while True:
+            for _ in range(100):
                 kind, value = self.events.get_nowait()
-                if kind in ("connector_log", "connector_exit"):
+                if kind in ("connector_started", "connector_log", "connector_exit", "connector_stop_pending"):
                     process, value = value
                     if self.connector is not process:
                         continue
                     if kind == "connector_exit":
                         self.connector = None
-                        self.status.set(f"连接器已退出，代码 {value}。可检查日志后重试。")
+                        stopped = getattr(self, "stopping_connector", None) is process
+                        self.stopping_connector = None
+                        self.stop_deadline = None
+                        self.status.set("已断开。需要再次连接时，请从网页重新打开启动器。" if stopped and value == 0
+                                        else f"连接器已退出，代码 {value}。请从网页重新连接；日志保留在下方。")
                         self._set_busy(False)
                         continue
-                    if process.poll() is None and (value == "GatherThread connector ready." or value.startswith("Connected session: ")
+                    if kind == "connector_started":
+                        if value.is_set():
+                            self._stop()
+                        elif process.poll() is None:
+                            self.status.set("连接器正在启动。安装或更新插件后请重启所选 Agent 会话，并审查 Hooks。")
+                        continue
+                    if kind == "connector_stop_pending":
+                        if getattr(self, "stopping_connector", None) is process:
+                            self.status.set(value)
+                        continue
+                    if process.poll() is None and getattr(self, "stopping_connector", None) is not process and (value == "GatherThread connector ready." or value.startswith("Connected session: ")
                             or value.startswith('Connected "claude-code" session: ')):
                         self.status.set("已连接；保持启动器运行，即可在网页使用此 Agent。")
                     kind = "log"
                 if kind == "log":
                     self.log.configure(state="normal")
                     self.log.insert("end", value + "\n")
+                    self.log.delete("1.0", "end-100000c")
                     self.log.see("end")
                     self.log.configure(state="disabled")
                 elif kind == "status":
@@ -1047,6 +1152,9 @@ class Launcher(tk.Tk):
                     self._apply_claude_discovery(*value)
         except queue.Empty:
             pass
+        if getattr(self, "stop_deadline", None) is not None and time.monotonic() >= self.stop_deadline:
+            self.stop_deadline = None
+            self.status.set("停止请求已发送，本地任务仍在退出。请保持启动器打开；确认退出后才可重新连接。")
         self.after(100, self._poll)
 
     @staticmethod

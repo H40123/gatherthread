@@ -42,7 +42,7 @@ def email_launcher_fixture():
                                  context_tokens=FixtureValue("128000"), history_sync=FixtureValue("first-connect"), workspace=FixtureValue(),
                                  status=FixtureValue(), link_version="2", authorization_id=AUTHORIZATION_ID,
                                  handoff_project="project-example", authorization_used=False, events=launcher.queue.Queue(),
-                                 _paths=lambda: (Path("node.exe"), "codex.exe"), _flags=lambda: 0, _read_connector=MagicMock(),
+                                 _paths=lambda: (Path("node.exe"), "codex.exe"), _flags=lambda: 0, _read_connector=MagicMock(), _wait_connector=MagicMock(),
                                  connector_lock=threading.Lock())
     fake._clear_secrets = lambda: (fake.password.set(""), fake.token.set(""))
     fake._env = lambda token: {"GATHERTHREAD_TOKEN": token}
@@ -83,6 +83,102 @@ class ClaimResponse(io.BytesIO):
 
 
 class ConnectorStatusTests(unittest.TestCase):
+    def ui(self):
+        fake = email_launcher_fixture()
+        fake.log, fake.after, fake._poll = MagicMock(), MagicMock(), MagicMock()
+        fake.connection_cancelled = threading.Event()
+        fake._stop = lambda: launcher.Launcher._stop(fake)
+        fake._request_connector_stop = lambda process: launcher.Launcher._request_connector_stop(fake, process)
+        return fake
+
+    def test_stop_uses_graceful_pipe_and_late_ready_cannot_restore_connected(self):
+        fake = self.ui()
+        process = MagicMock(stdin=io.StringIO())
+        process.poll.return_value = None
+        fake.connector = process
+        def synchronous(target, args=(), **_kwargs):
+            return types.SimpleNamespace(start=lambda: target(*args))
+        with patch.object(launcher.threading, "Thread", side_effect=synchronous):
+            launcher.Launcher._stop(fake)
+            launcher.Launcher._stop(fake)
+        self.assertEqual(process.stdin.getvalue(), "gatherthread:stop\n")
+        process.terminate.assert_not_called()
+        fake.events.put(("connector_log", (process, "GatherThread connector ready.")))
+        launcher.Launcher._poll(fake)
+        self.assertIn("正在断开", fake.status.get())
+        fake.stop_deadline = 0
+        launcher.Launcher._poll(fake)
+        self.assertIn("仍在退出", fake.status.get())
+        self.assertIs(fake.connector, process, "unconfirmed cleanup must retain ownership")
+
+    def test_stop_during_os_launch_does_not_block_ui_and_stops_the_late_child(self):
+        fake = self.ui()
+        spawn_entered, release_spawn = threading.Event(), threading.Event()
+        process = MagicMock(stdin=io.StringIO())
+        process.poll.return_value = None
+        def spawn(*_args, **_kwargs):
+            spawn_entered.set()
+            release_spawn.wait(2)
+            return process
+        with patch.object(launcher, "bundled_connector", return_value=Path(__file__)), \
+                patch.object(launcher, "claim_email_authorization", return_value="gta_" + "x" * 43), \
+                patch.object(launcher.subprocess, "Popen", side_effect=spawn):
+            launcher.Launcher._connect(fake)
+            self.assertTrue(spawn_entered.wait(1))
+            stopped = threading.Event()
+            thread = REAL_THREAD(target=lambda: (launcher.Launcher._stop(fake), stopped.set()), daemon=True)
+            thread.start()
+            try:
+                self.assertTrue(stopped.wait(0.3), "Stop cannot wait for Popen's lock")
+            finally:
+                release_spawn.set()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and (fake.connector is None or fake.busy):
+                launcher.Launcher._poll(fake)
+                time.sleep(0.01)
+            launcher.Launcher._poll(fake)
+            deadline = time.monotonic() + 1
+            while not process.stdin.getvalue() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(process.stdin.getvalue(), "gatherthread:stop\n")
+            self.assertIs(fake.stopping_connector, process)
+
+    def test_exit_receipt_does_not_wait_for_a_descendant_to_close_stdout(self):
+        fake = self.ui()
+        blocked, release = threading.Event(), threading.Event()
+        class HeldPipe:
+            def readline(self, _limit):
+                blocked.set()
+                release.wait(2)
+                return ""
+            def close(self):
+                pass
+        process = MagicMock(stdout=HeldPipe(), stdin=io.StringIO())
+        process.wait.return_value = 0
+        fake.connector = process
+        reader = REAL_THREAD(target=launcher.Launcher._read_connector, args=(fake, process, "fixture"), daemon=True)
+        reader.start()
+        try:
+            self.assertTrue(blocked.wait(1))
+            launcher.Launcher._wait_connector(fake, process)
+            launcher.Launcher._poll(fake)
+            self.assertIsNone(fake.connector)
+            self.assertTrue(reader.is_alive(), "the test must retain the inherited pipe during receipt handling")
+        finally:
+            release.set()
+            reader.join(1)
+
+    def test_output_is_bounded_and_never_exposes_a_partial_long_secret_line(self):
+        fake = self.ui()
+        process = MagicMock(stdout=io.StringIO("x" * 17000 + "gta_fixture-secret\n" + "safe\n" * 2000))
+        launcher.Launcher._read_connector(fake, process, "fixture-secret")
+        values = []
+        while not fake.events.empty():
+            values.append(fake.events.get_nowait()[1][1])
+        self.assertEqual(len(values), launcher.CONNECTOR_LOG_QUEUE_LIMIT)
+        self.assertEqual(values[0], "[过长输出已省略]")
+        self.assertNotIn("secret", "".join(values))
+
     def test_connected_receipt_updates_status_before_child_exit(self):
         for line in ('Connected session: Demo [multi] as "Demo"', 'GatherThread connector ready.',
                      'Connected "claude-code" session: "Demo" [multi]'):
@@ -95,7 +191,7 @@ class ConnectorStatusTests(unittest.TestCase):
                 process.poll.return_value = None
                 fake.connector = process
                 fake.status.set("连接器正在启动")
-                process.stdout = iter([line + "\n"])
+                process.stdout = io.StringIO(line + "\n")
                 process.wait.return_value = 0
                 launcher.Launcher._read_connector(fake, process, "fixture-credential")
                 # Deliver the live output before the queued exit notification.
@@ -125,7 +221,7 @@ class ConnectorStatusTests(unittest.TestCase):
         fake._poll = MagicMock()
         fake.connector = MagicMock()
         fake.status.set("new connection")
-        old = MagicMock(stdout=iter(['Connected session: Old [solo] as "Old"\n']))
+        old = MagicMock(stdout=io.StringIO('Connected session: Old [solo] as "Old"\n'))
         old.wait.return_value = 1
         launcher.Launcher._read_connector(fake, old, "fixture-credential")
         launcher.Launcher._poll(fake)
@@ -434,7 +530,7 @@ class EmailAuthorizationTests(unittest.TestCase):
                                      context_tokens=Value("128000"), history_sync=Value("first-connect"), workspace=Value(),
                                      status=Value(), link_version="2", authorization_id=AUTHORIZATION_ID,
                                      handoff_project="project-example", authorization_used=False, events=launcher.queue.Queue(),
-                                     _paths=lambda: (Path("node.exe"), "codex.exe"), _flags=lambda: 0, _read_connector=MagicMock())
+                                     _paths=lambda: (Path("node.exe"), "codex.exe"), _flags=lambda: 0, _read_connector=MagicMock(), _wait_connector=MagicMock())
         fake.connector_lock = threading.Lock()
         fake._clear_secrets = lambda: (fake.password.set(""), fake.token.set(""))
         fake._env = lambda token: {"GATHERTHREAD_TOKEN": token}
@@ -449,7 +545,8 @@ class EmailAuthorizationTests(unittest.TestCase):
             self.assertEqual(fake.password.get(), "")
             self.assertEqual(fake.token.get(), "")
             self.assertEqual(args[args.index("--url") + 1], "https://test.gatherthread.cn")
-            self.assertEqual(kwargs["env"], {"GATHERTHREAD_TOKEN": "gta_" + "x" * 43})
+            self.assertEqual(kwargs["env"], {"GATHERTHREAD_TOKEN": "gta_" + "x" * 43, "GATHERTHREAD_LAUNCHER_CONTROL": "stdin-v1"})
+            self.assertEqual(kwargs["stdin"], launcher.subprocess.PIPE)
             self.assertNotIn("private-fixture-password", repr(args))
             self.assertNotIn("gta_", repr(args))
             work = targets[0]
@@ -469,6 +566,12 @@ class EmailAuthorizationTests(unittest.TestCase):
 
 
 class IconDistributionTests(unittest.TestCase):
+    def test_header_uses_the_unmodified_approved_brand_assets(self):
+        root = Path(__file__).resolve().parents[2]
+        for target, variant in (("gatherthread-lockup.png", "light"), ("gatherthread-lockup-dark.png", "dark")):
+            self.assertEqual((Path(__file__).parent / "assets" / target).read_bytes(),
+                             (root / "logo/png" / ("lockup-color-transparent-" + variant + "-1200px.png")).read_bytes())
+
     def test_checked_in_application_icons_have_required_sizes(self):
         assets = Path(__file__).parent / "assets"
         self.assertEqual(verify_dist.verify_ico((assets / "gatherthread.ico").read_bytes()),

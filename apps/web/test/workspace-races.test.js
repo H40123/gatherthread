@@ -4,6 +4,9 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import { cloudRequestInput, retryAgentRequestPermission } from "../src/agent-request-control.js";
 import { agentContextUpdateReason } from "../src/domain.js";
+import { createSoloDrafts } from "../src/solo-drafts.js";
+import { HttpCollaborationApi } from "../src/api.js";
+import { configurationPrompt } from "../src/configuration-assistant.js";
 
 // Git checkouts may use CRLF on Windows; source extraction below uses LF sentinels.
 const source = (await readFile(new URL("../src/main.js", import.meta.url), "utf8")).replace(/\r\n?/gu, "\n");
@@ -42,6 +45,10 @@ function harness(names, overrides = {}) {
     exampleMode: false,
     agentContextUpdateReason,
     authenticationGeneration: 1, selectedSessionGeneration: 1, workspaceLoadGeneration: 0, projectNavigationGeneration: 0,
+    soloNavigationGeneration: 0, pendingMessageSend: null,
+    soloDrafts: { has: () => false, isPending: () => false, submitted: noop, leave: async () => {} },
+    configurationSkillContent: content => content, configurationDrafts: new Map(), CONFIGURATION_SKILL: "/gatherthread-config",
+    configurationSkillChip: { hidden: true },
     state: { currentUser: { id: "u1", username: "User", device_id: "d1" }, avatarProfiles: new Map(), avatarProfileRevision: 0, project: { id: "p1" },
       projects: [], session: { id: "s1" }, sync: { contentRevision: 0 }, settings: { composer: {} }, invitations: [], snapshotRequests: [] },
     element: (id) => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); },
@@ -69,10 +76,295 @@ function harness(names, overrides = {}) {
     ...overrides,
     api: { getAccountAvatar: async () => ({ user_id: "u1", avatar_id: null }), listAvatarProfiles: async () => [], ...overrides.api },
   });
-  vm.runInContext([...new Set(["captureWorkspaceScope", "applyAccountAvatar", "refreshAccountAvatar", "refreshAvatarProfiles", "clearStaleTeamComposerProblem", "isAlternativeNative", ...names])]
+  vm.runInContext([...new Set(["captureWorkspaceScope", "leaveEmptySolo", "applyAccountAvatar", "refreshAccountAvatar", "refreshAvatarProfiles", "clearStaleTeamComposerProblem", "isAlternativeNative", ...names])]
     .map(functionSource).join("\n"), context);
   return context;
 }
+
+function installSoloDrafts(app) {
+  app.createSoloDrafts = createSoloDrafts;
+  const start = source.indexOf("const soloDrafts = createSoloDrafts("), end = source.indexOf("\n});", start) + 4;
+  assert.ok(start >= 0 && end > start, "production Solo cleanup callbacks exist");
+  vm.runInContext(source.slice(start, end).replace("const soloDrafts =", "globalThis.soloDrafts ="), app);
+}
+
+function soloNavigationFixture(overrides = {}) {
+  const app = harness(["selectSession"], {
+    mobileWorkspace: { close: noop }, codeSyncUi: { close: noop }, historySummaryUi: { reset: noop },
+    messageInput: { ...element(), value: "/gatherthread-config\nPrivate unsent team requirements" },
+    messageActions: { reset: noop, refresh: noop }, messageDeletion: { reset: noop },
+    expandedWorklogs: new Set(), collapsedWorklogs: new Set(), progressSectionState: new Map(), revealedProgressEvents: new Set(),
+    stopDshRuntimePolling: noop, renderProjectPermissions: noop, clearCreatedInvitationSecret: noop,
+    closeMembersPanelWithoutFocus: noop, renderSnapshotRequests: noop, downloadCodexButton: element(), importVisibleHistoryButton: element(),
+    startMemberRefresh: noop, renderSessionHeader: noop, refreshDshRuntimes: async () => {}, startDshRuntimePolling: noop,
+    restoreSnapshotRequests: noop, sync: { disconnect: noop, connect: async () => {} },
+    ...overrides,
+    api: { getSession: async id => ({ id, mode: "multi" }), listMembers: async () => [], ...overrides.api },
+  });
+  app.state.session.mode = "solo";
+  app.state.sessions = [app.state.session, { id: "s2", mode: "multi" }];
+  app.configurationSkillChip.hidden = false;
+  app.configurationDrafts.set("s1", { private: "Original configuration draft" });
+  installSoloDrafts(app); app.soloDrafts.remember(app.state.session);
+  return app;
+}
+
+for (const outcome of ["deleted", "message-accepted-elsewhere", "transport-error"]) {
+  test(`leaving an empty Solo opens the next conversation without waiting for cleanup and fences its draft (${outcome})`, async () => {
+    const cleanup = deferred(), calls = [];
+    const app = soloNavigationFixture({ api: { discardEmptySolo: id => { calls.push(id); return cleanup.promise; } } });
+    let navigated = false;
+    const navigation = app.selectSession("s2").then(() => { navigated = true; });
+    try {
+      await nextTurn();
+      assert.equal(navigated, true, "the cleanup acknowledgement must not hold session navigation");
+      assert.equal(app.state.session?.id, "s2"); assert.equal(app.messageInput.value, "");
+      assert.equal(app.configurationSkillChip.hidden, true); assert.equal(app.configurationDrafts.has("s1"), false);
+      assert.deepEqual(calls, ["s1"]);
+      app.messageInput.value = "A new Multi conversation draft";
+    } finally {
+      if (outcome === "transport-error") cleanup.reject(new Error("Synthetic offline transport"));
+      else cleanup.resolve({ session_id: "s1", discarded: outcome === "deleted" });
+      await navigation; await nextTurn();
+    }
+    assert.equal(app.messageInput.value, "A new Multi conversation draft", "a late cleanup cannot erase the new conversation's draft");
+    assert.equal(app.state.session.id, "s2");
+    assert.equal(app.state.sessions.some(session => session.id === "s1"), outcome !== "deleted");
+  });
+}
+
+test("an in-flight send from a new Solo blocks cleanup and preserves its input until accepted", async () => {
+  let cleaned = 0;
+  const app = soloNavigationFixture({ pendingMessageSend: () => true,
+    api: { discardEmptySolo: async () => { cleaned++; return { discarded: true }; } } });
+  const draft = app.messageInput.value;
+  await app.selectSession("s2");
+  assert.equal(app.state.session.id, "s1"); assert.equal(app.messageInput.value, draft);
+  assert.equal(app.configurationSkillChip.hidden, false); assert.equal(cleaned, 0);
+});
+
+for (const discarded of [true, false]) {
+  test(`a Solo scheduled for cleanup cannot be reopened while its delete outcome is unknown (${discarded})`, async () => {
+    const cleanup = deferred(), reads = [], sessionList = element();
+    const app = soloNavigationFixture({ sessionList,
+      document: { createElement: () => ({ ...element(), classList: { add: noop }, addEventListener: noop }) },
+      api: {
+      discardEmptySolo: () => cleanup.promise,
+      getSession: async id => { reads.push(id); return { id, mode: id === "s1" ? "solo" : "multi" }; },
+    } });
+    vm.runInContext(functionSource("renderSessionList"), app);
+    await app.selectSession("s2");
+    app.messageInput.value = "Keep this new conversation draft";
+    try {
+      assert.equal(app.soloDrafts.isPending("s1"), true);
+      assert.equal(sessionList.children[0].children[0].disabled, true, "pending cleanup disables the actual list button");
+      assert.equal(sessionList.children[1].children[0].disabled, false, "other conversations stay selectable");
+      await app.selectSession("s1");
+      assert.equal(app.state.session.id, "s2", "a pending delete must not reopen a conversation the server is removing");
+      assert.deepEqual(reads, ["s2"]); assert.equal(app.messageInput.value, "Keep this new conversation draft");
+    } finally {
+      cleanup.resolve({ session_id: "s1", discarded }); await nextTurn();
+    }
+    assert.equal(app.soloDrafts.isPending("s1"), false); assert.equal(app.state.session.id, "s2");
+    assert.equal(app.messageInput.value, "Keep this new conversation draft");
+    if (!discarded) {
+      assert.equal(sessionList.children[0].children[0].disabled, false, "retained Solo is re-enabled when cleanup settles");
+      await app.selectSession("s1");
+      assert.equal(app.state.session.id, "s1", "a conversation protected by an accepted message becomes selectable again");
+    } else assert.equal(app.state.sessions.some(session => session.id === "s1"), false);
+  });
+}
+
+function soloCreationFixture({ entry, mode = "solo", create, list, confirmLeave = async () => false } = {}) {
+  const cleanup = [], submit = element(); let handler;
+  const created = { id: "new-session", mode };
+  const app = harness(["startTeamConfiguration", "selectSession"], {
+    configuringTeam: false, createIdempotencyKey: kind => `${kind}-fixture-key`,
+    messageInput: element(), window: { confirm: () => true },
+    filesUi: { confirmLeave }, agentManagementUi: { close: noop },
+    createDialog: { close: noop },
+    createForm: { addEventListener(type, callback) { assert.equal(type, "submit"); handler = callback; },
+      querySelector: () => submit, reset: noop },
+    FormData: class { get(name) { return name === "mode" ? mode : "Fixture conversation"; } },
+    api: { createSession: create ?? (async () => created), listProjectSessions: list ?? (async () => [created]),
+      discardEmptySolo: async id => { cleanup.push(id); return { session_id: id, discarded: true }; } },
+  });
+  app.state.project.role = "owner"; app.state.sessions = [app.state.session];
+  installSoloDrafts(app);
+  if (entry === "ordinary") {
+    const start = source.indexOf('createForm.addEventListener("submit",'), end = source.indexOf("\n});", start) + 4;
+    assert.ok(start >= 0 && end > start); vm.runInContext(source.slice(start, end), app);
+  }
+  return { app, cleanup, submit, created, run: configuration => entry === "ordinary" ? handler({ preventDefault: noop }) : app.startTeamConfiguration(configuration) };
+}
+
+test("cancelling AI configuration preserves an existing unsent message without creating a Solo", async () => {
+  let creates = 0, confirmations = 0, closed = 0;
+  const f = soloCreationFixture({ entry: "ai", create: async () => { creates++; return { id: "unexpected", mode: "solo" }; } });
+  const original = "Keep my unfinished discussion draft";
+  f.app.messageInput.value = original;
+  f.app.window.confirm = () => { confirmations++; return false; };
+  f.app.agentManagementUi.close = () => { closed++; };
+  assert.equal(await f.run(), false);
+  assert.equal(confirmations, 1); assert.equal(creates, 0); assert.equal(closed, 0);
+  assert.equal(f.app.messageInput.value, original); assert.equal(f.app.state.session.id, "s1");
+  assert.equal(f.app.configuringTeam, false); assert.deepEqual(f.cleanup, []);
+});
+
+test("AI configuration refuses an oversized configuration draft before replacing input or creating a Solo", async () => {
+  let creates = 0;
+  const f = soloCreationFixture({ entry: "ai", create: async () => { creates++; return { id: "unexpected", mode: "solo" }; } });
+  f.app.messageInput.value = "Preserve this existing message";
+  f.app.window.confirm = () => assert.fail("an oversized configuration must be refused before confirmation");
+  assert.equal(await f.run({ requirements: "x".repeat(6001) }), false);
+  assert.equal(creates, 0); assert.equal(f.app.messageInput.value, "Preserve this existing message");
+  assert.equal(f.app.state.session.id, "s1"); assert.equal(f.app.configuringTeam, false);
+  assert.equal(f.app.configurationDrafts.size, 0); assert.deepEqual(f.cleanup, []);
+});
+
+function aiConfigurationNavigationFixture({ refreshRuntimes = async () => {}, connect = async () => {},
+  confirmLeave = async () => true, discarded = true } = {}) {
+  const created = { id: "ai-configuration-session", mode: "solo" };
+  const cleanup = [], inputEvents = [], focus = [];
+  const app = soloNavigationFixture({
+    configuringTeam: false, createIdempotencyKey: () => "ai-navigation-fixture",
+    configurationPrompt, Event, structuredClone, window: { confirm: () => true },
+    filesUi: { confirmLeave }, agentManagementUi: { close: noop },
+    refreshDshRuntimes: refreshRuntimes, sync: { disconnect: noop, connect },
+    api: { createSession: async () => created, listProjectSessions: async () => [created, { id: "s2", mode: "multi" }],
+      getSession: async id => ({ id, mode: id === created.id ? "solo" : "multi" }),
+      discardEmptySolo: async id => { cleanup.push(id); return { session_id: id, discarded }; } },
+  });
+  app.state.project.role = "owner"; app.state.settings.general = { locale: "zh-CN" };
+  app.state.session.mode = "multi"; app.soloDrafts.submitted(app.state.session.id);
+  app.configurationDrafts.clear(); app.messageInput.value = "";
+  app.messageInput.dispatchEvent = event => inputEvents.push({ type: event.type, value: app.messageInput.value });
+  app.messageInput.setSelectionRange = noop;
+  app.messageInput.focus = () => focus.push("input");
+  app.element("session-title").focus = () => focus.push("title");
+  vm.runInContext(functionSource("startTeamConfiguration"), app);
+  return { app, created, cleanup, inputEvents, focus };
+}
+
+for (const stage of ["runtime discovery", "replay connection"]) {
+  test(`AI setup seeds its prompt before ${stage} and never overwrites editing or refocuses on late completion`, async () => {
+    const waiting = deferred(); let blocked = false;
+    const delay = () => { blocked = true; return waiting.promise; };
+    const f = aiConfigurationNavigationFixture(stage === "runtime discovery" ? { refreshRuntimes: delay } : { connect: delay });
+    const work = f.app.startTeamConfiguration();
+    const draft = `${configurationPrompt("zh-CN")}科研团队，需要计算与独立复核。`;
+    try {
+      await nextTurn();
+      assert.equal(blocked, true); assert.equal(f.app.state.session.id, f.created.id);
+      assert.equal(f.app.messageInput.value, configurationPrompt("zh-CN"), "the prompt is present as soon as the new conversation is displayed");
+      assert.deepEqual(f.focus, ["title", "input"]);
+      f.app.messageInput.value = draft;
+    } finally { waiting.resolve(); await work; }
+    assert.equal(f.app.messageInput.value, draft);
+    assert.equal(f.inputEvents.length, 1, "the setup prompt is only seeded once");
+    assert.deepEqual(f.focus, ["title", "input"], "a late discovery/replay cannot steal the user's input focus");
+  });
+
+  test(`returning to the AI Solo before its old ${stage} finishes cannot restore an obsolete prompt`, async () => {
+    const waiting = deferred(); let calls = 0;
+    const delayFirst = () => ++calls === 1 ? waiting.promise : Promise.resolve();
+    // The server protects this Solo when another device has accepted a message.
+    // It can therefore be selected again after conditional cleanup settles.
+    const f = aiConfigurationNavigationFixture({ discarded: false,
+      ...(stage === "runtime discovery" ? { refreshRuntimes: delayFirst } : { connect: delayFirst }) });
+    const work = f.app.startTeamConfiguration();
+    let focusBeforeCompletion;
+    const draft = "New requirements entered after returning to the retained Solo";
+    try {
+      await nextTurn();
+      assert.equal(calls, 1); assert.equal(f.app.state.session.id, f.created.id);
+      assert.equal(f.inputEvents.length, 1);
+      await f.app.selectSession("s2"); await nextTurn();
+      assert.deepEqual(f.cleanup, [f.created.id]);
+      assert.equal(f.app.soloDrafts.isPending(f.created.id), false);
+      await f.app.selectSession(f.created.id);
+      f.app.messageInput.value = draft;
+      focusBeforeCompletion = [...f.focus];
+    } finally { waiting.resolve(); await work; }
+    assert.equal(f.app.state.session.id, f.created.id);
+    assert.equal(f.app.messageInput.value, draft);
+    assert.equal(f.inputEvents.length, 1, "returning to the same ID must not revive the earlier setup callback");
+    assert.deepEqual(f.focus, focusBeforeCompletion);
+  });
+}
+
+test("cancelled AI session navigation never seeds a prompt or changes the existing input", async () => {
+  const f = aiConfigurationNavigationFixture({ confirmLeave: async () => false });
+  const draft = "Keep this discussion draft when cancelling the file-editor leave prompt";
+  f.app.messageInput.value = draft;
+  assert.equal(await f.app.startTeamConfiguration(), false);
+  await nextTurn();
+  assert.equal(f.app.state.session.id, "s1"); assert.equal(f.app.messageInput.value, draft);
+  assert.deepEqual(f.inputEvents, []); assert.deepEqual(f.focus, []);
+  assert.deepEqual(f.cleanup, [f.created.id]);
+});
+
+for (const entry of ["ordinary", "ai"]) {
+  test(`${entry} Solo creation is conditionally discarded if the actual session navigation is cancelled`, async () => {
+    const f = soloCreationFixture({ entry });
+    await f.run(); await nextTurn();
+    assert.equal(f.app.state.session.id, "s1"); assert.deepEqual(f.cleanup, [f.created.id]);
+    assert.equal(f.app.state.sessions.some(session => session.id === f.created.id), false);
+    assert.equal(f.submit.disabled, false); assert.equal(f.app.configuringTeam, false);
+  });
+
+  for (const phase of ["create", "list"]) {
+    test(`${entry} Solo creation recovers an unused session after switching selection during ${phase}`, async () => {
+      const pending = deferred(), f = soloCreationFixture({ entry,
+        ...(phase === "create" ? { create: () => pending.promise } : { list: () => pending.promise }) });
+      const work = f.run(); await nextTurn();
+      f.app.selectedSessionGeneration++; f.app.state.session = { id: "chosen-session", mode: "multi" };
+      f.app.state.sessions = [f.app.state.session];
+      pending.resolve(phase === "create" ? f.created : [f.created]);
+      await work; await nextTurn();
+      assert.deepEqual(f.cleanup, [f.created.id]); assert.equal(f.app.state.session.id, "chosen-session");
+      assert.deepEqual(f.app.state.sessions.map(session => session.id), ["chosen-session"]);
+    });
+  }
+
+  test(`${entry} late Solo creation never sends cleanup using a newly authenticated account`, async () => {
+    const pending = deferred(), f = soloCreationFixture({ entry, create: () => pending.promise });
+    const work = f.run();
+    f.app.authenticationGeneration++; f.app.state.currentUser = { id: "another-user" }; f.app.soloDrafts.clear();
+    pending.resolve(f.created); await work; await nextTurn();
+    assert.deepEqual(f.cleanup, []); assert.equal(f.app.soloDrafts.has(f.created.id), false);
+    assert.equal(f.app.state.currentUser.id, "another-user");
+  });
+}
+
+test("cancelled ordinary Multi creation is preserved and never sent to Solo cleanup", async () => {
+  const f = soloCreationFixture({ entry: "ordinary", mode: "multi" });
+  await f.run(); await nextTurn();
+  assert.deepEqual(f.cleanup, []); assert.equal(f.app.state.sessions.some(session => session.id === f.created.id), true);
+});
+
+test("a missing Solo's reconciliation read has a short deadline even when the transport ignores cancellation", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const previousFetch = globalThis.fetch, calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, signal: options.signal });
+    if (String(url).endsWith("/discard-empty")) return { ok: false, status: 404,
+      json: async () => ({ error: { code: "not_found", message: "Session not found" } }) };
+    return new Promise(() => {});
+  };
+  t.after(() => { globalThis.fetch = previousFetch; });
+  const errors = [], drafts = createSoloDrafts({ api: new HttpCollaborationApi(), onError: error => errors.push(error) });
+  drafts.remember({ id: "already-removed", mode: "solo" });
+  let settled = false;
+  const cleanup = drafts.leave("already-removed").then(() => { settled = true; });
+  for (let index = 0; index < 20; index++) await Promise.resolve();
+  assert.equal(calls.length, 2);
+  t.mock.timers.tick(2999); for (let index = 0; index < 10; index++) await Promise.resolve();
+  assert.equal(settled, false);
+  t.mock.timers.tick(1); for (let index = 0; index < 20; index++) await Promise.resolve();
+  assert.equal(settled, true, "404 reconciliation must not fall back to the generic 45-second deadline");
+  await cleanup; assert.equal(calls[1].signal.aborted, true); assert.equal(errors.length, 1);
+});
 
 test("switching projects clears unconsumed Launcher and manual authorizations before loading", async () => {
   let launcherCleared = 0, manualCleared = 0;
@@ -374,7 +666,8 @@ function contextPolicySaveHarness(write) {
     settingsDialog: { open: true, close() { this.open = false; } }, settingsPreview: {},
     mobileSettings: { open: section => openedSections.push(section) },
     contextBudgetInputBytes: () => 262144, CONTEXT_BUDGET_MIN_BYTES: 8192, CONTEXT_BUDGET_MAX_BYTES: 5242880,
-    DSH_HARNESS: "deepseek-harness", currentDeviceName: "Fixture device", readSettingsForm: () => ({ notifications: {} }),
+    DSH_HARNESS: "deepseek-harness", currentDeviceName: "Fixture device", importedInterfaceMode: undefined,
+    readSettingsForm: () => ({ notifications: {} }),
     notificationPermissionNeeded: () => false, settingsStore: { set: (value) => { saved.push(value); return value; } },
     connectionNoticeState: {}, INITIAL_CONNECTION_NOTICE_STATE: {}, advanceConnectionNotice: () => ({ state: {} }),
     hideAttentionNotice: noop, applyVisualSettings: noop, renderProjectAgentButtons: noop,

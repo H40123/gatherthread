@@ -58,7 +58,8 @@ def main() -> None:
         license_text = archive.read(ROOT + "runtime/Node-LICENSE.txt")
         if not license_text.startswith(b"Node.js is licensed for use as follows:"):
             raise SystemExit("ZIP lacks the official Node license")
-        for required in ("assets/gatherthread.ico", "assets/gatherthread.png", "launcher.py", "Install.cmd", "Uninstall.ps1", *CLAUDE_RESOURCE_FILES):
+        for required in ("assets/gatherthread.ico", "assets/gatherthread.png", "assets/gatherthread-lockup.png", "launcher.py", "Install.cmd", "Uninstall.ps1",
+                         "plugins/gatherthread/skills/gatherthread-config/SKILL.md", *CLAUDE_RESOURCE_FILES):
             if required not in files:
                 raise SystemExit(f"ZIP lacks Launcher application asset: {required}")
         try:
