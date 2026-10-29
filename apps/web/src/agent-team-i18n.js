@@ -27,6 +27,7 @@ export const TEAM_ZH_CN = {
   "Test": "测试", "Test running…": "正在测试…", "Successfully connected": "成功跑通", "Test failed. Review the modules and try again.": "测试未跑通，请检查模块后重试。",
   "Not tested": "尚未测试", "Changes require a new test.": "配置已修改，需要重新测试。", "Team workflow canvas": "团队流程画布",
   "Add a blank or favorite module to start.": "添加空白模块或已收藏模块，开始搭建流程。", "Select module": "选择模块",
+  "Drag to move; use arrow keys when focused.": "按住此栏拖动；聚焦后也可用方向键移动。",
   "Choose an Agent": "选择 Agent", "No identity yet": "尚未设置身份", "Start": "起点", "Zoom out": "缩小", "Zoom in": "放大", "Reset zoom": "重置缩放",
   "Connect to this module": "连接到此模块", "Drag or select to create a data flow": "拖动或先点此处，再点目标模块的左端口连线",
   "View configuration": "查看配置文件", "Configuration relationships": "配置关系", "No data flows yet.": "尚未添加数据流。",

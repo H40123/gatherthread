@@ -72,8 +72,9 @@ export function teamEdgeAllowed(edges, source, target, direction, exceptId) {
   return !routes.includes(`${source}\0${target}`) && (direction !== "bidirectional" || !routes.includes(`${target}\0${source}`));
 }
 export function teamEdgePath(source, target) {
-  const x1 = source.x + TEAM_NODE_WIDTH, y1 = source.y + TEAM_NODE_HEIGHT / 2;
-  const x2 = target.x, y2 = target.y + TEAM_NODE_HEIGHT / 2;
+  // Leave the direction arrows visible just outside the connection ports.
+  const x1 = source.x + TEAM_NODE_WIDTH + 16, y1 = source.y + TEAM_NODE_HEIGHT / 2;
+  const x2 = target.x - 16, y2 = target.y + TEAM_NODE_HEIGHT / 2;
   const bend = Math.max(70, Math.abs(x2 - x1) * .5);
   return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
 }

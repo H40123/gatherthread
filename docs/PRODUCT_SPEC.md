@@ -375,6 +375,12 @@ saved but cannot be tested or enabled. The zoomable canvas separates modules
 from their selected execution Agent: each module has its own name, Agent, model,
 reasoning effort, identity and prompt. Agent/model/effort choices use the same
 exact advertised profiles as the composer, with no selectable hint option.
+Module headers mark their drag area with a grip and distinct muted colors, without
+a repeated drag label; keyboard arrow movement remains available. Blank and favorite
+modules appear selected above existing modules at
+the current viewport center, accounting for zoom and scroll, without moving the
+existing layout or resetting the view. Thin curved connections use small direction
+arrows and a wider invisible selection area; selection does not enlarge the arrows.
 When one connection advertises multiple providers, model labels include the
 provider so identical model names remain distinguishable. An unavailable selected
 model stays selected and is marked unavailable rather than replaced.
