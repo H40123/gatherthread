@@ -241,6 +241,63 @@ test("a file read cannot restore private configuration after switching accounts"
   assert.deepEqual(f.calls, []);
 });
 
+async function teamJsonEditor() {
+  const f = fixture(); await flush(); f.hostButton.click(); await flush(); f.el("team-import").click();
+  return { ...f, source: f.el("team-json-source"), feedback: f.el("team-json-error"), read(result, size = 1000) {
+    const file = f.el("team-json-file"); file.files = [{ size, text: () => result.promise }]; file.dispatch("change");
+  } };
+}
+
+for (const first of ["older", "newer"]) test(`Team JSON keeps the last selected file when ${first} read completes first`, async () => {
+  const f = await teamJsonEditor(), baseline = f.source.value, older = Promise.withResolvers(), newer = Promise.withResolvers();
+  f.read(older); f.read(newer);
+  if (first === "older") {
+    older.resolve(teamFile(team("Older"))); await flush();
+    assert.equal(f.source.value, baseline, "an obsolete read cannot replace the editor while the newer file is pending");
+    newer.resolve(teamFile(team("Newer"))); await flush();
+  } else {
+    newer.resolve(teamFile(team("Newer"))); await flush(); older.resolve(teamFile(team("Older"))); await flush();
+  }
+  assert.equal(JSON.parse(f.source.value).draft.name, "Newer"); assert.equal(f.feedback.textContent, ""); assert.deepEqual(f.calls, []);
+});
+
+for (const restored of [false, true]) test(`typing in Team JSON invalidates a pending file${restored ? " even after restoring its original text" : ""}`, async () => {
+  const f = await teamJsonEditor(), baseline = f.source.value, pending = Promise.withResolvers(); f.read(pending);
+  f.source.value = teamFile(team("Typed")); f.source.dispatch("input");
+  if (restored) { f.source.value = baseline; f.source.dispatch("input"); }
+  const edited = f.source.value; pending.resolve(teamFile(team("Imported"))); await flush();
+  assert.equal(f.source.value, edited); assert.equal(f.feedback.textContent, ""); assert.deepEqual(f.calls, []);
+});
+
+for (const replacement of ["file", "typing"]) test(`an obsolete Team file error cannot overwrite newer ${replacement}`, async () => {
+  const f = await teamJsonEditor(), older = Promise.withResolvers(); f.read(older);
+  if (replacement === "file") {
+    const newer = Promise.withResolvers(); f.read(newer); newer.resolve(teamFile(team("Newer"))); await flush();
+  } else { f.source.value = teamFile(team("Newer")); f.source.dispatch("input"); }
+  older.reject(new Error("outdated file failed")); await flush();
+  assert.equal(JSON.parse(f.source.value).draft.name, "Newer"); assert.equal(f.feedback.textContent, "");
+});
+
+for (const failure of [false, true]) test(`closing and reopening Team JSON fences a previous file ${failure ? "error" : "result"}`, async () => {
+  const f = await teamJsonEditor(), pending = Promise.withResolvers(); f.read(pending);
+  f.el("team-secondary-back").click(); f.el("team-import").click();
+  const reopened = f.el("team-json-source"), baseline = reopened.value;
+  assert.notEqual(reopened, f.source);
+  if (failure) pending.reject(new Error("closed file failed")); else pending.resolve(teamFile(team("Imported")));
+  await flush(); assert.equal(reopened.value, baseline); assert.equal(f.el("team-json-error").textContent, ""); assert.deepEqual(f.calls, []);
+});
+
+test("an oversized Team file supersedes a pending read while current errors remain visible and retryable", async () => {
+  const f = await teamJsonEditor(), baseline = f.source.value, older = Promise.withResolvers(); f.read(older);
+  f.read({ promise: Promise.resolve("unused") }, 128 * 1024 + 1);
+  const limitError = f.feedback.textContent; assert.match(limitError, /128 KiB/u);
+  older.resolve(teamFile(team("Older"))); await flush();
+  assert.equal(f.source.value, baseline); assert.equal(f.feedback.textContent, limitError);
+  f.read({ promise: Promise.resolve("invalid json") }); await flush(); assert.match(f.feedback.textContent, /Invalid configuration/u);
+  f.read({ promise: Promise.resolve(teamFile(team("Retry"))) }); await flush();
+  assert.equal(JSON.parse(f.source.value).draft.name, "Retry"); assert.equal(f.feedback.textContent, ""); assert.deepEqual(f.calls, []);
+});
+
 test("losing write permission disables an already-open JSON Apply button", async () => {
   const f = fixture({ initial: [team()] }); await open(f); f.el("team-config-json").click();
   f.update({ writable: false }); assert.equal(f.el("team-json-apply").disabled, true);

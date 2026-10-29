@@ -47,7 +47,8 @@ export function mountPreferencesConfiguration({ document: doc, button, getSettin
     node.className = `button ${primary ? "button-primary" : "button-secondary"}`;
     node.dataset.label = label; node.addEventListener("click", action); actions.append(node); return node;
   };
-  let generation = 0;
+  let generation = 0, importRevision = 0;
+  input.addEventListener("input", () => { importRevision++; });
   makeButton("Import JSON", () => file.click());
   makeButton("Download JSON", () => {
     try {
@@ -67,14 +68,15 @@ export function mountPreferencesConfiguration({ document: doc, button, getSettin
   }, true);
   file.addEventListener("change", async () => {
     const selected = file.files?.[0]; file.value = "";
-    const captured = generation;
-    if (!selected) return;
+    const captured = generation, revision = ++importRevision, original = input.value;
+    const current = () => dialog.open && captured === generation && revision === importRevision && input.value === original;
+    if (!selected || !dialog.open) return;
     if (selected.size > 128 * 1024) { status.textContent = t("Configuration must be at most 128 KiB."); return; }
     try {
       const text = await selected.text();
-      if (!dialog.open || captured !== generation) return;
+      if (!current()) return;
       importPreferences(text, getSettings()); input.value = text; status.textContent = "";
-    } catch (error) { if (dialog.open && captured === generation) status.textContent = configurationError(error); }
+    } catch (error) { if (current()) status.textContent = configurationError(error); }
   });
   dialog.addEventListener("close", () => { generation++; button.focus(); });
   button.addEventListener("click", () => {

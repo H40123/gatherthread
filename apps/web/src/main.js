@@ -603,6 +603,10 @@ const teamsUi = mountAgentTeams({ document, api, hostButton: element("agent-team
 async function startTeamConfiguration(configuration = null) {
   if (configuringTeam || !state.currentUser || !state.project || !["owner", "participant"].includes(state.project.role)) return false;
   if (configuration && JSON.stringify(configuration).length > 6000) return false;
+  if (configuration) configurationSkillContent(configurationPrompt(state.settings.general.locale), configuration, {
+    kind: currentProjectHarness() === "cloud" ? "hosted_agent" : "agent_request",
+    locale: state.settings.general.locale, reserve: 256,
+  });
   if (messageInput.value.trim() && !soloDrafts.has(state.session?.id)
       && !window.confirm(localizer.t("Replace the unsent message with a new Team configuration prompt? Cancel to keep your message."))) return false;
   const isCurrent = captureWorkspaceScope();
@@ -3640,10 +3644,11 @@ async function sendMessage(kind) {
   if (kind === "team_agent") sendError.teamProblemIntent = teamProblem;
   try {
     const leading = messageInput.value.length - messageInput.value.trimStart().length;
-    const requestContent = kind === "human_chat" ? content : configurationSkillContent(content, configurationDrafts.get(sessionId));
     if (kind === "team_agent" && content.startsWith(`${CONFIGURATION_SKILL}\n`)) {
       throw new Error(localizer.t("Choose an individual Agent to help configure your Team."));
     }
+    const requestContent = kind === "human_chat" ? content : configurationSkillContent(content, configurationDrafts.get(sessionId),
+      { kind, locale: state.settings.general?.locale });
     if (requestContent.length > 12000) throw new Error(localizer.t("This configuration is too large for one request. Use the JSON editor or start with a smaller Team."));
     const input = { content: requestContent, idempotencyKey: createIdempotencyKey(kind), replyTo: metadata.replyTo,
       mentions: metadata.mentions.map((mention) => ({ ...mention, start: mention.start - leading, end: mention.end - leading })) };

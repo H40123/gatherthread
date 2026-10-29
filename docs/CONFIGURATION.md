@@ -52,7 +52,7 @@
 
 这是 GatherThread 内置配置技能。发送时会附带版本化格式与示例；新版 Codex/Claude 插件也提供同名 skill，以及只读的 `collaboration_get_configuration_schema`、`collaboration_validate_configuration` 工具。未安装新版插件的 Agent 仍可根据附带示例生成配置。
 
-Agent 回复中的有效 Team JSON 会显示“预览 Team 配置”。点击后可编辑、选择各模块的 Agent，再走正常的保存与测试流程。现有 Team 会作为参考附带给 Agent；超过 6000 字符的配置会保留在编辑器并提示使用 JSON 编辑或下载，给需求和格式说明留出空间。也可以从 Team 列表点击“让 AI 帮我配置”，从需求设计一个新 Team。
+Agent 回复中的有效 Team JSON 会显示“预览 Team 配置”。点击后可编辑、选择各模块的 Agent，再走正常的保存与测试流程。现有 Team 会作为参考附带给 Agent；配置过长时会保留在编辑器并提示使用 JSON 编辑或下载。打开配置会话前会为需求预留空间，发送前再次检查完整请求长度：云端 Agent 最多 6000 字符，本地及共享 Agent 的网页配置请求最多 12000 字符，均包含附带的格式说明和已有 Team。超过限制会保留草稿，供你精简；不会自动更换 Agent。也可以从 Team 列表点击“让 AI 帮我配置”，从需求设计一个新 Team。
 
 新建 Solo 在未提交任何消息时，切换会话或项目会自动清理；尚在发送时需先等待结果。已发送过内容的 Solo、其他设备已写入的会话、Multi 都会保留。断网导致无法确认清理时，会保留会话并提示。已关闭整个网页的空会话可能仍在列表中，可手动删除。
 

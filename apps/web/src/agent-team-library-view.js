@@ -787,8 +787,8 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
       if (accepted === true && current(gen) && session === editorSession && version === draftVersion && dialog.open) {
         finishLeave({ kind: "management", generation: gen, id: editId });
       }
-    } catch {
-      if (current(gen)) showLocalError("Unable to open the AI configuration chat. Your draft is kept.");
+    } catch (error) {
+      if (current(gen)) showLocalError(error?.code === "configuration_request_too_long" ? error.message : "Unable to open the AI configuration chat. Your draft is kept.");
     } finally { if (current(gen)) { configuringAi = false; renderButtons(); } }
   }
   function applyPreset(id, inEditor, reset = false) {
@@ -834,17 +834,20 @@ export function mountAgentTeams({ document: doc, api, hostButton, getContext, on
       ? "Configuration files must be at most 128 KiB." : "Invalid configuration. Check the JSON syntax and schema fields.");
     const actions = el("div", "team-json-actions"), upload = el("input"); upload.type = "file"; upload.accept = ".json,application/json"; upload.hidden = true; upload.id = "team-json-file";
     const pick = button("Open JSON file", () => upload.click());
+    let importRevision = 0;
+    textarea.addEventListener("input", () => { importRevision++; });
     upload.addEventListener("change", async () => {
-      const file = upload.files?.[0]; if (!file || !alive()) return;
-      const original = textarea.value;
+      const file = upload.files?.[0]; upload.value = "";
+      const original = textarea.value, importVersion = ++importRevision;
+      const currentImport = () => alive() && importVersion === importRevision && textarea.value === original;
+      if (!file || !alive()) return;
       try {
         if (file.size > AGENT_TEAM_CONFIG_MAX_BYTES) { report({ path: "file_size" }); return; }
         const text = await file.text();
-        if (!alive() || textarea.value !== original) return;
+        if (!currentImport()) return;
         const parsed = parseAgentTeamConfiguration(text);
         textarea.value = JSON.stringify(parsed, null, 2); jsonProblem("");
-      } catch (problem) { if (alive()) report(problem); }
-      finally { upload.value = ""; }
+      } catch (problem) { if (currentImport()) report(problem); }
     });
     const download = button("Download JSON", () => {
       try {
