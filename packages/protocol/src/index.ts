@@ -819,3 +819,4 @@ export * from "./registration.js";
 export * from "./cloud-api.js";
 
 export * from "./dsh-workspace.js";
+export * from "./desktop.js";

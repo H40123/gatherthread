@@ -465,6 +465,18 @@ Web HTML IDs, form names, accessible labels, dialog relationships, and the separ
 - Bilingual copy must be updated in English and Simplified Chinese without translating product names, user content, provider/model identifiers, or opaque IDs.
 - Layout changes must retain Safari and Chromium behavior, keyboard focus, reduced motion/transparency, high contrast, and responsive fallbacks.
 
+## Desktop native management preview
+
+`discover` accepts optional `harness` and `force` fields; status includes bounded per-harness detection state and whether a program location was remembered. Only native selection or verified discovery writes the private, versioned `agent-programs.json`; malformed/oversized preferences are ignored and write failure remains visible. Discovery coalesces concurrent requests, bounds filesystem candidates and version probes, fences late environment results, and cannot authorize a connector. The native picker resolves known CLI locations within a selected app or installation folder. These changes belong to the unreleased desktop preview and require no Web/server migration.
+
+Executable inspection reports `executable_signature_invalid` only after a positive native signature diagnostic, `executable_terminated` for other signal exits, `executable_probe_timeout` for the bounded version probe, and `executable_probe_failed` for other probe failures. A missing/changed/wrong-harness file remains `invalid_executable`. Native diagnostic output is never returned over IPC. These are additive codes in the unreleased local v1 contract.
+
+`packages/protocol/src/desktop.ts` owns strict local IPC v1. The packaged management main frame alone can call `gt-desktop:action`; `gt-desktop:status` returns schema-checked public connection metadata. The remote Web has no preload. Actions cover status, install discovery, native executable/directory selection, explicit start/stop, opening the selected directory/DSH and returning to the workspace. The fictional demo action exists only in demo mode. Requests accept host-issued opaque UUIDs, never arbitrary commands, paths or endpoints. Unknown fields fail closed; errors return stable codes without provider bodies or credentials.
+
+Start consumes an explicitly reviewed v2/v3 handoff and reserves an origin/project/harness slot before claim. Native authorization retains the existing deadline, response bound, identity checks and no-retry semantics. Exact executable/directory identity is rechecked after asynchronous claim. Device credentials reach only the spawned connector environment; passwords are not persisted. A cancelled or consumed start cannot later launch. Capacity remains held until parent and owned process group exit; timeouts only report uncertainty. There is no automatic reconnect, fallback or restart replay.
+
+No HTTP/SQLite migration is required. Production/test Cookie partitions are distinct. DSH/native plugin contracts are unchanged. [ADR-0066](adr/0066-isolated-macos-desktop-workspace.md) and [desktop acceptance instructions](../apps/desktop/README.md) delimit prototype and release claims.
+
 ## Changing a contract
 
 An interface-changing PR must answer:

@@ -61,6 +61,7 @@ One deployment has one active authoritative host as defined by [ADR-0003](adr/00
 ```text
 apps/server       HTTP, WebSocket, authentication, ACL, persistence
 apps/web          collaboration UI
+apps/desktop      macOS prototype: isolated deployed Web + local connector manager
 site              product home source and application entry links
 packages/protocol shared schemas and event contracts
 packages/mcp      MCP tools/resources over the collaboration API
@@ -70,6 +71,8 @@ tests/e2e          multi-client and bridge end-to-end tests
 ```
 
 ## Web entry architecture
+
+The local macOS prototype in `apps/desktop` loads this exact deployed origin in an unprivileged Electron window. A separate bundled local window manages explicit native starts via strict IPC; it does not proxy Web authentication or embed a device token in the page. Existing connectors remain execution owners. [ADR-0066](adr/0066-isolated-macos-desktop-workspace.md) records boundaries and release gates.
 
 The owner host publishes one browser origin. `/` is the public product home; its primary actions open the authenticated application at `/app/`. Both surfaces are assembled by the `apps/web` build, so the product page does not introduce another network service, cookie scope, API origin, or WebSocket origin. The product page and application keep independent CSS and JavaScript entry points to prevent global marketing styles from changing workspace behavior.
 

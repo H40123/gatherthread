@@ -1,5 +1,7 @@
 # Security policy and threat model
 
+The proposed [macOS desktop boundary](adr/0066-isolated-macos-desktop-workspace.md) gives remote collaboration content no preload or native IPC. Only the exact packaged management main frame can invoke strict allowlisted actions with host-issued opaque file handles. Credentials remain transient in the host/owned connector; raw process output is discarded. Uncertain shutdown retains process ownership. Permissions/downloads are scoped to the active exact-origin workspace. Local-demo identities are independent and its renderer has loopback-only egress.
+
 ## Scope and current status
 
 This document defines the first-release security boundary for the collaboration server, browser client, MCP surface, local bridge, transcript adapters, and operational tooling.
