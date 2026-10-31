@@ -47,6 +47,10 @@ def email_launcher_fixture():
     fake._clear_secrets = lambda: (fake.password.set(""), fake.token.set(""))
     fake._env = lambda token: {"GATHERTHREAD_TOKEN": token}
     fake._set_busy = lambda value: setattr(fake, "busy", value)
+    fake._display_activity = MagicMock()
+    fake._show_page = MagicMock()
+    fake.retry_scopes = set()
+    fake.session_state, fake.actual_workspace, fake.plugin_state = FixtureValue(), FixtureValue(), FixtureValue()
     return fake
 
 
