@@ -573,6 +573,31 @@ def configure_window_icon(window: tk.Tk) -> None:
         pass
 
 
+def launcher_work_area(window: tk.Tk) -> tuple[int, int, int, int]:
+    """Nearest monitor's usable bounds, excluding its taskbar/docked toolbars."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [("size", wintypes.DWORD), ("monitor", wintypes.RECT),
+                        ("work", wintypes.RECT), ("flags", wintypes.DWORD)]
+
+        user = ctypes.windll.user32
+        user.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        user.MonitorFromWindow.restype = wintypes.HANDLE
+        user.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+        info = MonitorInfo()
+        info.size = ctypes.sizeof(info)
+        monitor = user.MonitorFromWindow(int(window.frame(), 0), 2)
+        if monitor and user.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return info.work.left, info.work.top, info.work.right, info.work.bottom
+        work = wintypes.RECT()
+        if user.SystemParametersInfoW(0x0030, 0, ctypes.byref(work), 0):
+            return work.left, work.top, work.right, work.bottom
+    return 0, 0, window.winfo_screenwidth(), max(1, window.winfo_screenheight() - 48)
+
+
 def windows_high_contrast() -> bool:
     if os.name != "nt":
         return False
@@ -642,8 +667,7 @@ class Launcher(tk.Tk):
         super().__init__()
         self.title("GatherThread · Connect Agent")
         configure_window_icon(self)
-        self.geometry("1020x900")
-        self.minsize(940, 740)
+        self.minsize(640, 400)
         self.events: queue.Queue[tuple[str, str | tuple[int, str, str, bool]]] = queue.Queue()
         self.connector: subprocess.Popen[str] | None = None
         self.connector_lock = threading.Lock()
@@ -682,6 +706,7 @@ class Launcher(tk.Tk):
             self._apply_link(link)
         else:
             self._refresh_authorization_form()
+        self._fit_window_to_work_area()
         self.after(100, self._poll)
         self.protocol("WM_DELETE_WINDOW", self._background)
 
@@ -715,7 +740,7 @@ class Launcher(tk.Tk):
         self.plugin_state = tk.StringVar(value="等待安装或使用已有插件 / Install or use your existing plugin")
         self.session_state = tk.StringVar(value="等待连接会话 / Waiting for sessions")
         self.latest_event = tk.StringVar(value="尚无同步反馈 / No activity yet")
-        self.retry_scopes: set[str] = set()
+        self.sync_feedback = tk.StringVar(value="尚无同步反馈 / No sync feedback yet")
         self.step_labels = []
         shell = tk.Frame(self, bg="#f6f7f9")
         shell.pack(fill="both", expand=True, padx=24, pady=20)
@@ -729,7 +754,11 @@ class Launcher(tk.Tk):
             tk.Label(top, text="LOCAL CONNECTOR / 本地连接器", bg="#f6f7f9", fg="#667085").pack(side="right")
         body = tk.Frame(shell, bg="#f6f7f9")
         body.pack(fill="both", expand=True)
-        sidebar = tk.Frame(body, bg="#eef1f7", width=215)
+        self.body = body
+        self.compact_navigation = ttk.Combobox(shell, state="readonly", values=("01 插件准备 / Plugin", "02 账号与模型 / Account", "03 本地目录 / Workspace", "04 连接与同步状态 / Status"))
+        self.compact_navigation.current(0)
+        self.compact_navigation.bind("<<ComboboxSelected>>", lambda _e: self._navigate_page(self.compact_navigation.current()))
+        sidebar = self.sidebar = tk.Frame(body, bg="#eef1f7", width=215)
         sidebar.pack(side="left", fill="y", padx=(0, 16))
         sidebar.pack_propagate(False)
         tk.Label(sidebar, text="开始连接 / GET STARTED", bg="#eef1f7", fg="#667085", font=("Microsoft YaHei UI", 9)).pack(anchor="w", padx=18, pady=(22, 18))
@@ -740,7 +769,7 @@ class Launcher(tk.Tk):
                 label.bind(event, lambda _e, target=index: self._navigate_page(target))
             self.step_labels.append(label)
         tk.Label(sidebar, text="设置完成后\n在状态页查看连接与同步进度。\n\n网页负责项目和会话；\n此窗口保持本机连接。", justify="left", wraplength=175, bg="#eef1f7", fg="#667085", font=("Microsoft YaHei UI", 9)).pack(side="bottom", anchor="w", padx=18, pady=24)
-        panel = ttk.Frame(body, padding=(28, 22))
+        panel = self.panel = ttk.Frame(body, padding=(28, 22))
         panel.pack(side="left", fill="both", expand=True)
         context = ttk.Frame(panel)
         context.pack(fill="x", pady=(0, 12))
@@ -844,7 +873,7 @@ class Launcher(tk.Tk):
         ttk.Label(directory, text="确认后点击「启动连接」。此窗口需保持运行，关闭运行中的窗口会最小化。\nKeep this Launcher running while connected.", style="Muted.TLabel", wraplength=590).pack(anchor="w", pady=(16, 0))
 
         heading(progress, "PAGE 04 / 04", "连接与同步状态", "连接过程和同步反馈集中显示在这里。\nConnection progress and live activity in one place.")
-        for title, variable in (("本机连接 / Connection", self.connection_state), ("会话状态 / Sessions", self.session_state), ("实际工作目录 / Workspace", self.actual_workspace), ("最近反馈 / Latest activity", self.latest_event)):
+        for title, variable in (("本机连接 / Connection", self.connection_state), ("会话状态 / Sessions", self.session_state), ("最近同步反馈 / Last sync feedback", self.sync_feedback), ("实际工作目录 / Workspace", self.actual_workspace), ("最近反馈 / Latest activity", self.latest_event)):
             ttk.Label(progress, text=title, style="Muted.TLabel").pack(anchor="w", pady=(5, 2))
             ttk.Label(progress, textvariable=variable, wraplength=590).pack(anchor="w", pady=(0, 5))
         ttk.Label(progress, text="运行日志 / Activity log", style="Muted.TLabel").pack(anchor="w", pady=(8, 5))
@@ -878,12 +907,53 @@ class Launcher(tk.Tk):
         self.notice.pack(side="bottom", anchor="w", pady=(8, 8))
         footer_separator.pack(side="bottom", fill="x", pady=(4, 10))
         viewport.pack(fill="both", expand=True, pady=(18, 8))
+        self.bind("<Configure>", self._resize_layout, add="+")
         self.bind("<MouseWheel>", self._scroll_page, add="+")
         self.bind("<FocusIn>", self._reveal_focus, add="+")
         if self.high_contrast:
             self._apply_high_contrast(style)
         self.status.trace_add("write", self._status_changed)
         self._show_page(0)
+
+    def _fit_window_to_work_area(self) -> None:
+        """Fit the whole decorated window, in the same coordinate space as Tk."""
+        self.update_idletasks()
+        left, top, right, bottom = launcher_work_area(self)
+        border = max(0, self.winfo_rootx() - self.winfo_x())
+        title = max(0, self.winfo_rooty() - self.winfo_y())
+        available_width = max(1, right - left - 16 - 2 * border)
+        available_height = max(1, bottom - top - 16 - title - border)
+        width, height = min(1020, available_width), min(900, available_height)
+        self.minsize(min(640, width), min(400, height))
+        self.geometry(f"{width}x{height}")
+        self.update_idletasks()
+        x = left + (right - left - width - 2 * border) // 2
+        y = top + (bottom - top - height - title - border) // 2
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            position = ctypes.windll.user32.SetWindowPos
+            position.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                 ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            # Native positioning handles monitors left/above the primary screen.
+            position(int(self.frame(), 0), None, x, y, 0, 0, 0x0015)
+        else:
+            self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.update_idletasks()
+
+    def _resize_layout(self, event) -> None:
+        if event.widget is not self:
+            return
+        compact = event.width < 900
+        if compact and self.sidebar.winfo_manager():
+            self.sidebar.pack_forget()
+            self.compact_navigation.pack(fill="x", pady=(0, 10), before=self.body)
+        elif not compact and not self.sidebar.winfo_manager():
+            self.compact_navigation.pack_forget()
+            self.sidebar.pack(side="left", fill="y", padx=(0, 16), before=self.panel)
+        # Size text to the real content column so it cannot cover navigation.
+        column = max(120, event.width - (0 if compact else 231) - 104)
+        self.notice.configure(wraplength=column)
 
     def _apply_high_contrast(self, style) -> None:
         for name in ("TFrame", "Card.TFrame", "TLabel", "Muted.TLabel", "Title.TLabel", "Heading.TLabel"):
@@ -908,6 +978,7 @@ class Launcher(tk.Tk):
 
     def _show_page(self, page: int) -> None:
         self.page = max(0, min(3, page))
+        self.compact_navigation.current(self.page)
         for frame in self.pages:
             frame.pack_forget()
         self.pages[self.page].pack(fill="both", expand=True)
@@ -932,6 +1003,8 @@ class Launcher(tk.Tk):
     def _navigate_page(self, page: int) -> None:
         if not self.busy or page == 3:
             self._show_page(page)
+        else:
+            self.compact_navigation.current(self.page)
 
     def _refresh_workspace_display(self, *_args) -> None:
         custom = self.workspace.get()
@@ -1025,14 +1098,12 @@ class Launcher(tk.Tk):
                 self.connection_state.set("已连接项目 / Project connected")
             retry = re.fullmatch(r"gatherthread-codex \(([^)\r\n]+)\): .*; retrying", value)
             recovered = re.fullmatch(r"gatherthread-codex \(([^)\r\n]+)\): recovered", value)
+            # These are historical records, not a current health/active-retry contract.
+            # Heartbeat/sharing failures need not produce a matching recovery log.
             if retry:
-                self.retry_scopes.add(retry[1])
+                self.sync_feedback.set("曾记录同步重试；可在日志中查看详情 / A sync retry was recorded; see the log")
             elif recovered:
-                self.retry_scopes.discard(recovered[1])
-            if self.retry_scopes:
-                self.session_state.set("部分同步正在重试，请查看日志 / Some sync operations are retrying")
-            elif recovered:
-                self.session_state.set("同步操作已恢复 / Sync operation recovered")
+                self.sync_feedback.set("曾收到同步恢复反馈 / A sync recovery was reported")
 
     def _clear_secrets(self, *_args) -> None:
         self.password.set("")
@@ -1370,7 +1441,7 @@ class Launcher(tk.Tk):
                 kind, value = self.events.get_nowait()
                 activity_kind = "log"
                 if kind == "page":
-                    self.retry_scopes.clear()
+                    self.sync_feedback.set("尚无同步反馈 / No sync feedback yet")
                     self.session_state.set("等待连接会话 / Waiting for sessions")
                     self.actual_workspace.set("等待连接器确认 / Waiting for connector")
                     self._show_page(int(value))

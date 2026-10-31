@@ -1,6 +1,11 @@
 """Windows native widget checks; no installed plugin or live credentials needed."""
 
+import ctypes
+from ctypes import wintypes
 import importlib.util
+import json
+import shutil
+import subprocess
 import os
 from pathlib import Path
 import unittest
@@ -139,16 +144,98 @@ class WizardTests(unittest.TestCase):
         self.app._poll()
         self.assertIn("连接已结束", self.app.session_state.get())
 
-    def test_sync_retry_stays_visible_until_all_scopes_recover(self):
-        for line in ("gatherthread-codex (project refresh): offline; retrying",
-                     "gatherthread-codex (session-a): offline; retrying",
-                     "gatherthread-codex (session-a): recovered"):
-            self.app.events.put(("log", line))
+    def test_retry_feedback_is_history_without_poisoning_current_session_state(self):
+        self.app.events.put(("log", "Connected session: Demo [multi]"))
+        for scope in ("session-a:heartbeat", "runtime-a:sharing"):
+            self.app.events.put(("log", f"gatherthread-codex ({scope}): offline; retrying"))
         self.app._poll()
-        self.assertIn("正在重试", self.app.session_state.get())
-        self.app.events.put(("log", "gatherthread-codex (project refresh): recovered"))
+        self.assertIn("会话连接成功", self.app.session_state.get())
+        self.assertIn("曾记录", self.app.sync_feedback.get())
+        # No synthetic recovered log: those producers do not guarantee one.
+        self.app.events.put(("log", "Connected session: Other [solo]"))
         self.app._poll()
-        self.assertIn("已恢复", self.app.session_state.get())
+        self.assertIn("会话连接成功", self.app.session_state.get())
+        self.assertFalse(hasattr(self.app, "retry_scopes"))
+        self.app.events.put(("log", "gatherthread-codex (other): recovered"))
+        self.app._poll()
+        self.assertIn("曾收到", self.app.sync_feedback.get())
+        self.assertIn("会话连接成功", self.app.session_state.get())
+
+    def test_real_heartbeat_failure_then_success_needs_no_recovery_log(self):
+        entry = Path(__file__).resolve().parents[2] / "packages/bridge/dist/src/codex-connect.js"
+        node = shutil.which("node")
+        if not node or not entry.is_file():
+            self.skipTest("Build packages/bridge with Node 24 before running the cross-language heartbeat test")
+        script = """
+const { runManagedSessionHeartbeats, ConnectorRetryReporter } = await import(process.argv[1]);
+const stop = new AbortController();
+let now = 0, attempts = 0;
+const lines = [];
+const reporter = new ConnectorRetryReporter({token: 'fixture', now: () => now, write: line => lines.push(line.trim())});
+const current = {lastHeartbeatAt: 0, bridge: {heartbeat: async () => {
+  if (++attempts === 1) throw new Error('offline');
+}}};
+const managed = new Map([['session-a', current]]);
+await runManagedSessionHeartbeats({managed, signal: stop.signal, now: () => now,
+  wait: async () => {now += 10000; if (now > 30000) stop.abort();},
+  onError: (id, error) => reporter.retrying(id + ':heartbeat', error)});
+console.log(JSON.stringify({lines, attempts, lastHeartbeatAt: current.lastHeartbeatAt}));
+"""
+        result = subprocess.run([node, "--input-type=module", "-e", script, entry.as_uri()],
+                                capture_output=True, text=True, encoding="utf-8", check=True, timeout=20,
+                                creationflags=launcher.Launcher._flags())
+        actual = json.loads(result.stdout)
+        self.assertEqual(actual["attempts"], 3)
+        self.assertEqual(actual["lastHeartbeatAt"], 30000)
+        self.assertEqual(len(actual["lines"]), 1, "The real producer emits no recovered record")
+        self.app._display_activity("log", "Connected session: Demo [multi]")
+        for line in actual["lines"]:
+            self.app._display_activity("log", line)
+        self.assertIn("曾记录", self.app.sync_feedback.get())
+        self.assertIn("会话连接成功", self.app.session_state.get())
+        self.assertNotIn("正在重试", self.app.session_state.get())
+
+    def test_small_screens_and_scaled_fonts_keep_whole_window_and_buttons_visible(self):
+        native_rect = ctypes.windll.user32.GetWindowRect
+        native_rect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        build = launcher.Launcher._build
+        for work, scaling in (((0, 0, 1280, 680), 4 / 3),
+                              ((0, 0, 1366, 728), 4 / 3),
+                              ((0, 0, 1024, 540), 2.0),
+                              ((0, 0, 853, 440), 8 / 3)):
+            with self.subTest(work=work, scaling=scaling):
+                def scaled_build(app):
+                    # Set DPI before creating fonts/widgets, like a fresh scaled desktop.
+                    app.tk.call("tk", "scaling", scaling)
+                    build(app)
+                with patch.object(launcher.Launcher, "_build", scaled_build), \
+                        patch.object(launcher, "launcher_work_area", return_value=work):
+                    app = launcher.Launcher(None)
+                try:
+                    app.update()
+                    outer = wintypes.RECT()
+                    self.assertTrue(native_rect(int(app.frame(), 0), ctypes.byref(outer)))
+                    self.assertGreaterEqual(outer.left, work[0])
+                    self.assertGreaterEqual(outer.top, work[1])
+                    self.assertLessEqual(outer.right, work[2])
+                    self.assertLessEqual(outer.bottom, work[3])
+                    self.assertLessEqual(app.minsize()[1], 400)
+                    for page, control in ((0, app.next_button), (1, app.next_button),
+                                          (2, app.connect_button), (3, app.back_button)):
+                        app._show_page(page)
+                        app.update()
+                        self.assertTrue(control.winfo_ismapped())
+                        for button in (control, app.back_button):
+                            self.assertGreaterEqual(button.winfo_rootx(), work[0])
+                            self.assertGreaterEqual(button.winfo_rooty(), work[1])
+                            self.assertLessEqual(button.winfo_rootx() + button.winfo_width(), work[2])
+                            self.assertLessEqual(button.winfo_rooty() + button.winfo_height(), work[3])
+                    if app.winfo_width() < 900:
+                        self.assertTrue(app.compact_navigation.winfo_ismapped())
+                finally:
+                    for callback in app.tk.call("after", "info"):
+                        app.after_cancel(callback)
+                    app.destroy()
 
     def test_small_window_keeps_navigation_visible_and_content_scrollable(self):
         self.app.geometry("940x740")

@@ -64,8 +64,13 @@ The Windows UI has four pages listed in its keyboard-accessible navigation:
 and requires the existing confirmation; advancing through setup never installs
 code or submits a password. **Start connection** on the third page performs the
 authorization and opens the fourth **Connection & sync** page. That page
-shows connector readiness, session connection, retry/recovery feedback, the actual
-workspace, and a bounded scrollable log, with Stop and Minimize controls.
+shows connector readiness, session connection, historical retry/recovery feedback, the actual
+workspace, and a bounded scrollable log, with Stop and Minimize controls. Retry
+records are explicitly past activity: not every producer emits a recovery record,
+so they do not assert an active fault or alter current session connection state.
+The initial decorated window fits the nearest monitor work area (excluding the
+taskbar). Smaller windows retain fixed navigation and scrollable content, with a
+compact four-page selector when the sidebar would crowd the form.
 
 The third page has a single local-directory bar prefilled with the default root,
 `%USERPROFILE%/GatherThread Projects`, alongside **Change path**. Selecting an
@@ -171,6 +176,9 @@ example data and never installs plugins or claims a device. Add
 preview script is a development helper, not part of the installed bundle.
 Native UI checks run with
 `python -m unittest discover -s prototypes/codex-launcher -p "test_launcher*.py"`.
+Build the bridge first (`npm run build:ts`) to include the real heartbeat-to-UI
+regression test; it reports a skip if Node or the compiled bridge is unavailable.
+Windows CI builds the bridge before running these native UI tests.
 
 On a Windows development machine with Python 3.13, Node 24, npm, and the repo
 dependencies installed, run `python prototypes/codex-launcher/build_dist.py`.

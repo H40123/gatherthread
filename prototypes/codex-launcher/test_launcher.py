@@ -49,7 +49,7 @@ def email_launcher_fixture():
     fake._set_busy = lambda value: setattr(fake, "busy", value)
     fake._display_activity = MagicMock()
     fake._show_page = MagicMock()
-    fake.retry_scopes = set()
+    fake.sync_feedback = FixtureValue()
     fake.session_state, fake.actual_workspace, fake.plugin_state = FixtureValue(), FixtureValue(), FixtureValue()
     return fake
 
